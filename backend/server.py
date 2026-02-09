@@ -429,11 +429,14 @@ def calculate_ratios(ticker_data):
             'roe': roe,
             'roa': roa,
             'roic': roic,
+            'roce': roce,
             'roc': roic,  # Using ROIC as proxy for ROC
+            'croic': croic,
             'gross_margin': gross_margin,
             'net_margin': net_margin,
             'operating_margin': operating_margin,
             'ebit_margin': ebit_margin,
+            'nopat_margin': nopat_margin,
             
             # Liquidity
             'current_ratio': current_ratio,
