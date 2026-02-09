@@ -430,6 +430,43 @@ def calculate_ratios(ticker_data):
         except:
             fulmer_h = 0
         
+        # Springate Model (S-Score)
+        # S = 1.03A + 3.07B + 0.66C + 0.4D
+        try:
+            a_spring = safe_divide(working_capital, total_assets, 0)
+            b_spring = safe_divide(ebit, total_assets, 0)
+            c_spring = safe_divide(ebit, current_liabilities, 0) if current_liabilities > 0 else 0
+            d_spring = safe_divide(total_revenue, total_assets, 0)
+            
+            springate_score = 1.03*a_spring + 3.07*b_spring + 0.66*c_spring + 0.4*d_spring
+        except:
+            springate_score = 0
+        
+        # CA-SCORE (Credit Analysis Score - Revisión del Altman)
+        # CA = 3.107 + 6.38*X1 + 2.84*X2 + 3.05*X3 + 1.02*X4
+        try:
+            x1_ca = safe_divide(current_assets - current_liabilities, total_assets, 0)
+            x2_ca = safe_divide(net_income, total_assets, 0)
+            x3_ca = safe_divide(retained_earnings, total_assets, 0)
+            x4_ca = safe_divide(ebit, total_liabilities, 0) if total_liabilities > 0 else 0
+            
+            ca_score = 3.107 + 6.38*x1_ca + 2.84*x2_ca + 3.05*x3_ca + 1.02*x4_ca
+        except:
+            ca_score = 0
+        
+        # Kanitz Score (Termômetro de Insolvência)
+        # K = 0.05*X1 + 1.65*X2 + 3.55*X3 - 1.06*X4 - 0.33*X5
+        try:
+            x1_k = safe_divide(net_income, total_assets, 0)
+            x2_k = safe_divide(current_assets - cash - balance.get('Short Term Investments', 0), current_liabilities, 0) if current_liabilities > 0 else 0
+            x3_k = safe_divide(current_assets - current_liabilities, total_debt, 0) if total_debt > 0 else 0
+            x4_k = safe_divide(current_assets, current_liabilities, 0) if current_liabilities > 0 else 0
+            x5_k = safe_divide(total_debt, total_assets, 0)
+            
+            kanitz_score = 0.05*x1_k + 1.65*x2_k + 3.55*x3_k - 1.06*x4_k - 0.33*x5_k
+        except:
+            kanitz_score = 0
+        
         # Benjamin Graham Valuation
         # Graham's formula: Intrinsic Value = EPS × (8.5 + 2g)
         # Revised: IV = (EPS × (8.5 + 2g) × 4.4) / Y
