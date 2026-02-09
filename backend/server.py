@@ -1272,6 +1272,20 @@ def evaluate_ratios(ratios, info):
     # Category 9: Quality Scores
     quality_metrics = []
     
+    # Sloan Ratio
+    sloan_val = ratios.get('sloan_ratio', 0)
+    sloan_passed = -0.1 <= sloan_val <= 0.1
+    quality_metrics.append(RatioMetric(
+        name="Sloan Ratio (Accruals)",
+        value=sloan_val,
+        threshold="-0.1 a 0.1 (accruals normales)",
+        passed=sloan_passed,
+        interpretation="Detecta manipulación contable via accruals",
+        display_value=f"{sloan_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if sloan_passed else 0
+    
     # Beneish M-Score
     beneish_val = ratios.get('beneish_m_score', 0)
     beneish_passed = beneish_val < -2.22
@@ -1286,22 +1300,134 @@ def evaluate_ratios(ratios, info):
     total_metrics += 1
     favorable += 1 if beneish_passed else 0
     
+    # Ohlson O-Score
+    ohlson_val = ratios.get('ohlson_o_score', 0)
+    ohlson_passed = ohlson_val < 0.5
+    quality_metrics.append(RatioMetric(
+        name="Ohlson O-Score",
+        value=ohlson_val,
+        threshold="< 0.5 (bajo riesgo quiebra)",
+        passed=ohlson_passed,
+        interpretation="Predicción de quiebra a 2 años",
+        display_value=f"{ohlson_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if ohlson_passed else 0
+    
+    # Altman Z-Score
+    altman_val = ratios.get('altman_z_score', 0)
+    altman_passed = altman_val > 2.99
+    quality_metrics.append(RatioMetric(
+        name="Altman Z-Score",
+        value=altman_val,
+        threshold="> 2.99 (zona segura)",
+        passed=altman_passed,
+        interpretation="Predicción de quiebra (>2.99 segura, <1.81 peligro)",
+        display_value=f"{altman_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if altman_passed else 0
+    
+    # Fulmer H-Score
+    fulmer_val = ratios.get('fulmer_h_score', 0)
+    fulmer_passed = fulmer_val > 0
+    quality_metrics.append(RatioMetric(
+        name="Fulmer H-Score",
+        value=fulmer_val,
+        threshold="> 0 (empresa sólida)",
+        passed=fulmer_passed,
+        interpretation="Solidez financiera general",
+        display_value=f"{fulmer_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if fulmer_passed else 0
+    
+    # Piotroski F-Score
+    piotroski_val = ratios.get('piotroski_f_score', 0)
+    piotroski_passed = piotroski_val >= 7
+    quality_metrics.append(RatioMetric(
+        name="Piotroski F-Score",
+        value=piotroski_val,
+        threshold=">= 7 (empresa fuerte)",
+        passed=piotroski_passed,
+        interpretation="Solidez financiera (0-9, 7+ es fuerte)",
+        display_value=f"{int(piotroski_val)}"
+    ))
+    total_metrics += 1
+    favorable += 1 if piotroski_passed else 0
+    
     # Montier C-Score
     montier_val = ratios.get('montier_c_score', 0)
     montier_passed = montier_val <= 2
     quality_metrics.append(RatioMetric(
         name="Montier C-Score",
         value=montier_val,
-        threshold="<= 2",
+        threshold="<= 2 (bajo riesgo)",
         passed=montier_passed,
-        interpretation="Bajo riesgo de manipulación (0-3 escala)",
+        interpretation="Riesgo de manipulación contable (0-3)",
         display_value=f"{int(montier_val)}"
     ))
     total_metrics += 1
     favorable += 1 if montier_passed else 0
     
+    # Springate Score
+    springate_val = ratios.get('springate_score', 0)
+    springate_passed = springate_val > 0.862
+    quality_metrics.append(RatioMetric(
+        name="Springate S-Score",
+        value=springate_val,
+        threshold="> 0.862 (financieramente sana)",
+        passed=springate_passed,
+        interpretation="Modelo alternativo de predicción de quiebra",
+        display_value=f"{springate_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if springate_passed else 0
+    
+    # CA-SCORE
+    ca_val = ratios.get('ca_score', 0)
+    ca_passed = ca_val > -0.3
+    quality_metrics.append(RatioMetric(
+        name="CA-SCORE",
+        value=ca_val,
+        threshold="> -0.3 (bajo riesgo crédito)",
+        passed=ca_passed,
+        interpretation="Credit Analysis Score (riesgo crediticio)",
+        display_value=f"{ca_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if ca_passed else 0
+    
+    # Kanitz Score
+    kanitz_val = ratios.get('kanitz_score', 0)
+    kanitz_passed = kanitz_val > 0
+    quality_metrics.append(RatioMetric(
+        name="Kanitz Score",
+        value=kanitz_val,
+        threshold="> 0 (solvente)",
+        passed=kanitz_passed,
+        interpretation="Termómetro de Insolvencia (<-3 peligro, >0 solvente)",
+        display_value=f"{kanitz_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if kanitz_passed else 0
+    
+    # Tobin's Q
+    tobins_q_val = ratios.get('tobins_q', 0)
+    tobins_q_passed = tobins_q_val < 1
+    quality_metrics.append(RatioMetric(
+        name="Tobin's Q Ratio",
+        value=tobins_q_val,
+        threshold="< 1 (subvalorada)",
+        passed=tobins_q_passed,
+        interpretation="Valor de mercado vs valor libro (<1 subvalorada)",
+        display_value=f"{tobins_q_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if tobins_q_passed else 0
+    
     categories.append(RatioCategory(
-        category="📋 Calidad Contable",
+        category="📋 Calidad Contable y Salud Financiera",
         metrics=quality_metrics
     ))
     
