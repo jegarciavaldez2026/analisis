@@ -255,8 +255,7 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
           )}
         </View>
 
-        {/* Price Chart Section */}
-        <View style={styles.chartSection}>
+        {/* Recommendation Card */}
         <View
           style={[
             styles.recommendationCard,
