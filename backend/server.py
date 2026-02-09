@@ -307,6 +307,97 @@ def calculate_ratios(ticker_data):
         if operating_cf > 0 and net_income > 0:
             c_score += 1
         
+        # Additional important ratios
+        
+        # PEG Ratio
+        earnings_growth = 0  # Would need historical EPS data
+        peg_ratio = safe_divide(pe_ratio, earnings_growth) if earnings_growth > 0 and pe_ratio else None
+        
+        # P/B Ratio (Price to Book)
+        book_value_per_share = safe_divide(total_equity, shares_outstanding) if shares_outstanding > 0 else 0
+        pb_ratio = safe_divide(current_price, book_value_per_share) if book_value_per_share > 0 else None
+        
+        # Dividend Yield
+        dividend_rate = info.get('dividendRate', 0)
+        dividend_yield = safe_divide(dividend_rate, current_price, 0) * 100 if current_price > 0 else 0
+        
+        # Payout Ratio
+        dividends_paid = abs(cf.get('Cash Dividends Paid', 0))
+        payout_ratio = safe_divide(dividends_paid, net_income, 0) * 100 if net_income > 0 else 0
+        
+        # Long-Term Debt to Capitalization
+        long_term_debt = balance.get('Long Term Debt', total_debt)
+        total_cap = long_term_debt + total_equity if total_equity > 0 else 1
+        lt_debt_to_cap = safe_divide(long_term_debt, total_cap, 0)
+        
+        # Inventory Turnover
+        inventory = balance.get('Inventory', 0)
+        cogs = income.get('Cost Of Revenue', 0)
+        inventory_turnover = safe_divide(cogs, inventory, 0) if inventory > 0 else 0
+        
+        # Operating Expense Ratio
+        operating_expenses = income.get('Operating Expense', 0)
+        operating_expense_ratio = safe_divide(operating_expenses, total_revenue, 0) if total_revenue > 0 else 0
+        
+        # Sloan Ratio (Accruals / Average Assets)
+        accruals = net_income - operating_cf
+        sloan_ratio = safe_divide(accruals, total_assets, 0) if total_assets > 0 else 0
+        
+        # Accrual Ratio
+        accrual_ratio = safe_divide(operating_cf, net_income, 0) if net_income != 0 else 0
+        
+        # Tobin's Q
+        tobins_q = safe_divide(market_cap + total_liabilities, total_assets, 0) if total_assets > 0 else 0
+        
+        # EV/CFO
+        ev_cfo = safe_divide(enterprise_value, operating_cf) if operating_cf > 0 else None
+        
+        # EV/FCF
+        ev_fcf = safe_divide(enterprise_value, free_cash_flow) if free_cash_flow > 0 else None
+        
+        # EV/Gross Profit
+        ev_gross_profit = safe_divide(enterprise_value, gross_profit) if gross_profit > 0 else None
+        
+        # EBIT/FCF
+        ebit_to_fcf = safe_divide(ebit, free_cash_flow) if free_cash_flow != 0 else None
+        
+        # Net Debt / EBIT
+        net_debt_to_ebit = safe_divide(net_debt, ebit) if ebit != 0 else None
+        
+        # Zmijewski Score (bankruptcy prediction)
+        try:
+            x1_z = -4.3 - 4.5 * safe_divide(net_income, total_assets, 0)
+            x2_z = 5.7 * safe_divide(total_liabilities, total_assets, 0)
+            x3_z = -0.004 * safe_divide(current_assets, current_liabilities, 0)
+            zmijewski_score = x1_z + x2_z + x3_z
+        except:
+            zmijewski_score = 0
+        
+        # Ohlson O-Score
+        try:
+            size = np.log(total_assets) if total_assets > 0 else 0
+            tlta = safe_divide(total_liabilities, total_assets, 0)
+            wcta = safe_divide(working_capital, total_assets, 0)
+            clca = safe_divide(current_liabilities, current_assets, 0) if current_assets > 0 else 0
+            nita = safe_divide(net_income, total_assets, 0)
+            
+            ohlson_o = -1.32 - 0.407*size + 6.03*tlta - 1.43*wcta + 0.0757*clca - 2.37*nita
+        except:
+            ohlson_o = 0
+        
+        # Fulmer H-Score
+        try:
+            v1 = safe_divide(retained_earnings, total_assets, 0)
+            v2 = safe_divide(total_revenue, total_assets, 0)
+            v3 = safe_divide(net_income, total_equity, 0) if total_equity > 0 else 0
+            v4 = safe_divide(operating_cf, total_liabilities, 0) if total_liabilities > 0 else 0
+            v5 = safe_divide(total_liabilities, total_assets, 0)
+            v6 = safe_divide(current_liabilities, total_assets, 0)
+            
+            fulmer_h = 5.528*v1 + 0.212*v2 + 0.073*v3 + 1.270*v4 - 0.120*v5 + 2.335*v6 + 0.575
+        except:
+            fulmer_h = 0
+        
         # Altman Z-Score (simplified for public companies)
         x1 = safe_divide(working_capital, total_assets, 0)
         x2 = safe_divide(retained_earnings, total_assets, 0)
