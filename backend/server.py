@@ -193,6 +193,112 @@ def calculate_ratios(ticker_data):
         asset_turnover = safe_divide(total_revenue, total_assets, 0)
         equity_multiplier = safe_divide(total_assets, total_equity, 0) if total_equity > 0 else 0
         
+        # NEW RATIOS
+        # Beta
+        beta = info.get('beta', 0)
+        
+        # Interest Coverage Ratio
+        interest_expense = abs(income.get('Interest Expense', income.get('Interest Expense Non Operating', 0)))
+        interest_coverage = safe_divide(ebit, interest_expense) if interest_expense > 0 else 0
+        
+        # Capex / Depreciation & Amortization
+        depreciation = abs(cf.get('Depreciation And Amortization', cf.get('Depreciation', 0)))
+        capex_to_da = safe_divide(capex, depreciation) if depreciation > 0 else 0
+        
+        # Goodwill in Assets
+        goodwill = balance.get('Goodwill', 0)
+        goodwill_to_assets = safe_divide(goodwill, total_assets, 0) * 100
+        
+        # Cash Flow to Debt Ratio
+        cash_flow_to_debt = safe_divide(operating_cf, total_debt, 0) * 100 if total_debt > 0 else 0
+        
+        # WACC approximation (simplified)
+        cost_of_equity = 0.10  # Assumed 10%
+        cost_of_debt = safe_divide(interest_expense, total_debt, 0.05) if total_debt > 0 else 0.05
+        tax_rate = 0.21  # Assumed corporate tax rate
+        total_capital = total_equity + total_debt if total_equity > 0 and total_debt > 0 else 1
+        weight_equity = safe_divide(total_equity, total_capital, 0)
+        weight_debt = safe_divide(total_debt, total_capital, 0)
+        wacc = (weight_equity * cost_of_equity + weight_debt * cost_of_debt * (1 - tax_rate)) * 100
+        
+        # ROIC vs WACC spread
+        roic_wacc_spread = roic - wacc
+        
+        # EV/CI (Enterprise Value / Capital Invested)
+        ev_ci = safe_divide(enterprise_value, invested_capital) if invested_capital > 0 else None
+        
+        # FCF/EBITDA
+        ebitda = ebit + depreciation if depreciation > 0 else ebit
+        fcf_to_ebitda = safe_divide(free_cash_flow, ebitda, 0) * 100 if ebitda != 0 else 0
+        
+        # KTO (Capital de Trabajo Operativo neto sobre ventas)
+        accounts_receivable = balance.get('Accounts Receivable', 0)
+        inventory = balance.get('Inventory', 0)
+        accounts_payable = balance.get('Accounts Payable', 0)
+        operating_working_capital = accounts_receivable + inventory - accounts_payable
+        kto = safe_divide(operating_working_capital, total_revenue, 0) if total_revenue > 0 else 0
+        
+        # 52-Week High/Low metrics
+        fifty_two_week_high = info.get('fiftyTwoWeekHigh', current_price)
+        fifty_two_week_low = info.get('fiftyTwoWeekLow', current_price)
+        pct_below_52w_high = ((fifty_two_week_high - current_price) / fifty_two_week_high) * 100 if fifty_two_week_high > 0 else 0
+        pct_above_52w_low = ((current_price - fifty_two_week_low) / fifty_two_week_low) * 100 if fifty_two_week_low > 0 else 0
+        
+        # Beneish M-Score (simplified - only some variables)
+        try:
+            if income_prev and balance_sheet.shape[1] > 1:
+                balance_prev = balance_sheet.iloc[:, -1].to_dict()
+                
+                revenue_prev = income_prev.get('Total Revenue', 0)
+                accounts_receivable_prev = balance_prev.get('Accounts Receivable', 1)
+                total_assets_prev = balance_prev.get('Total Assets', 1)
+                
+                # DSRI (Days Sales Receivables Index)
+                dsri = safe_divide(
+                    safe_divide(accounts_receivable, total_revenue, 0),
+                    safe_divide(accounts_receivable_prev, revenue_prev, 1),
+                    0
+                )
+                
+                # AQI (Asset Quality Index)
+                current_assets_prev = balance_prev.get('Current Assets', 1)
+                ppe = balance.get('Net PPE', balance.get('Property Plant Equipment', 0))
+                ppe_prev = balance_prev.get('Net PPE', balance_prev.get('Property Plant Equipment', 1))
+                
+                non_current_assets = total_assets - current_assets if current_assets else total_assets
+                non_current_assets_prev = total_assets_prev - current_assets_prev if current_assets_prev else total_assets_prev
+                
+                aqi = safe_divide(
+                    safe_divide(non_current_assets - ppe, total_assets, 0),
+                    safe_divide(non_current_assets_prev - ppe_prev, total_assets_prev, 1),
+                    0
+                )
+                
+                # GMI (Gross Margin Index)
+                gross_profit_prev = income_prev.get('Gross Profit', 1)
+                gmi = safe_divide(
+                    safe_divide(gross_profit_prev, revenue_prev, 0),
+                    safe_divide(gross_profit, total_revenue, 1),
+                    0
+                )
+                
+                # Simplified Beneish M-Score (using available variables)
+                beneish_m_score = -4.84 + 0.92*dsri + 0.528*aqi + 0.404*gmi
+            else:
+                beneish_m_score = 0
+        except:
+            beneish_m_score = 0
+        
+        # Montier C-Score (simplified)
+        c_score = 0
+        # Based on accruals and cash flow quality
+        if operating_cf > net_income:
+            c_score += 1
+        if beneish_m_score < -2.22:
+            c_score += 1
+        if operating_cf > 0 and net_income > 0:
+            c_score += 1
+        
         # Altman Z-Score (simplified for public companies)
         x1 = safe_divide(working_capital, total_assets, 0)
         x2 = safe_divide(retained_earnings, total_assets, 0)
