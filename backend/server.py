@@ -561,6 +561,20 @@ def calculate_ratios(ticker_data):
             'piotroski_f_score': f_score,
             'beneish_m_score': beneish_m_score,
             'montier_c_score': c_score,
+            'zmijewski_score': zmijewski_score,
+            'ohlson_o_score': ohlson_o,
+            'fulmer_h_score': fulmer_h,
+            
+            # DCF Valuation
+            'intrinsic_value': intrinsic_value_per_share,
+            'margin_of_safety': margin_of_safety,
+            'upside_potential': upside_potential,
+            'enterprise_value_dcf': enterprise_value_dcf,
+            
+            # Value Creation
+            'creates_value': creates_value,
+            'value_creation_spread': value_creation_spread,
+            'value_creation_category': value_creation_category,
         }
         
         return ratios, info
