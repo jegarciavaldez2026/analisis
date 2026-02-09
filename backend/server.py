@@ -753,6 +753,96 @@ async def get_analysis(analysis_id: str):
         logging.error(f"Error fetching analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener análisis: {str(e)}")
 
+class ChartDataPoint(BaseModel):
+    date: str
+    stock_value: float
+    sp500_value: float
+
+class ChartDataResponse(BaseModel):
+    ticker: str
+    current_price: float
+    price_change: float
+    price_change_percent: float
+    chart_data: List[ChartDataPoint]
+    period: str
+
+@api_router.get("/chart/{ticker}", response_model=ChartDataResponse)
+async def get_chart_data(ticker: str, period: str = "1y"):
+    """Get historical price data and compare with S&P 500"""
+    try:
+        ticker = ticker.upper().strip()
+        
+        # Fetch stock data
+        stock = yf.Ticker(ticker)
+        
+        # Define period mapping
+        period_map = {
+            "1w": "7d",
+            "1m": "1mo",
+            "3m": "3mo",
+            "6m": "6mo",
+            "1y": "1y",
+            "5y": "5y"
+        }
+        
+        yf_period = period_map.get(period, "1y")
+        
+        # Get historical data for stock
+        stock_hist = stock.history(period=yf_period)
+        
+        # Get S&P 500 data
+        sp500 = yf.Ticker("^GSPC")
+        sp500_hist = sp500.history(period=yf_period)
+        
+        if stock_hist.empty or sp500_hist.empty:
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos históricos para {ticker}")
+        
+        # Get current price and calculate change
+        current_price = float(stock_hist['Close'].iloc[-1])
+        start_price = float(stock_hist['Close'].iloc[0])
+        price_change = current_price - start_price
+        price_change_percent = (price_change / start_price) * 100
+        
+        # Normalize data to percentage returns (starting at 100)
+        stock_normalized = (stock_hist['Close'] / stock_hist['Close'].iloc[0]) * 100
+        sp500_normalized = (sp500_hist['Close'] / sp500_hist['Close'].iloc[0]) * 100
+        
+        # Align dates and create chart data
+        chart_data = []
+        
+        # Get common dates
+        common_dates = stock_hist.index.intersection(sp500_hist.index)
+        
+        # Sample data points to avoid too many points (max 100 points)
+        if len(common_dates) > 100:
+            step = len(common_dates) // 100
+            common_dates = common_dates[::step]
+        
+        for date in common_dates:
+            try:
+                chart_data.append(ChartDataPoint(
+                    date=date.strftime('%Y-%m-%d'),
+                    stock_value=float(stock_normalized[date]),
+                    sp500_value=float(sp500_normalized[date])
+                ))
+            except:
+                continue
+        
+        return ChartDataResponse(
+            ticker=ticker,
+            current_price=current_price,
+            price_change=price_change,
+            price_change_percent=price_change_percent,
+            chart_data=chart_data,
+            period=period
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching chart data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos del gráfico: {str(e)}")
+
 # Include the router in the main app
 app.include_router(api_router)
 
