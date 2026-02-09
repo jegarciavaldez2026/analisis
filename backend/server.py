@@ -1215,10 +1215,25 @@ def evaluate_ratios(ratios, info):
         "low_debt": ratios.get('debt_ratio', 1) < 0.5,
         "good_margins": ratios.get('gross_margin', 0) > 40,
         "healthy_liquidity": ratios.get('current_ratio', 0) > 1.2,
-        "strong_roe": ratios.get('roe', 0) > 15
+        "strong_roe": ratios.get('roe', 0) > 15,
+        "creates_value": ratios.get('creates_value', False),
+        "undervalued": ratios.get('margin_of_safety', 0) > 20,
     }
     
-    return categories, favorable_pct, recommendation, risk_level, total_metrics, favorable, summary_flags
+    # Valuation summary
+    valuation_summary = {
+        "intrinsic_value": ratios.get('intrinsic_value', 0),
+        "current_price": info.get('currentPrice', info.get('regularMarketPrice', 0)),
+        "margin_of_safety": ratios.get('margin_of_safety', 0),
+        "upside_potential": ratios.get('upside_potential', 0),
+        "creates_value": ratios.get('creates_value', False),
+        "value_creation_category": ratios.get('value_creation_category', 'N/A'),
+        "roic": ratios.get('roic', 0),
+        "wacc": ratios.get('wacc', 0),
+        "spread": ratios.get('value_creation_spread', 0),
+    }
+    
+    return categories, favorable_pct, recommendation, risk_level, total_metrics, favorable, summary_flags, valuation_summary
 
 # Routes
 @api_router.post("/analyze", response_model=AnalysisResponse)
