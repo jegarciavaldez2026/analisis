@@ -703,6 +703,11 @@ def calculate_ratios(ticker_data):
             'zmijewski_score': zmijewski_score,
             'ohlson_o_score': ohlson_o,
             'fulmer_h_score': fulmer_h,
+            'springate_score': springate_score,
+            'ca_score': ca_score,
+            'kanitz_score': kanitz_score,
+            'tobins_q': tobins_q,
+            'sloan_ratio': sloan_ratio,
             
             # DCF Valuation
             'intrinsic_value': intrinsic_value_per_share,
