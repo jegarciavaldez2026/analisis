@@ -330,6 +330,7 @@ def calculate_ratios(ticker_data):
             'roe': roe,
             'roa': roa,
             'roic': roic,
+            'roc': roic,  # Using ROIC as proxy for ROC
             'gross_margin': gross_margin,
             'net_margin': net_margin,
             'operating_margin': operating_margin,
@@ -353,6 +354,7 @@ def calculate_ratios(ticker_data):
             'ev_sales': ev_sales,
             'price_to_sales': price_to_sales,
             'earning_yield': earning_yield,
+            'ev_ci': ev_ci,
             
             # Cash Flow
             'free_cash_flow': free_cash_flow,
@@ -361,15 +363,34 @@ def calculate_ratios(ticker_data):
             'operating_cf_to_sales': operating_cf_to_sales,
             'capex_to_revenue': capex_to_revenue,
             'capex_to_ocf': capex_to_ocf,
+            'fcf_to_ebitda': fcf_to_ebitda,
+            'cash_flow_to_debt': cash_flow_to_debt,
             
-            # Other
+            # Efficiency & Operations
             'retained_earnings': retained_earnings,
             'asset_turnover': asset_turnover,
             'eps': eps,
+            'capex_to_da': capex_to_da,
+            'goodwill_to_assets': goodwill_to_assets,
+            'kto': kto,
+            
+            # Risk & Capital
+            'beta': beta,
+            'wacc': wacc,
+            'roic_wacc_spread': roic_wacc_spread,
+            'interest_coverage': interest_coverage,
+            
+            # Price Performance
+            'fifty_two_week_high': fifty_two_week_high,
+            'fifty_two_week_low': fifty_two_week_low,
+            'pct_below_52w_high': pct_below_52w_high,
+            'pct_above_52w_low': pct_above_52w_low,
             
             # Scores
             'altman_z_score': altman_z,
             'piotroski_f_score': f_score,
+            'beneish_m_score': beneish_m_score,
+            'montier_c_score': c_score,
         }
         
         return ratios, info
