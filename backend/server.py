@@ -1254,7 +1254,7 @@ async def analyze_stock(request: AnalyzeRequest):
         ratios, stock_info = calculate_ratios(stock)
         
         # Evaluate ratios
-        categories, favorable_pct, recommendation, risk_level, total_metrics, favorable_count, summary_flags = evaluate_ratios(ratios, stock_info)
+        categories, favorable_pct, recommendation, risk_level, total_metrics, favorable_count, summary_flags, valuation_summary = evaluate_ratios(ratios, stock_info)
         
         # Prepare metadata
         metadata = {
