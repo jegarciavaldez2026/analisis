@@ -1060,6 +1060,20 @@ def evaluate_ratios(ratios, info):
     # Category 7: Risk & Capital Structure
     risk_metrics = []
     
+    # Sharpe Ratio
+    sharpe_val = ratios.get('sharpe_ratio', 0)
+    sharpe_passed = sharpe_val > 1.0
+    risk_metrics.append(RatioMetric(
+        name="Sharpe Ratio",
+        value=sharpe_val,
+        threshold="> 1.0 (buen retorno ajustado por riesgo)",
+        passed=sharpe_passed,
+        interpretation="Retorno por unidad de riesgo (>1 bueno, >2 excelente)",
+        display_value=f"{sharpe_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if sharpe_passed else 0
+    
     # Beta
     beta_val = ratios.get('beta', 0)
     beta_passed = 0.8 <= beta_val <= 1.2
