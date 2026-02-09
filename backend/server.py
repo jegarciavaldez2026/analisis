@@ -653,6 +653,11 @@ def calculate_ratios(ticker_data):
             'pct_below_52w_high': pct_below_52w_high,
             'pct_above_52w_low': pct_above_52w_low,
             
+            # Risk-Adjusted Returns
+            'sharpe_ratio': sharpe_ratio,
+            'annualized_return': annualized_return * 100,  # Convert to percentage
+            'annualized_volatility': annualized_volatility * 100,
+            
             # Scores
             'altman_z_score': altman_z,
             'piotroski_f_score': f_score,
