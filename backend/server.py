@@ -398,6 +398,74 @@ def calculate_ratios(ticker_data):
         except:
             fulmer_h = 0
         
+        # DCF Valuation (Discounted Cash Flow)
+        # Simplified DCF model
+        try:
+            # Estimate growth rate (conservative: use lower of industry avg or historical)
+            growth_rate = 0.05  # Conservative 5% growth assumption
+            
+            # Terminal growth rate (long-term GDP growth)
+            terminal_growth = 0.025  # 2.5%
+            
+            # Discount rate = WACC
+            discount_rate = wacc / 100 if wacc > 0 else 0.10
+            
+            # Project 5 years of FCF
+            projected_fcf = []
+            current_fcf = free_cash_flow if free_cash_flow > 0 else operating_cf * 0.7  # Use 70% of OCF if FCF negative
+            
+            for year in range(1, 6):
+                projected_fcf.append(current_fcf * ((1 + growth_rate) ** year))
+            
+            # Calculate present value of projected FCF
+            pv_fcf = sum([fcf / ((1 + discount_rate) ** (i+1)) for i, fcf in enumerate(projected_fcf)])
+            
+            # Terminal value
+            terminal_fcf = projected_fcf[-1] * (1 + terminal_growth)
+            terminal_value = terminal_fcf / (discount_rate - terminal_growth) if discount_rate > terminal_growth else 0
+            pv_terminal_value = terminal_value / ((1 + discount_rate) ** 5)
+            
+            # Enterprise value from DCF
+            enterprise_value_dcf = pv_fcf + pv_terminal_value
+            
+            # Equity value = EV - Net Debt
+            equity_value_dcf = enterprise_value_dcf - net_debt
+            
+            # Price per share
+            intrinsic_value_per_share = safe_divide(equity_value_dcf, shares_outstanding, 0) if shares_outstanding > 0 else 0
+            
+            # Margin of safety
+            if current_price > 0 and intrinsic_value_per_share > 0:
+                margin_of_safety = ((intrinsic_value_per_share - current_price) / intrinsic_value_per_share) * 100
+            else:
+                margin_of_safety = 0
+            
+            # Upside potential
+            upside_potential = ((intrinsic_value_per_share - current_price) / current_price) * 100 if current_price > 0 else 0
+            
+        except Exception as e:
+            logging.warning(f"DCF calculation error: {str(e)}")
+            intrinsic_value_per_share = 0
+            margin_of_safety = 0
+            upside_potential = 0
+            enterprise_value_dcf = 0
+        
+        # Value Creation Analysis (ROIC vs WACC)
+        creates_value = roic > wacc
+        value_creation_spread = roic - wacc
+        
+        # Categorize value creation
+        if value_creation_spread > 10:
+            value_creation_category = "Excelente"
+        elif value_creation_spread > 5:
+            value_creation_category = "Buena"
+        elif value_creation_spread > 0:
+            value_creation_category = "Moderada"
+        elif value_creation_spread > -5:
+            value_creation_category = "Débil"
+        else:
+            value_creation_category = "Destruye Valor"
+        
         # Altman Z-Score (simplified for public companies)
         x1 = safe_divide(working_capital, total_assets, 0)
         x2 = safe_divide(retained_earnings, total_assets, 0)
