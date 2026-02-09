@@ -1621,6 +1621,78 @@ async def get_chart_data(ticker: str, period: str = "1y"):
         logging.error(f"Error fetching chart data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener datos del gráfico: {str(e)}")
 
+class VolumeDataPoint(BaseModel):
+    date: str
+    volume: float
+    sma_volume: float
+
+class VolumeChartResponse(BaseModel):
+    ticker: str
+    volume_data: List[VolumeDataPoint]
+    avg_volume: float
+    period: str
+
+@api_router.get("/volume/{ticker}", response_model=VolumeChartResponse)
+async def get_volume_data(ticker: str, period: str = "1y", sma_period: int = 20):
+    """Get volume data with SMA (Simple Moving Average)"""
+    try:
+        ticker = ticker.upper().strip()
+        
+        # Define period mapping
+        period_map = {
+            "1w": "7d",
+            "1m": "1mo",
+            "3m": "3mo",
+            "6m": "6mo",
+            "1y": "1y",
+            "5y": "5y"
+        }
+        
+        yf_period = period_map.get(period, "1y")
+        
+        # Fetch stock data
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=yf_period)
+        
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos de volumen para {ticker}")
+        
+        # Calculate Simple Moving Average for volume
+        hist['SMA_Volume'] = hist['Volume'].rolling(window=sma_period).mean()
+        
+        # Calculate average volume
+        avg_volume = float(hist['Volume'].mean())
+        
+        # Prepare volume data
+        volume_data = []
+        
+        # Sample data if too many points (max 100)
+        if len(hist) > 100:
+            step = len(hist) // 100
+            hist_sampled = hist.iloc[::step]
+        else:
+            hist_sampled = hist
+        
+        for date, row in hist_sampled.iterrows():
+            volume_data.append(VolumeDataPoint(
+                date=date.strftime('%Y-%m-%d'),
+                volume=float(row['Volume']),
+                sma_volume=float(row['SMA_Volume']) if pd.notna(row['SMA_Volume']) else float(row['Volume'])
+            ))
+        
+        return VolumeChartResponse(
+            ticker=ticker,
+            volume_data=volume_data,
+            avg_volume=avg_volume,
+            period=period
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching volume data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos de volumen: {str(e)}")
+
 # Include the router in the main app
 app.include_router(api_router)
 
