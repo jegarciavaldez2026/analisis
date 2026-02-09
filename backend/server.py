@@ -1298,15 +1298,34 @@ def evaluate_ratios(ratios, info):
     
     # Valuation summary
     valuation_summary = {
-        "intrinsic_value": ratios.get('intrinsic_value', 0),
+        # DCF Method
+        "intrinsic_value_dcf": ratios.get('intrinsic_value', 0),
+        "margin_of_safety_dcf": ratios.get('margin_of_safety', 0),
+        "upside_potential_dcf": ratios.get('upside_potential', 0),
+        
+        # Benjamin Graham Method
+        "intrinsic_value_graham": ratios.get('intrinsic_value_graham', 0),
+        "intrinsic_value_graham_simple": ratios.get('intrinsic_value_graham_simple', 0),
+        "margin_of_safety_graham": ratios.get('margin_of_safety_graham', 0),
+        "graham_recommendation": ratios.get('graham_recommendation', 'N/A'),
+        
+        # Target Prices
+        "target_price_conservative": ratios.get('target_price_conservative', 0),
+        "target_price_moderate": ratios.get('target_price_moderate', 0),
+        "target_price_aggressive": ratios.get('target_price_aggressive', 0),
+        
+        # Current Price & Comparison
         "current_price": info.get('currentPrice', info.get('regularMarketPrice', 0)),
-        "margin_of_safety": ratios.get('margin_of_safety', 0),
-        "upside_potential": ratios.get('upside_potential', 0),
+        
+        # Value Creation
         "creates_value": ratios.get('creates_value', False),
         "value_creation_category": ratios.get('value_creation_category', 'N/A'),
         "roic": ratios.get('roic', 0),
         "wacc": ratios.get('wacc', 0),
         "spread": ratios.get('value_creation_spread', 0),
+        
+        # Growth assumption
+        "estimated_growth_rate": ratios.get('estimated_growth_rate', 5.0),
     }
     
     return categories, favorable_pct, recommendation, risk_level, total_metrics, favorable, summary_flags, valuation_summary
