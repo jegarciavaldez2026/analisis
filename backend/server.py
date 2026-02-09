@@ -57,6 +57,7 @@ class AnalysisResponse(BaseModel):
     ratios: List[RatioCategory]
     metadata: Dict[str, Any]
     summary_flags: Dict[str, Any]
+    valuation_summary: Dict[str, Any] = Field(default_factory=dict)
 
 class HistoryItem(BaseModel):
     id: str
