@@ -133,6 +133,128 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
           )}
         </View>
 
+        {/* Price Chart Section */}
+        <View style={styles.chartSection}>
+          <Text style={styles.sectionTitle}>Gráfico de Cotizaciones</Text>
+          
+          {/* Price Display */}
+          {chartData && (
+            <View style={styles.priceContainer}>
+              <Text style={styles.currentPrice}>
+                ${chartData.current_price.toFixed(2)}
+              </Text>
+              <View style={[
+                styles.priceChangeContainer,
+                { backgroundColor: chartData.price_change >= 0 ? '#34C75915' : '#FF3B3015' }
+              ]}>
+                <Ionicons 
+                  name={chartData.price_change >= 0 ? 'trending-up' : 'trending-down'} 
+                  size={16} 
+                  color={chartData.price_change >= 0 ? '#34C759' : '#FF3B30'} 
+                />
+                <Text style={[
+                  styles.priceChangeText,
+                  { color: chartData.price_change >= 0 ? '#34C759' : '#FF3B30' }
+                ]}>
+                  ${Math.abs(chartData.price_change).toFixed(2)} ({chartData.price_change_percent >= 0 ? '+' : ''}{chartData.price_change_percent.toFixed(2)}%)
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Period Selector */}
+          <View style={styles.periodSelector}>
+            {['1w', '1m', '3m', '6m', '1y', '5y'].map((period) => (
+              <TouchableOpacity
+                key={period}
+                style={[
+                  styles.periodButton,
+                  selectedPeriod === period && styles.periodButtonActive
+                ]}
+                onPress={() => setSelectedPeriod(period)}
+              >
+                <Text style={[
+                  styles.periodButtonText,
+                  selectedPeriod === period && styles.periodButtonTextActive
+                ]}>
+                  {period.toUpperCase()}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Chart */}
+          {loadingChart ? (
+            <View style={styles.chartLoadingContainer}>
+              <ActivityIndicator size="large" color="#007AFF" />
+              <Text style={styles.chartLoadingText}>Cargando gráfico...</Text>
+            </View>
+          ) : chartData && chartData.chart_data && chartData.chart_data.length > 0 ? (
+            <View style={styles.chartContainer}>
+              <LineChart
+                data={chartData.chart_data.map((point: any, index: number) => ({
+                  value: point.stock_value,
+                  label: index % 10 === 0 ? new Date(point.date).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }) : '',
+                }))}
+                data2={chartData.chart_data.map((point: any) => ({
+                  value: point.sp500_value,
+                }))}
+                height={220}
+                width={screenWidth - 60}
+                spacing={chartData.chart_data.length > 50 ? 2 : 5}
+                initialSpacing={10}
+                color1="#007AFF"
+                color2="#FF9500"
+                thickness1={2}
+                thickness2={2}
+                startFillColor1="#007AFF"
+                startFillColor2="#FF9500"
+                endFillColor1="#007AFF"
+                endFillColor2="#FF9500"
+                startOpacity={0.3}
+                endOpacity={0.1}
+                yAxisColor="#E0E0E0"
+                xAxisColor="#E0E0E0"
+                yAxisTextStyle={{ color: '#6E6E73', fontSize: 10 }}
+                xAxisLabelTextStyle={{ color: '#6E6E73', fontSize: 10 }}
+                hideDataPoints
+                curved
+                areaChart
+                hideRules
+                yAxisOffset={100}
+                noOfSections={4}
+                maxValue={Math.max(
+                  ...chartData.chart_data.map((p: any) => Math.max(p.stock_value, p.sp500_value))
+                ) * 1.1}
+                minValue={Math.min(
+                  ...chartData.chart_data.map((p: any) => Math.min(p.stock_value, p.sp500_value))
+                ) * 0.9}
+              />
+              
+              {/* Legend */}
+              <View style={styles.chartLegend}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#007AFF' }]} />
+                  <Text style={styles.legendText}>{data.ticker}</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#FF9500' }]} />
+                  <Text style={styles.legendText}>S&P 500</Text>
+                </View>
+              </View>
+              
+              <Text style={styles.chartNote}>
+                * Rendimiento normalizado (inicio = 100)
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.chartErrorContainer}>
+              <Ionicons name="alert-circle-outline" size={40} color="#8E8E93" />
+              <Text style={styles.chartErrorText}>No se pudo cargar el gráfico</Text>
+            </View>
+          )}
+        </View>
+
         {/* Recommendation Card */}
         <View
           style={[
