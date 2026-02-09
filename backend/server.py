@@ -253,6 +253,37 @@ def calculate_ratios(ticker_data):
         pct_below_52w_high = ((fifty_two_week_high - current_price) / fifty_two_week_high) * 100 if fifty_two_week_high > 0 else 0
         pct_above_52w_low = ((current_price - fifty_two_week_low) / fifty_two_week_low) * 100 if fifty_two_week_low > 0 else 0
         
+        # Sharpe Ratio calculation
+        # Get historical price data for 1 year
+        try:
+            history_1y = yf.Ticker(ticker_data.ticker).history(period="1y")
+            if not history_1y.empty and len(history_1y) > 20:
+                # Calculate daily returns
+                daily_returns = history_1y['Close'].pct_change().dropna()
+                
+                # Annualized return
+                mean_daily_return = daily_returns.mean()
+                annualized_return = (1 + mean_daily_return) ** 252 - 1  # 252 trading days
+                
+                # Annualized volatility (standard deviation)
+                daily_std = daily_returns.std()
+                annualized_volatility = daily_std * np.sqrt(252)
+                
+                # Risk-free rate (using 10-year treasury yield approximation)
+                risk_free_rate = 0.04  # 4% assumption
+                
+                # Sharpe Ratio = (Return - Risk Free Rate) / Volatility
+                sharpe_ratio = (annualized_return - risk_free_rate) / annualized_volatility if annualized_volatility > 0 else 0
+            else:
+                sharpe_ratio = 0
+                annualized_return = 0
+                annualized_volatility = 0
+        except Exception as e:
+            logging.warning(f"Sharpe ratio calculation error: {str(e)}")
+            sharpe_ratio = 0
+            annualized_return = 0
+            annualized_volatility = 0
+        
         # Beneish M-Score (simplified - only some variables)
         try:
             if income_prev and balance_sheet.shape[1] > 1:
