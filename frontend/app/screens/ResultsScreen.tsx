@@ -640,4 +640,108 @@ const styles = StyleSheet.create({
     color: '#6E6E73',
     fontStyle: 'italic',
   },
+  chartSection: {
+    margin: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  priceContainer: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  currentPrice: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+    marginBottom: 8,
+  },
+  priceChangeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 4,
+  },
+  priceChangeText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  periodSelector: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 16,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 12,
+    padding: 4,
+  },
+  periodButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  periodButtonActive: {
+    backgroundColor: '#007AFF',
+  },
+  periodButtonText: {
+    fontSize: 12,
+    color: '#6E6E73',
+    fontWeight: '500',
+  },
+  periodButtonTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  chartLoadingContainer: {
+    height: 220,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chartLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6E6E73',
+  },
+  chartContainer: {
+    marginTop: 8,
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 16,
+    gap: 24,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  legendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  legendText: {
+    fontSize: 13,
+    color: '#1D1D1F',
+    fontWeight: '500',
+  },
+  chartNote: {
+    fontSize: 11,
+    color: '#8E8E93',
+    textAlign: 'center',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  chartErrorContainer: {
+    height: 220,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chartErrorText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#8E8E93',
+  },
 });
