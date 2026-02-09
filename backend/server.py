@@ -161,10 +161,18 @@ def calculate_ratios(ticker_data):
         roe = safe_divide(net_income, total_equity, 0) * 100 if total_equity > 0 else 0
         roa = safe_divide(net_income, total_assets, 0) * 100
         
+        # ROCE (Return on Capital Employed)
+        capital_employed = total_assets - current_liabilities if current_liabilities else total_assets
+        roce = safe_divide(ebit, capital_employed, 0) * 100 if capital_employed > 0 else 0
+        
         # Calculate invested capital and ROIC
         invested_capital = (total_equity + total_debt) if total_equity and total_debt else 0
         nopat = ebit * 0.79  # Assuming 21% tax rate
         roic = safe_divide(nopat, invested_capital, 0) * 100 if invested_capital > 0 else 0
+        nopat_margin = safe_divide(nopat, total_revenue, 0) * 100 if total_revenue > 0 else 0
+        
+        # CROIC (Cash Return on Invested Capital)
+        croic = safe_divide(operating_cf, invested_capital, 0) * 100 if invested_capital > 0 else 0
         
         # Calculate liquidity ratios
         current_ratio = safe_divide(current_assets, current_liabilities, 0)
