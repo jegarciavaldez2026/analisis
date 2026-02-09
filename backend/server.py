@@ -1063,42 +1063,6 @@ def evaluate_ratios(ratios, info):
         metrics=cashflow_metrics
     ))
     
-    # Category 6: Financial Health Scores
-    scores_metrics = []
-    
-    # Altman Z-Score
-    z_val = ratios.get('altman_z_score', 0)
-    z_passed = z_val > 2.99
-    scores_metrics.append(RatioMetric(
-        name="Altman Z-Score",
-        value=z_val,
-        threshold="> 2.99 (zona segura)",
-        passed=z_passed,
-        interpretation="Probabilidad de quiebra (>2.99 = baja)",
-        display_value=f"{z_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if z_passed else 0
-    
-    # Piotroski F-Score
-    f_val = ratios.get('piotroski_f_score', 0)
-    f_passed = f_val >= 7
-    scores_metrics.append(RatioMetric(
-        name="Piotroski F-Score",
-        value=f_val,
-        threshold=">= 7",
-        passed=f_passed,
-        interpretation="Solidez financiera (0-9, 7+ es fuerte)",
-        display_value=f"{int(f_val)}"
-    ))
-    total_metrics += 1
-    favorable += 1 if f_passed else 0
-    
-    categories.append(RatioCategory(
-        category="🏥 Salud Financiera",
-        metrics=scores_metrics
-    ))
-    
     # Category 7: Risk & Capital Structure
     risk_metrics = []
     
