@@ -1282,7 +1282,8 @@ async def analyze_stock(request: AnalyzeRequest):
             unfavorable_metrics=total_metrics - favorable_count,
             ratios=categories,
             metadata=metadata,
-            summary_flags=summary_flags
+            summary_flags=summary_flags,
+            valuation_summary=valuation_summary
         )
         
         # Save to database
