@@ -1271,6 +1271,62 @@ def evaluate_ratios(ratios, info):
         metrics=price_metrics
     ))
     
+    # Category 11: Valoración según Benjamin Graham
+    graham_metrics = []
+    
+    # Valor Intrínseco Graham
+    vi_graham = ratios.get('intrinsic_value_graham', 0)
+    current_price_val = info.get('currentPrice', info.get('regularMarketPrice', 0))
+    graham_metrics.append(RatioMetric(
+        name="Valor Intrínseco (Graham)",
+        value=vi_graham,
+        threshold="Referencia",
+        passed=True,
+        interpretation="Valor justo calculado por fórmula de Graham",
+        display_value=f"${vi_graham:.2f}"
+    ))
+    
+    # Margen de Seguridad Graham
+    mos_graham = ratios.get('margin_of_safety_graham', 0)
+    mos_graham_passed = mos_graham >= 20
+    graham_metrics.append(RatioMetric(
+        name="Margen de Seguridad (Graham)",
+        value=mos_graham,
+        threshold=">= 20% (subvalorada)",
+        passed=mos_graham_passed,
+        interpretation="Descuento del precio actual vs valor intrínseco",
+        display_value=f"{mos_graham:.1f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if mos_graham_passed else 0
+    
+    # Target Price Conservative
+    target_cons = ratios.get('target_price_conservative', 0)
+    graham_metrics.append(RatioMetric(
+        name="Precio Objetivo Conservador",
+        value=target_cons,
+        threshold="75% del VI (25% margen)",
+        passed=current_price_val <= target_cons if target_cons > 0 else False,
+        interpretation="Precio de compra con margen de seguridad",
+        display_value=f"${target_cons:.2f}"
+    ))
+    
+    # Target Price Moderate
+    target_mod = ratios.get('target_price_moderate', 0)
+    graham_metrics.append(RatioMetric(
+        name="Precio Objetivo Moderado",
+        value=target_mod,
+        threshold="100% del VI (valor justo)",
+        passed=current_price_val <= target_mod if target_mod > 0 else False,
+        interpretation="Valor intrínseco sin descuento",
+        display_value=f"${target_mod:.2f}"
+    ))
+    
+    categories.append(RatioCategory(
+        category="💰 Valoración Graham",
+        metrics=graham_metrics
+    ))
+    
     # Calculate recommendation
     favorable_pct = (favorable / total_metrics) * 100
     
