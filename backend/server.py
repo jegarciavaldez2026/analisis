@@ -761,6 +761,256 @@ def evaluate_ratios(ratios, info):
         metrics=scores_metrics
     ))
     
+    # Category 7: Risk & Capital Structure
+    risk_metrics = []
+    
+    # Beta
+    beta_val = ratios.get('beta', 0)
+    beta_passed = 0.8 <= beta_val <= 1.2
+    risk_metrics.append(RatioMetric(
+        name="Beta",
+        value=beta_val,
+        threshold="0.8 - 1.2 (moderado)",
+        passed=beta_passed,
+        interpretation="Volatilidad del activo vs mercado",
+        display_value=f"{beta_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if beta_passed else 0
+    
+    # WACC
+    wacc_val = ratios.get('wacc', 0)
+    wacc_passed = wacc_val < 12
+    risk_metrics.append(RatioMetric(
+        name="WACC (Costo Promedio Ponderado)",
+        value=wacc_val,
+        threshold="< 12%",
+        passed=wacc_passed,
+        interpretation="Costo de capital de la empresa",
+        display_value=f"{wacc_val:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if wacc_passed else 0
+    
+    # ROIC vs WACC Spread
+    spread_val = ratios.get('roic_wacc_spread', 0)
+    spread_passed = spread_val > 0
+    risk_metrics.append(RatioMetric(
+        name="ROIC vs WACC Spread",
+        value=spread_val,
+        threshold="> 0% (creación de valor)",
+        passed=spread_passed,
+        interpretation="Diferencia entre retorno y costo de capital",
+        display_value=f"{spread_val:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if spread_passed else 0
+    
+    # Interest Coverage
+    ic_val = ratios.get('interest_coverage', 0)
+    ic_passed = ic_val > 2.5
+    risk_metrics.append(RatioMetric(
+        name="Cobertura de Intereses",
+        value=ic_val,
+        threshold="> 2.5",
+        passed=ic_passed,
+        interpretation="Capacidad para cubrir pagos de intereses",
+        display_value=f"{ic_val:.2f}x"
+    ))
+    total_metrics += 1
+    favorable += 1 if ic_passed else 0
+    
+    categories.append(RatioCategory(
+        category="⚠️ Riesgo y Capital",
+        metrics=risk_metrics
+    ))
+    
+    # Category 8: Advanced Metrics
+    advanced_metrics = []
+    
+    # EV/CI
+    ev_ci_val = ratios.get('ev_ci')
+    ev_ci_passed = ev_ci_val is not None and ev_ci_val > 1
+    advanced_metrics.append(RatioMetric(
+        name="EV/CI (Valor Empresa/Capital Invertido)",
+        value=ev_ci_val,
+        threshold="> 1",
+        passed=ev_ci_passed,
+        interpretation="Valoración vs capital invertido",
+        display_value=f"{ev_ci_val:.2f}" if ev_ci_val else "N/A"
+    ))
+    total_metrics += 1
+    favorable += 1 if ev_ci_passed else 0
+    
+    # FCF/EBITDA
+    fcf_ebitda_val = ratios.get('fcf_to_ebitda', 0)
+    fcf_ebitda_passed = fcf_ebitda_val > 50
+    advanced_metrics.append(RatioMetric(
+        name="FCF/EBITDA",
+        value=fcf_ebitda_val,
+        threshold="> 50%",
+        passed=fcf_ebitda_passed,
+        interpretation="Conversión de EBITDA a flujo de caja",
+        display_value=f"{fcf_ebitda_val:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if fcf_ebitda_passed else 0
+    
+    # Capex/DA
+    capex_da_val = ratios.get('capex_to_da', 0)
+    capex_da_passed = capex_da_val > 1
+    advanced_metrics.append(RatioMetric(
+        name="Capex/Depreciación",
+        value=capex_da_val,
+        threshold="> 1",
+        passed=capex_da_passed,
+        interpretation="Inversión vs depreciación de activos",
+        display_value=f"{capex_da_val:.2f}x"
+    ))
+    total_metrics += 1
+    favorable += 1 if capex_da_passed else 0
+    
+    # Goodwill to Assets
+    goodwill_val = ratios.get('goodwill_to_assets', 0)
+    goodwill_passed = goodwill_val < 20
+    advanced_metrics.append(RatioMetric(
+        name="Goodwill/Activos",
+        value=goodwill_val,
+        threshold="< 20%",
+        passed=goodwill_passed,
+        interpretation="Proporción de activos intangibles",
+        display_value=f"{goodwill_val:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if goodwill_passed else 0
+    
+    # Cash Flow to Debt
+    cf_debt_val = ratios.get('cash_flow_to_debt', 0)
+    cf_debt_passed = cf_debt_val > 20
+    advanced_metrics.append(RatioMetric(
+        name="Flujo de Caja/Deuda",
+        value=cf_debt_val,
+        threshold="> 20%",
+        passed=cf_debt_passed,
+        interpretation="Capacidad de pago de deuda con flujo operativo",
+        display_value=f"{cf_debt_val:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if cf_debt_passed else 0
+    
+    # KTO
+    kto_val = ratios.get('kto', 0)
+    kto_passed = kto_val < 0.15
+    advanced_metrics.append(RatioMetric(
+        name="KTO (Capital Trabajo Operativo/Ventas)",
+        value=kto_val,
+        threshold="< 15%",
+        passed=kto_passed,
+        interpretation="Eficiencia en gestión de capital de trabajo",
+        display_value=f"{kto_val*100:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if kto_passed else 0
+    
+    categories.append(RatioCategory(
+        category="🔬 Métricas Avanzadas",
+        metrics=advanced_metrics
+    ))
+    
+    # Category 9: Quality Scores
+    quality_metrics = []
+    
+    # Beneish M-Score
+    beneish_val = ratios.get('beneish_m_score', 0)
+    beneish_passed = beneish_val < -2.22
+    quality_metrics.append(RatioMetric(
+        name="Beneish M-Score",
+        value=beneish_val,
+        threshold="< -2.22 (sin manipulación)",
+        passed=beneish_passed,
+        interpretation="Detección de manipulación contable",
+        display_value=f"{beneish_val:.2f}"
+    ))
+    total_metrics += 1
+    favorable += 1 if beneish_passed else 0
+    
+    # Montier C-Score
+    montier_val = ratios.get('montier_c_score', 0)
+    montier_passed = montier_val <= 2
+    quality_metrics.append(RatioMetric(
+        name="Montier C-Score",
+        value=montier_val,
+        threshold="<= 2",
+        passed=montier_passed,
+        interpretation="Bajo riesgo de manipulación (0-3 escala)",
+        display_value=f"{int(montier_val)}"
+    ))
+    total_metrics += 1
+    favorable += 1 if montier_passed else 0
+    
+    categories.append(RatioCategory(
+        category="📋 Calidad Contable",
+        metrics=quality_metrics
+    ))
+    
+    # Category 10: Price Performance
+    price_metrics = []
+    
+    # 52-Week High
+    high_52w = ratios.get('fifty_two_week_high', 0)
+    price_metrics.append(RatioMetric(
+        name="Máximo 52 Semanas",
+        value=high_52w,
+        threshold="Referencia",
+        passed=True,
+        interpretation="Precio más alto en el último año",
+        display_value=f"${high_52w:.2f}"
+    ))
+    
+    # 52-Week Low
+    low_52w = ratios.get('fifty_two_week_low', 0)
+    price_metrics.append(RatioMetric(
+        name="Mínimo 52 Semanas",
+        value=low_52w,
+        threshold="Referencia",
+        passed=True,
+        interpretation="Precio más bajo en el último año",
+        display_value=f"${low_52w:.2f}"
+    ))
+    
+    # % Below 52W High
+    below_high = ratios.get('pct_below_52w_high', 0)
+    below_high_passed = below_high < 20
+    price_metrics.append(RatioMetric(
+        name="% Bajo Máximo 52S",
+        value=below_high,
+        threshold="< 20% (cerca del máximo)",
+        passed=below_high_passed,
+        interpretation="Distancia del precio máximo anual",
+        display_value=f"-{below_high:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if below_high_passed else 0
+    
+    # % Above 52W Low
+    above_low = ratios.get('pct_above_52w_low', 0)
+    above_low_passed = above_low > 20
+    price_metrics.append(RatioMetric(
+        name="% Sobre Mínimo 52S",
+        value=above_low,
+        threshold="> 20% (lejos del mínimo)",
+        passed=above_low_passed,
+        interpretation="Distancia del precio mínimo anual",
+        display_value=f"+{above_low:.2f}%"
+    ))
+    total_metrics += 1
+    favorable += 1 if above_low_passed else 0
+    
+    categories.append(RatioCategory(
+        category="📊 Rendimiento de Precio",
+        metrics=price_metrics
+    ))
+    
     # Calculate recommendation
     favorable_pct = (favorable / total_metrics) * 100
     
