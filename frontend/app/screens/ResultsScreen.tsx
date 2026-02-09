@@ -50,6 +50,25 @@ interface ResultsScreenProps {
 
 export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([data.ratios[0]?.category]));
+  const [chartData, setChartData] = useState<any>(null);
+  const [loadingChart, setLoadingChart] = useState(true);
+  const [selectedPeriod, setSelectedPeriod] = useState('1y');
+
+  useEffect(() => {
+    fetchChartData(selectedPeriod);
+  }, [selectedPeriod]);
+
+  const fetchChartData = async (period: string) => {
+    setLoadingChart(true);
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/chart/${data.ticker}?period=${period}`);
+      setChartData(response.data);
+    } catch (error) {
+      console.error('Error fetching chart data:', error);
+    } finally {
+      setLoadingChart(false);
+    }
+  };
 
   const toggleCategory = (category: string) => {
     const newExpanded = new Set(expandedCategories);
