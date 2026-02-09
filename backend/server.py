@@ -637,6 +637,16 @@ def calculate_ratios(ticker_data):
             'upside_potential': upside_potential,
             'enterprise_value_dcf': enterprise_value_dcf,
             
+            # Benjamin Graham Valuation
+            'intrinsic_value_graham': intrinsic_value_graham,
+            'intrinsic_value_graham_simple': intrinsic_value_graham_simple,
+            'margin_of_safety_graham': margin_of_safety_graham,
+            'target_price_conservative': target_price_conservative,
+            'target_price_moderate': target_price_moderate,
+            'target_price_aggressive': target_price_aggressive,
+            'graham_recommendation': graham_recommendation,
+            'estimated_growth_rate': estimated_growth,
+            
             # Value Creation
             'creates_value': creates_value,
             'value_creation_spread': value_creation_spread,
