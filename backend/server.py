@@ -399,7 +399,72 @@ def calculate_ratios(ticker_data):
         except:
             fulmer_h = 0
         
-        # DCF Valuation (Discounted Cash Flow)
+        # Benjamin Graham Valuation
+        # Graham's formula: Intrinsic Value = EPS × (8.5 + 2g)
+        # Revised: IV = (EPS × (8.5 + 2g) × 4.4) / Y
+        # Where Y = current yield of AAA corporate bonds (we'll use 10-year treasury as proxy)
+        
+        try:
+            # Get EPS
+            graham_eps = eps if eps > 0 else safe_divide(net_income, shares_outstanding, 0) if shares_outstanding > 0 else 0
+            
+            # Estimate growth rate (conservative approach)
+            # Use historical EPS growth or default to conservative 5%
+            estimated_growth = 5.0  # Conservative 5% annual growth
+            
+            # AAA corporate bond yield (approximation using 10-year treasury + spread)
+            # Typical spread is 1-2%, we'll use 5% as reasonable assumption for AAA bonds
+            aaa_yield = 5.0
+            
+            # Graham's original formula (simple)
+            intrinsic_value_graham_simple = graham_eps * (8.5 + (2 * estimated_growth))
+            
+            # Graham's revised formula (with bond yield adjustment)
+            intrinsic_value_graham = (graham_eps * (8.5 + (2 * estimated_growth)) * 4.4) / aaa_yield if aaa_yield > 0 else intrinsic_value_graham_simple
+            
+            # Ensure reasonable values
+            if intrinsic_value_graham < 0 or intrinsic_value_graham > current_price * 10:
+                # If unreasonable, use the simpler formula
+                intrinsic_value_graham = intrinsic_value_graham_simple
+            
+            # Benjamin Graham's Margin of Safety
+            # Formula: (Intrinsic Value - Current Price) / Intrinsic Value × 100
+            if intrinsic_value_graham > 0 and current_price > 0:
+                margin_of_safety_graham = ((intrinsic_value_graham - current_price) / intrinsic_value_graham) * 100
+            else:
+                margin_of_safety_graham = 0
+            
+            # Target Price calculations
+            # Conservative: IV with 25% margin of safety (buy at 75% of IV)
+            target_price_conservative = intrinsic_value_graham * 0.75
+            
+            # Moderate: Full intrinsic value
+            target_price_moderate = intrinsic_value_graham
+            
+            # Aggressive: IV + 20% upside potential
+            target_price_aggressive = intrinsic_value_graham * 1.20
+            
+            # Current recommended action based on Graham's margin
+            if margin_of_safety_graham >= 25:
+                graham_recommendation = "Comprar (Fuerte)"
+            elif margin_of_safety_graham >= 15:
+                graham_recommendation = "Comprar (Moderado)"
+            elif margin_of_safety_graham >= 0:
+                graham_recommendation = "Mantener"
+            elif margin_of_safety_graham >= -15:
+                graham_recommendation = "Vender (Leve sobrevaloración)"
+            else:
+                graham_recommendation = "Vender (Sobrevalorada)"
+                
+        except Exception as e:
+            logging.warning(f"Graham valuation error: {str(e)}")
+            intrinsic_value_graham = 0
+            intrinsic_value_graham_simple = 0
+            margin_of_safety_graham = 0
+            target_price_conservative = 0
+            target_price_moderate = 0
+            target_price_aggressive = 0
+            graham_recommendation = "N/A"
         # Simplified DCF model
         try:
             # Estimate growth rate (conservative: use lower of industry avg or historical)
