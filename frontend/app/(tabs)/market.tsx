@@ -44,6 +44,18 @@ interface CurrencyPair {
   updated: string;
 }
 
+interface CryptoIndicator {
+  name: string;
+  symbol: string;
+  ticker: string;
+  current_value: number;
+  change: number;
+  change_percent: number;
+  market_cap: number | null;
+  volume_24h: number | null;
+  updated: string;
+}
+
 interface MarketHours {
   market_name: string;
   location: string;
@@ -58,9 +70,13 @@ interface MarketData {
   vix: MarketIndicator;
   treasury_10y: MarketIndicator;
   sp500: MarketIndicator;
+  ibex35: MarketIndicator | null;
   gold: CommodityIndicator;
   oil: CommodityIndicator;
   eur_usd: CurrencyPair;
+  bitcoin: CryptoIndicator | null;
+  ethereum: CryptoIndicator | null;
+  solana: CryptoIndicator | null;
   market_hours: MarketHours[];
   fear_greed_level: string;
   market_sentiment: string;
@@ -361,6 +377,149 @@ export default function MarketScreen() {
         <Text style={styles.indicatorDescription}>{data.sp500.description}</Text>
         <Text style={styles.updateTime}>Actualizado: {data.sp500.updated}</Text>
       </View>
+
+      {/* IBEX 35 Card */}
+      {data.ibex35 && (
+        <View style={[styles.indicatorCard, { borderLeftColor: '#FF6B00' }]}>
+          <View style={styles.indicatorHeader}>
+            <View>
+              <Text style={styles.indicatorName}>🇪🇸 {data.ibex35.name}</Text>
+              <Text style={styles.tickerLabel}>{data.ibex35.ticker}</Text>
+            </View>
+            <View style={[
+              styles.changeContainer,
+              { backgroundColor: data.ibex35.change >= 0 ? '#34C75915' : '#FF3B3015' }
+            ]}>
+              <Ionicons 
+                name={data.ibex35.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={18} 
+                color={data.ibex35.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.changeText,
+                { color: data.ibex35.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.ibex35.change >= 0 ? '+' : ''}{data.ibex35.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.valueRow}>
+            <Text style={styles.currentValue}>{data.ibex35.current_value.toFixed(2)}</Text>
+            <Text style={[
+              styles.changeAmount,
+              { color: data.ibex35.change >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {data.ibex35.change >= 0 ? '+' : ''}{data.ibex35.change.toFixed(2)} pts
+            </Text>
+          </View>
+          
+          <Text style={styles.indicatorDescription}>{data.ibex35.description}</Text>
+          <Text style={styles.updateTime}>Actualizado: {data.ibex35.updated}</Text>
+        </View>
+      )}
+
+      {/* Crypto Section */}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionHeaderEmoji}>₿</Text>
+        <Text style={styles.sectionHeaderTitle}>Criptomonedas</Text>
+      </View>
+      
+      <ScrollView 
+        horizontal 
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.cryptoScroll}
+      >
+        {/* Bitcoin */}
+        {data.bitcoin && (
+          <View style={[styles.cryptoCard, { borderColor: '#F7931A' }]}>
+            <View style={styles.cryptoHeader}>
+              <Text style={styles.cryptoEmoji}>₿</Text>
+              <View>
+                <Text style={styles.cryptoName}>{data.bitcoin.name}</Text>
+                <Text style={styles.cryptoSymbol}>{data.bitcoin.symbol}</Text>
+              </View>
+            </View>
+            <Text style={styles.cryptoPrice}>${data.bitcoin.current_value.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+            <View style={[
+              styles.cryptoChange,
+              { backgroundColor: data.bitcoin.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.bitcoin.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.bitcoin.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.cryptoChangeText,
+                { color: data.bitcoin.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.bitcoin.change >= 0 ? '+' : ''}{data.bitcoin.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+        
+        {/* Ethereum */}
+        {data.ethereum && (
+          <View style={[styles.cryptoCard, { borderColor: '#627EEA' }]}>
+            <View style={styles.cryptoHeader}>
+              <Text style={styles.cryptoEmoji}>Ξ</Text>
+              <View>
+                <Text style={styles.cryptoName}>{data.ethereum.name}</Text>
+                <Text style={styles.cryptoSymbol}>{data.ethereum.symbol}</Text>
+              </View>
+            </View>
+            <Text style={styles.cryptoPrice}>${data.ethereum.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
+            <View style={[
+              styles.cryptoChange,
+              { backgroundColor: data.ethereum.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.ethereum.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.ethereum.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.cryptoChangeText,
+                { color: data.ethereum.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.ethereum.change >= 0 ? '+' : ''}{data.ethereum.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+        
+        {/* Solana */}
+        {data.solana && (
+          <View style={[styles.cryptoCard, { borderColor: '#00D18C' }]}>
+            <View style={styles.cryptoHeader}>
+              <Text style={styles.cryptoEmoji}>◎</Text>
+              <View>
+                <Text style={styles.cryptoName}>{data.solana.name}</Text>
+                <Text style={styles.cryptoSymbol}>{data.solana.symbol}</Text>
+              </View>
+            </View>
+            <Text style={styles.cryptoPrice}>${data.solana.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
+            <View style={[
+              styles.cryptoChange,
+              { backgroundColor: data.solana.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.solana.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.solana.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.cryptoChangeText,
+                { color: data.solana.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.solana.change >= 0 ? '+' : ''}{data.solana.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+      </ScrollView>
 
       {/* Commodities Section */}
       <View style={styles.sectionHeader}>
@@ -1130,5 +1289,58 @@ const styles = StyleSheet.create({
   marketTimezone: {
     fontSize: 10,
     color: '#8E8E93',
+  },
+  // Crypto Styles
+  sectionHeaderEmoji: {
+    fontSize: 22,
+  },
+  cryptoScroll: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  cryptoCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    width: 150,
+    borderWidth: 2,
+    borderLeftWidth: 4,
+    alignItems: 'center',
+  },
+  cryptoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  cryptoEmoji: {
+    fontSize: 28,
+  },
+  cryptoName: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+  },
+  cryptoSymbol: {
+    fontSize: 11,
+    color: '#8E8E93',
+  },
+  cryptoPrice: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+    marginBottom: 8,
+  },
+  cryptoChange: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 4,
+  },
+  cryptoChangeText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

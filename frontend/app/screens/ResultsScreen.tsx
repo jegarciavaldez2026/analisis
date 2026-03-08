@@ -34,6 +34,37 @@ interface RatioCategory {
   metrics: RatioMetric[];
 }
 
+interface InstitutionalHolder {
+  holder_name: string;
+  shares: number;
+  percentage: number;
+  value: number;
+}
+
+interface AnalystRecommendation {
+  period: string;
+  strong_buy: number;
+  buy: number;
+  hold: number;
+  sell: number;
+  strong_sell: number;
+}
+
+interface StockProfile {
+  sector: string;
+  industry: string;
+  full_time_employees: number | null;
+  business_summary: string;
+  website: string | null;
+  headquarters: string | null;
+}
+
+interface HoldersBreakdown {
+  insider_percent: number;
+  institution_percent: number;
+  public_percent: number;
+}
+
 interface AnalysisData {
   ticker: string;
   company_name: string;
@@ -46,6 +77,10 @@ interface AnalysisData {
   ratios: RatioCategory[];
   metadata: any;
   summary_flags: any;
+  company_profile?: StockProfile;
+  analyst_recommendations?: AnalystRecommendation;
+  holders_breakdown?: HoldersBreakdown;
+  top_institutional_holders?: InstitutionalHolder[];
 }
 
 interface ResultsScreenProps {
@@ -262,6 +297,184 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
             </View>
           )}
         </View>
+
+        {/* Key Financial Metrics */}
+        {data.metadata && (
+          <View style={styles.keyMetricsSection}>
+            <Text style={styles.sectionTitle}>📊 Métricas Clave</Text>
+            <View style={styles.keyMetricsGrid}>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>Market Cap</Text>
+                <Text style={styles.keyMetricValue}>
+                  ${data.metadata.market_cap ? (data.metadata.market_cap / 1e9).toFixed(1) + 'B' : 'N/A'}
+                </Text>
+              </View>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>P/E Ratio</Text>
+                <Text style={styles.keyMetricValue}>
+                  {data.metadata.pe_ratio ? data.metadata.pe_ratio.toFixed(2) : 'N/A'}
+                </Text>
+              </View>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>EPS</Text>
+                <Text style={styles.keyMetricValue}>
+                  ${data.metadata.eps ? data.metadata.eps.toFixed(2) : 'N/A'}
+                </Text>
+              </View>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>Dividend</Text>
+                <Text style={styles.keyMetricValue}>
+                  ${data.metadata.dividend_rate ? data.metadata.dividend_rate.toFixed(2) : '0.00'}
+                </Text>
+              </View>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>Yield</Text>
+                <Text style={styles.keyMetricValue}>
+                  {data.metadata.dividend_yield ? data.metadata.dividend_yield.toFixed(2) + '%' : '0%'}
+                </Text>
+              </View>
+              <View style={styles.keyMetricItem}>
+                <Text style={styles.keyMetricLabel}>Beta</Text>
+                <Text style={styles.keyMetricValue}>
+                  {data.metadata.beta ? data.metadata.beta.toFixed(2) : 'N/A'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Company Profile */}
+        {data.company_profile && (
+          <View style={styles.profileSection}>
+            <Text style={styles.sectionTitle}>🏢 Perfil de la Empresa</Text>
+            <View style={styles.profileCard}>
+              <View style={styles.profileInfoRow}>
+                <Ionicons name="business" size={16} color="#007AFF" />
+                <Text style={styles.profileInfoLabel}>Sede:</Text>
+                <Text style={styles.profileInfoValue}>{data.company_profile.headquarters || 'N/A'}</Text>
+              </View>
+              <View style={styles.profileInfoRow}>
+                <Ionicons name="people" size={16} color="#007AFF" />
+                <Text style={styles.profileInfoLabel}>Empleados:</Text>
+                <Text style={styles.profileInfoValue}>
+                  {data.company_profile.full_time_employees?.toLocaleString() || 'N/A'}
+                </Text>
+              </View>
+              {data.company_profile.website && (
+                <TouchableOpacity 
+                  style={styles.profileInfoRow}
+                  onPress={() => Linking.openURL(data.company_profile!.website!)}
+                >
+                  <Ionicons name="globe" size={16} color="#007AFF" />
+                  <Text style={styles.profileInfoLabel}>Web:</Text>
+                  <Text style={[styles.profileInfoValue, { color: '#007AFF' }]}>
+                    {data.company_profile.website.replace('https://', '').replace('http://', '')}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.profileSummary}>{data.company_profile.business_summary}</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Analyst Recommendations */}
+        {data.analyst_recommendations && (
+          <View style={styles.analystsSection}>
+            <Text style={styles.sectionTitle}>👨‍💼 Opinión de Analistas</Text>
+            <View style={styles.analystsCard}>
+              <View style={styles.analystsRow}>
+                <View style={[styles.analystBox, { backgroundColor: '#34C75920' }]}>
+                  <Text style={[styles.analystCount, { color: '#34C759' }]}>
+                    {data.analyst_recommendations.strong_buy}
+                  </Text>
+                  <Text style={styles.analystLabel}>Compra Fuerte</Text>
+                </View>
+                <View style={[styles.analystBox, { backgroundColor: '#32D74B20' }]}>
+                  <Text style={[styles.analystCount, { color: '#32D74B' }]}>
+                    {data.analyst_recommendations.buy}
+                  </Text>
+                  <Text style={styles.analystLabel}>Comprar</Text>
+                </View>
+                <View style={[styles.analystBox, { backgroundColor: '#FF950020' }]}>
+                  <Text style={[styles.analystCount, { color: '#FF9500' }]}>
+                    {data.analyst_recommendations.hold}
+                  </Text>
+                  <Text style={styles.analystLabel}>Mantener</Text>
+                </View>
+                <View style={[styles.analystBox, { backgroundColor: '#FF6B3520' }]}>
+                  <Text style={[styles.analystCount, { color: '#FF6B35' }]}>
+                    {data.analyst_recommendations.sell}
+                  </Text>
+                  <Text style={styles.analystLabel}>Vender</Text>
+                </View>
+                <View style={[styles.analystBox, { backgroundColor: '#FF3B3020' }]}>
+                  <Text style={[styles.analystCount, { color: '#FF3B30' }]}>
+                    {data.analyst_recommendations.strong_sell}
+                  </Text>
+                  <Text style={styles.analystLabel}>Venta Fuerte</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Holders Breakdown */}
+        {data.holders_breakdown && (
+          <View style={styles.holdersSection}>
+            <Text style={styles.sectionTitle}>📈 Distribución de Accionistas</Text>
+            <View style={styles.holdersCard}>
+              <View style={styles.holdersBarContainer}>
+                <View style={[styles.holdersBar, { flex: data.holders_breakdown.insider_percent, backgroundColor: '#007AFF' }]} />
+                <View style={[styles.holdersBar, { flex: data.holders_breakdown.institution_percent, backgroundColor: '#AF52DE' }]} />
+                <View style={[styles.holdersBar, { flex: data.holders_breakdown.public_percent, backgroundColor: '#34C759' }]} />
+              </View>
+              <View style={styles.holdersLegend}>
+                <View style={styles.holderLegendItem}>
+                  <View style={[styles.holderDot, { backgroundColor: '#007AFF' }]} />
+                  <Text style={styles.holderLabel}>Insiders</Text>
+                  <Text style={styles.holderPercent}>{data.holders_breakdown.insider_percent.toFixed(1)}%</Text>
+                </View>
+                <View style={styles.holderLegendItem}>
+                  <View style={[styles.holderDot, { backgroundColor: '#AF52DE' }]} />
+                  <Text style={styles.holderLabel}>Instituciones</Text>
+                  <Text style={styles.holderPercent}>{data.holders_breakdown.institution_percent.toFixed(1)}%</Text>
+                </View>
+                <View style={styles.holderLegendItem}>
+                  <View style={[styles.holderDot, { backgroundColor: '#34C759' }]} />
+                  <Text style={styles.holderLabel}>Público</Text>
+                  <Text style={styles.holderPercent}>{data.holders_breakdown.public_percent.toFixed(1)}%</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Top Institutional Holders */}
+        {data.top_institutional_holders && data.top_institutional_holders.length > 0 && (
+          <View style={styles.institutionalSection}>
+            <Text style={styles.sectionTitle}>🏦 Top Holders Institucionales</Text>
+            <View style={styles.institutionalCard}>
+              {data.top_institutional_holders.slice(0, 5).map((holder, index) => (
+                <View key={index} style={styles.institutionalRow}>
+                  <View style={styles.institutionalRank}>
+                    <Text style={styles.institutionalRankText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.institutionalInfo}>
+                    <Text style={styles.institutionalName} numberOfLines={1}>
+                      {holder.holder_name}
+                    </Text>
+                    <Text style={styles.institutionalShares}>
+                      {holder.shares.toLocaleString()} acciones
+                    </Text>
+                  </View>
+                  <Text style={styles.institutionalPercent}>
+                    {holder.percentage.toFixed(2)}%
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* Price Chart Section */}
         <View style={styles.chartSection}>
@@ -1798,5 +2011,187 @@ const styles = StyleSheet.create({
   },
   newsChevron: {
     marginLeft: 8,
+  },
+  // Key Metrics Styles
+  keyMetricsSection: {
+    margin: 16,
+  },
+  keyMetricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 12,
+    gap: 8,
+  },
+  keyMetricItem: {
+    width: '30%',
+    alignItems: 'center',
+    padding: 10,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 12,
+  },
+  keyMetricLabel: {
+    fontSize: 11,
+    color: '#6E6E73',
+    marginBottom: 4,
+  },
+  keyMetricValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007AFF',
+  },
+  // Profile Styles
+  profileSection: {
+    margin: 16,
+  },
+  profileCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  profileInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  profileInfoLabel: {
+    fontSize: 13,
+    color: '#6E6E73',
+    width: 70,
+  },
+  profileInfoValue: {
+    fontSize: 14,
+    color: '#1D1D1F',
+    flex: 1,
+  },
+  profileSummary: {
+    fontSize: 13,
+    color: '#6E6E73',
+    lineHeight: 20,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  // Analysts Styles
+  analystsSection: {
+    margin: 16,
+  },
+  analystsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  analystsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  analystBox: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 10,
+    borderRadius: 12,
+  },
+  analystCount: {
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  analystLabel: {
+    fontSize: 9,
+    color: '#6E6E73',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  // Holders Styles
+  holdersSection: {
+    margin: 16,
+  },
+  holdersCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  holdersBarContainer: {
+    flexDirection: 'row',
+    height: 20,
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  holdersBar: {
+    height: '100%',
+  },
+  holdersLegend: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  holderLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  holderDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  holderLabel: {
+    fontSize: 12,
+    color: '#6E6E73',
+  },
+  holderPercent: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  // Institutional Holders Styles
+  institutionalSection: {
+    margin: 16,
+  },
+  institutionalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+  },
+  institutionalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F7',
+  },
+  institutionalRank: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#007AFF15',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  institutionalRankText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#007AFF',
+  },
+  institutionalInfo: {
+    flex: 1,
+  },
+  institutionalName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  institutionalShares: {
+    fontSize: 11,
+    color: '#6E6E73',
+  },
+  institutionalPercent: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007AFF',
   },
 });

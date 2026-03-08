@@ -45,6 +45,33 @@ class RatioCategory(BaseModel):
     category: str
     metrics: List[RatioMetric]
 
+class InstitutionalHolder(BaseModel):
+    holder_name: str
+    shares: int
+    percentage: float
+    value: float
+
+class AnalystRecommendation(BaseModel):
+    period: str
+    strong_buy: int
+    buy: int
+    hold: int
+    sell: int
+    strong_sell: int
+
+class StockProfile(BaseModel):
+    sector: str
+    industry: str
+    full_time_employees: Optional[int] = None
+    business_summary: str
+    website: Optional[str] = None
+    headquarters: Optional[str] = None
+
+class HoldersBreakdown(BaseModel):
+    insider_percent: float
+    institution_percent: float
+    public_percent: float
+
 class AnalysisResponse(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     ticker: str
@@ -60,6 +87,11 @@ class AnalysisResponse(BaseModel):
     metadata: Dict[str, Any]
     summary_flags: Dict[str, Any]
     valuation_summary: Dict[str, Any] = Field(default_factory=dict)
+    # New fields
+    company_profile: Optional[StockProfile] = None
+    analyst_recommendations: Optional[AnalystRecommendation] = None
+    holders_breakdown: Optional[HoldersBreakdown] = None
+    top_institutional_holders: List[InstitutionalHolder] = []
 
 class HistoryItem(BaseModel):
     id: str
@@ -1591,7 +1623,7 @@ async def analyze_stock(request: AnalyzeRequest):
         # Evaluate ratios
         categories, favorable_pct, recommendation, risk_level, total_metrics, favorable_count, summary_flags, valuation_summary = evaluate_ratios(ratios, stock_info)
         
-        # Prepare metadata
+        # Prepare metadata with extended info
         metadata = {
             "sector": stock_info.get('sector', 'N/A'),
             "industry": stock_info.get('industry', 'N/A'),
@@ -1601,8 +1633,99 @@ async def analyze_stock(request: AnalyzeRequest):
             "exchange": stock_info.get('exchange', 'N/A'),
             "country": stock_info.get('country', 'N/A'),
             "website": stock_info.get('website', ''),
-            "description": stock_info.get('longBusinessSummary', '')[:200] + '...' if stock_info.get('longBusinessSummary') else ''
+            "description": stock_info.get('longBusinessSummary', '')[:200] + '...' if stock_info.get('longBusinessSummary') else '',
+            # New fields
+            "pe_ratio": stock_info.get('trailingPE', stock_info.get('forwardPE', 0)),
+            "eps": stock_info.get('trailingEps', 0),
+            "dividend_yield": stock_info.get('dividendYield', 0) * 100 if stock_info.get('dividendYield') else 0,
+            "dividend_rate": stock_info.get('dividendRate', 0),
+            "fifty_two_week_high": stock_info.get('fiftyTwoWeekHigh', 0),
+            "fifty_two_week_low": stock_info.get('fiftyTwoWeekLow', 0),
+            "beta": stock_info.get('beta', 0),
+            "volume_avg": stock_info.get('averageVolume', 0),
+            "forward_pe": stock_info.get('forwardPE', 0),
+            "peg_ratio": stock_info.get('pegRatio', 0),
+            "price_to_book": stock_info.get('priceToBook', 0),
         }
+        
+        # Get Company Profile
+        company_profile = None
+        try:
+            business_summary = stock_info.get('longBusinessSummary', '')
+            # Truncate to ~500 chars for mobile display
+            if len(business_summary) > 500:
+                business_summary = business_summary[:500] + '...'
+            
+            city = stock_info.get('city', '')
+            state = stock_info.get('state', '')
+            country = stock_info.get('country', '')
+            headquarters = ', '.join(filter(None, [city, state, country]))
+            
+            company_profile = StockProfile(
+                sector=stock_info.get('sector', 'N/A'),
+                industry=stock_info.get('industry', 'N/A'),
+                full_time_employees=stock_info.get('fullTimeEmployees'),
+                business_summary=business_summary,
+                website=stock_info.get('website'),
+                headquarters=headquarters if headquarters else None
+            )
+        except Exception as e:
+            logging.warning(f"Could not get company profile: {str(e)}")
+        
+        # Get Analyst Recommendations
+        analyst_recommendations = None
+        try:
+            recommendations = stock.recommendations
+            if recommendations is not None and not recommendations.empty:
+                # Get most recent recommendation period
+                recent = recommendations.iloc[-1] if len(recommendations) > 0 else None
+                if recent is not None:
+                    analyst_recommendations = AnalystRecommendation(
+                        period=str(recent.name) if hasattr(recent, 'name') else 'Current',
+                        strong_buy=int(recent.get('strongBuy', 0)),
+                        buy=int(recent.get('buy', 0)),
+                        hold=int(recent.get('hold', 0)),
+                        sell=int(recent.get('sell', 0)),
+                        strong_sell=int(recent.get('strongSell', 0))
+                    )
+        except Exception as e:
+            logging.warning(f"Could not get analyst recommendations: {str(e)}")
+        
+        # Get Holders Breakdown
+        holders_breakdown = None
+        try:
+            insider_pct = stock_info.get('heldPercentInsiders', 0) * 100 if stock_info.get('heldPercentInsiders') else 0
+            institution_pct = stock_info.get('heldPercentInstitutions', 0) * 100 if stock_info.get('heldPercentInstitutions') else 0
+            public_pct = 100 - insider_pct - institution_pct
+            if public_pct < 0:
+                public_pct = 0
+            
+            holders_breakdown = HoldersBreakdown(
+                insider_percent=round(insider_pct, 2),
+                institution_percent=round(institution_pct, 2),
+                public_percent=round(public_pct, 2)
+            )
+        except Exception as e:
+            logging.warning(f"Could not get holders breakdown: {str(e)}")
+        
+        # Get Top Institutional Holders
+        top_institutional_holders = []
+        try:
+            institutional_holders = stock.institutional_holders
+            if institutional_holders is not None and not institutional_holders.empty:
+                for idx, row in institutional_holders.head(10).iterrows():
+                    pct_held = row.get('pctHeld', 0)
+                    if pct_held:
+                        pct_held = float(pct_held) * 100
+                    holder = InstitutionalHolder(
+                        holder_name=str(row.get('Holder', 'Unknown')),
+                        shares=int(row.get('Shares', 0)),
+                        percentage=round(pct_held, 2),
+                        value=float(row.get('Value', 0))
+                    )
+                    top_institutional_holders.append(holder)
+        except Exception as e:
+            logging.warning(f"Could not get institutional holders: {str(e)}")
         
         # Create response
         analysis = AnalysisResponse(
@@ -1617,7 +1740,11 @@ async def analyze_stock(request: AnalyzeRequest):
             ratios=categories,
             metadata=metadata,
             summary_flags=summary_flags,
-            valuation_summary=valuation_summary
+            valuation_summary=valuation_summary,
+            company_profile=company_profile,
+            analyst_recommendations=analyst_recommendations,
+            holders_breakdown=holders_breakdown,
+            top_institutional_holders=top_institutional_holders
         )
         
         # Save to database
@@ -1853,6 +1980,17 @@ class CurrencyPair(BaseModel):
     change_percent: float
     updated: str
 
+class CryptoIndicator(BaseModel):
+    name: str
+    symbol: str
+    ticker: str
+    current_value: float
+    change: float
+    change_percent: float
+    market_cap: Optional[float] = None
+    volume_24h: Optional[float] = None
+    updated: str
+
 class MarketHours(BaseModel):
     market_name: str
     location: str
@@ -1866,12 +2004,19 @@ class MarketIndicatorsResponse(BaseModel):
     vix: MarketIndicator
     treasury_10y: MarketIndicator
     sp500: MarketIndicator
+    ibex35: Optional[MarketIndicator] = None
     fear_greed_level: str
     market_sentiment: str
-    # New fields
+    # Commodities
     gold: CommodityIndicator
     oil: CommodityIndicator
+    # Currencies
     eur_usd: CurrencyPair
+    # Crypto
+    bitcoin: Optional[CryptoIndicator] = None
+    ethereum: Optional[CryptoIndicator] = None
+    solana: Optional[CryptoIndicator] = None
+    # Market Hours
     market_hours: List[MarketHours]
 
 def get_market_status(timezone_name: str, open_hour: int, open_min: int, close_hour: int, close_min: int) -> tuple:
@@ -2088,6 +2233,108 @@ async def get_market_indicators():
             next_open=bmv_next
         ))
         
+        # IBEX 35 (Spanish Index)
+        ibex35_indicator = None
+        try:
+            ibex = yf.Ticker("^IBEX")
+            ibex_data = ibex.history(period="5d")
+            if not ibex_data.empty:
+                ibex_current = float(ibex_data['Close'].iloc[-1])
+                ibex_prev = float(ibex_data['Close'].iloc[-2]) if len(ibex_data) > 1 else ibex_current
+                ibex_change = ibex_current - ibex_prev
+                ibex_change_pct = (ibex_change / ibex_prev) * 100 if ibex_prev > 0 else 0
+                ibex_date = ibex_data.index[-1].strftime('%Y-%m-%d')
+                ibex35_indicator = MarketIndicator(
+                    name="IBEX 35",
+                    ticker="^IBEX",
+                    current_value=ibex_current,
+                    change=ibex_change,
+                    change_percent=ibex_change_pct,
+                    updated=ibex_date,
+                    description="Índice de referencia de la Bolsa de Madrid con las 35 empresas más líquidas de España"
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch IBEX 35: {str(e)}")
+        
+        # Cryptocurrencies
+        # Bitcoin
+        bitcoin_indicator = None
+        try:
+            btc = yf.Ticker("BTC-USD")
+            btc_data = btc.history(period="5d")
+            if not btc_data.empty:
+                btc_current = float(btc_data['Close'].iloc[-1])
+                btc_prev = float(btc_data['Close'].iloc[-2]) if len(btc_data) > 1 else btc_current
+                btc_change = btc_current - btc_prev
+                btc_change_pct = (btc_change / btc_prev) * 100 if btc_prev > 0 else 0
+                btc_date = btc_data.index[-1].strftime('%Y-%m-%d')
+                btc_info = btc.info
+                bitcoin_indicator = CryptoIndicator(
+                    name="Bitcoin",
+                    symbol="BTC",
+                    ticker="BTC-USD",
+                    current_value=btc_current,
+                    change=btc_change,
+                    change_percent=btc_change_pct,
+                    market_cap=btc_info.get('marketCap'),
+                    volume_24h=btc_info.get('volume24Hr'),
+                    updated=btc_date
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch Bitcoin: {str(e)}")
+        
+        # Ethereum
+        ethereum_indicator = None
+        try:
+            eth = yf.Ticker("ETH-USD")
+            eth_data = eth.history(period="5d")
+            if not eth_data.empty:
+                eth_current = float(eth_data['Close'].iloc[-1])
+                eth_prev = float(eth_data['Close'].iloc[-2]) if len(eth_data) > 1 else eth_current
+                eth_change = eth_current - eth_prev
+                eth_change_pct = (eth_change / eth_prev) * 100 if eth_prev > 0 else 0
+                eth_date = eth_data.index[-1].strftime('%Y-%m-%d')
+                eth_info = eth.info
+                ethereum_indicator = CryptoIndicator(
+                    name="Ethereum",
+                    symbol="ETH",
+                    ticker="ETH-USD",
+                    current_value=eth_current,
+                    change=eth_change,
+                    change_percent=eth_change_pct,
+                    market_cap=eth_info.get('marketCap'),
+                    volume_24h=eth_info.get('volume24Hr'),
+                    updated=eth_date
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch Ethereum: {str(e)}")
+        
+        # Solana
+        solana_indicator = None
+        try:
+            sol = yf.Ticker("SOL-USD")
+            sol_data = sol.history(period="5d")
+            if not sol_data.empty:
+                sol_current = float(sol_data['Close'].iloc[-1])
+                sol_prev = float(sol_data['Close'].iloc[-2]) if len(sol_data) > 1 else sol_current
+                sol_change = sol_current - sol_prev
+                sol_change_pct = (sol_change / sol_prev) * 100 if sol_prev > 0 else 0
+                sol_date = sol_data.index[-1].strftime('%Y-%m-%d')
+                sol_info = sol.info
+                solana_indicator = CryptoIndicator(
+                    name="Solana",
+                    symbol="SOL",
+                    ticker="SOL-USD",
+                    current_value=sol_current,
+                    change=sol_change,
+                    change_percent=sol_change_pct,
+                    market_cap=sol_info.get('marketCap'),
+                    volume_24h=sol_info.get('volume24Hr'),
+                    updated=sol_date
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch Solana: {str(e)}")
+        
         # Determine Fear & Greed level based on VIX
         if vix_current < 12:
             fear_greed = "Extrema Codicia"
@@ -2159,6 +2406,10 @@ async def get_market_indicators():
                 change_percent=eurusd_change_pct,
                 updated=eurusd_date
             ),
+            ibex35=ibex35_indicator,
+            bitcoin=bitcoin_indicator,
+            ethereum=ethereum_indicator,
+            solana=solana_indicator,
             market_hours=market_hours,
             fear_greed_level=fear_greed,
             market_sentiment=sentiment
