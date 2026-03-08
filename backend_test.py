@@ -80,14 +80,16 @@ class FinancialAnalysisAPITester:
                         continue
                     
                     # Validate ratios structure
-                    if not isinstance(data["ratios"], list) or len(data["ratios"]) != 6:
+                    if not isinstance(data["ratios"], list) or len(data["ratios"]) != 10:
                         self.log_test(f"Analyze {ticker} - Ratios Structure", False,
-                                    error_msg=f"Expected 6 ratio categories, got {len(data.get('ratios', []))}")
+                                    error_msg=f"Expected 10 ratio categories, got {len(data.get('ratios', []))}")
                         continue
                     
                     # Validate ratio categories
                     expected_categories = ["📊 Rentabilidad", "💧 Liquidez", "⚖️ Apalancamiento", 
-                                         "💰 Valoración", "💵 Flujo de Caja", "🏥 Salud Financiera"]
+                                         "💰 Valoración", "💵 Flujo de Caja", "⚠️ Riesgo y Capital",
+                                         "🔬 Métricas Avanzadas", "📋 Calidad Contable y Salud Financiera",
+                                         "📊 Rendimiento de Precio", "💰 Valoración Graham"]
                     actual_categories = [cat["category"] for cat in data["ratios"]]
                     
                     if set(actual_categories) != set(expected_categories):
@@ -281,6 +283,224 @@ class FinancialAnalysisAPITester:
                 
         except Exception as e:
             self.log_test("Ratio Calculations", False, error_msg=str(e))
+
+    def test_technical_analysis_valid_tickers(self):
+        """Test GET /api/technical/{ticker} with valid tickers"""
+        test_tickers = ["AAPL", "MSFT", "GOOGL"]
+        
+        for ticker in test_tickers:
+            try:
+                response = self.session.get(f"{self.base_url}/technical/{ticker}", timeout=30)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Validate response structure
+                    required_fields = [
+                        "ticker", "current_price", "analysis_date",
+                        "fibonacci_levels", "current_fibonacci_zone", "fibonacci_interpretation",
+                        "swing_high", "swing_low", "trend_direction",
+                        "moving_averages", "ma_summary", "ma_trend_signal", 
+                        "golden_cross", "death_cross",
+                        "camarilla_pivots", "current_camarilla_zone", "camarilla_interpretation",
+                        "technical_score", "technical_recommendation", "key_levels"
+                    ]
+                    
+                    missing_fields = [field for field in required_fields if field not in data]
+                    if missing_fields:
+                        self.log_test(f"Technical Analysis {ticker} - Structure", False, 
+                                    error_msg=f"Missing fields: {missing_fields}")
+                        continue
+                    
+                    # Validate ticker matches
+                    if data["ticker"] != ticker:
+                        self.log_test(f"Technical Analysis {ticker} - Ticker Match", False,
+                                    error_msg=f"Expected {ticker}, got {data['ticker']}")
+                        continue
+                    
+                    # Validate fibonacci_levels structure
+                    if not isinstance(data["fibonacci_levels"], list) or len(data["fibonacci_levels"]) == 0:
+                        self.log_test(f"Technical Analysis {ticker} - Fibonacci Levels", False,
+                                    error_msg=f"Fibonacci levels should be non-empty list")
+                        continue
+                    
+                    # Check each fibonacci level has required fields
+                    fib_issues = []
+                    for level in data["fibonacci_levels"]:
+                        required_fib_fields = ["level", "price", "is_support", "distance_percent"]
+                        missing_fib_fields = [field for field in required_fib_fields if field not in level]
+                        if missing_fib_fields:
+                            fib_issues.append(f"Missing fields in fibonacci level: {missing_fib_fields}")
+                    
+                    if fib_issues:
+                        self.log_test(f"Technical Analysis {ticker} - Fibonacci Structure", False,
+                                    error_msg="; ".join(fib_issues))
+                        continue
+                    
+                    # Validate moving_averages structure (should have MA 20, 50, 200)
+                    if not isinstance(data["moving_averages"], list) or len(data["moving_averages"]) != 3:
+                        self.log_test(f"Technical Analysis {ticker} - Moving Averages Count", False,
+                                    error_msg=f"Expected 3 moving averages, got {len(data.get('moving_averages', []))}")
+                        continue
+                    
+                    # Check each MA has required fields and correct periods
+                    ma_issues = []
+                    expected_periods = [20, 50, 200]
+                    actual_periods = [ma["period"] for ma in data["moving_averages"]]
+                    if actual_periods != expected_periods:
+                        ma_issues.append(f"Expected periods {expected_periods}, got {actual_periods}")
+                    
+                    for ma in data["moving_averages"]:
+                        required_ma_fields = ["period", "value", "signal", "price_position", "distance_percent"]
+                        missing_ma_fields = [field for field in required_ma_fields if field not in ma]
+                        if missing_ma_fields:
+                            ma_issues.append(f"Missing fields in MA: {missing_ma_fields}")
+                        
+                        # Validate signal values
+                        if ma["signal"] not in ["ALCISTA", "BAJISTA", "NEUTRAL"]:
+                            ma_issues.append(f"Invalid MA signal: {ma['signal']}")
+                    
+                    if ma_issues:
+                        self.log_test(f"Technical Analysis {ticker} - Moving Averages Structure", False,
+                                    error_msg="; ".join(ma_issues))
+                        continue
+                    
+                    # Validate camarilla_pivots structure
+                    if not isinstance(data["camarilla_pivots"], list) or len(data["camarilla_pivots"]) == 0:
+                        self.log_test(f"Technical Analysis {ticker} - Camarilla Pivots", False,
+                                    error_msg=f"Camarilla pivots should be non-empty list")
+                        continue
+                    
+                    # Check each camarilla pivot has required fields
+                    cam_issues = []
+                    for pivot in data["camarilla_pivots"]:
+                        required_cam_fields = ["level", "price", "significance"]
+                        missing_cam_fields = [field for field in required_cam_fields if field not in pivot]
+                        if missing_cam_fields:
+                            cam_issues.append(f"Missing fields in camarilla pivot: {missing_cam_fields}")
+                    
+                    if cam_issues:
+                        self.log_test(f"Technical Analysis {ticker} - Camarilla Structure", False,
+                                    error_msg="; ".join(cam_issues))
+                        continue
+                    
+                    # Validate technical_score range (0-100)
+                    if not (0 <= data["technical_score"] <= 100):
+                        self.log_test(f"Technical Analysis {ticker} - Technical Score Range", False,
+                                    error_msg=f"Technical score {data['technical_score']} not in range 0-100")
+                        continue
+                    
+                    # Validate technical_recommendation values
+                    if data["technical_recommendation"] not in ["COMPRAR", "VENDER", "MANTENER"]:
+                        self.log_test(f"Technical Analysis {ticker} - Recommendation", False,
+                                    error_msg=f"Invalid recommendation: {data['technical_recommendation']}")
+                        continue
+                    
+                    # Validate trend_direction values
+                    if data["trend_direction"] not in ["ALCISTA", "BAJISTA", "LATERAL"]:
+                        self.log_test(f"Technical Analysis {ticker} - Trend Direction", False,
+                                    error_msg=f"Invalid trend direction: {data['trend_direction']}")
+                        continue
+                    
+                    # Validate current_price is reasonable
+                    if data["current_price"] <= 0:
+                        self.log_test(f"Technical Analysis {ticker} - Current Price", False,
+                                    error_msg=f"Invalid current price: {data['current_price']}")
+                        continue
+                    
+                    # Validate key_levels structure
+                    if not isinstance(data["key_levels"], dict) or len(data["key_levels"]) == 0:
+                        self.log_test(f"Technical Analysis {ticker} - Key Levels", False,
+                                    error_msg=f"Key levels should be non-empty dict")
+                        continue
+                    
+                    self.log_test(f"Technical Analysis {ticker}", True, 
+                                f"Score: {data['technical_score']}, Recommendation: {data['technical_recommendation']}, Trend: {data['trend_direction']}")
+                    
+                else:
+                    self.log_test(f"Technical Analysis {ticker}", False, 
+                                error_msg=f"HTTP {response.status_code}: {response.text}")
+                    
+            except Exception as e:
+                self.log_test(f"Technical Analysis {ticker}", False, error_msg=str(e))
+
+    def test_technical_analysis_invalid_ticker(self):
+        """Test GET /api/technical/{ticker} with invalid ticker"""
+        try:
+            response = self.session.get(f"{self.base_url}/technical/XXXXX", timeout=15)
+            
+            if response.status_code == 404:
+                self.log_test("Technical Analysis Invalid Ticker", True,
+                            "Correctly returned 404 for invalid ticker XXXXX")
+            else:
+                self.log_test("Technical Analysis Invalid Ticker", False,
+                            error_msg=f"Expected 404, got {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self.log_test("Technical Analysis Invalid Ticker", False, error_msg=str(e))
+
+    def test_technical_analysis_detailed_validation(self):
+        """Test detailed validation of technical analysis components for AAPL"""
+        try:
+            response = self.session.get(f"{self.base_url}/technical/AAPL", timeout=30)
+            
+            if response.status_code != 200:
+                self.log_test("Technical Analysis Detailed Validation", False,
+                            error_msg=f"Could not get AAPL technical data: {response.status_code}")
+                return
+            
+            data = response.json()
+            issues = []
+            
+            # Validate Fibonacci levels contain expected percentages
+            fib_levels = [level["level"] for level in data["fibonacci_levels"]]
+            expected_fib_levels = ["0%", "23.6%", "38.2%", "50%", "61.8%", "78.6%", "100%"]
+            missing_fib_levels = [level for level in expected_fib_levels if level not in fib_levels]
+            if missing_fib_levels:
+                issues.append(f"Missing Fibonacci levels: {missing_fib_levels}")
+            
+            # Validate swing high > swing low
+            if data["swing_high"] <= data["swing_low"]:
+                issues.append(f"Swing high ({data['swing_high']}) should be > swing low ({data['swing_low']})")
+            
+            # Validate MA values are in ascending order (MA20 should be most recent)
+            ma_values = [ma["value"] for ma in data["moving_averages"] if ma["value"] > 0]
+            if len(ma_values) == 3:
+                # In most cases, shorter period MAs react faster to price changes
+                # but we won't enforce strict ordering as it depends on market conditions
+                pass
+            
+            # Validate Camarilla pivot levels
+            camarilla_levels = [pivot["level"] for pivot in data["camarilla_pivots"]]
+            expected_cam_levels = ["R4", "R3", "R2", "R1", "PP", "S1", "S2", "S3", "S4"]
+            missing_cam_levels = [level for level in expected_cam_levels if level not in camarilla_levels]
+            if missing_cam_levels:
+                issues.append(f"Missing Camarilla levels: {missing_cam_levels}")
+            
+            # Validate current price is within reasonable range of swing high/low
+            price_range = data["swing_high"] - data["swing_low"]
+            extended_high = data["swing_high"] + price_range
+            extended_low = data["swing_low"] - price_range
+            if not (extended_low <= data["current_price"] <= extended_high):
+                issues.append(f"Current price ({data['current_price']}) outside reasonable range")
+            
+            # Validate interpretation fields are not empty
+            if not data["fibonacci_interpretation"].strip():
+                issues.append("Fibonacci interpretation is empty")
+            if not data["camarilla_interpretation"].strip():
+                issues.append("Camarilla interpretation is empty")
+            if not data["ma_summary"].strip():
+                issues.append("MA summary is empty")
+            
+            if issues:
+                self.log_test("Technical Analysis Detailed Validation", False,
+                            error_msg=f"Issues found: {'; '.join(issues)}")
+            else:
+                self.log_test("Technical Analysis Detailed Validation", True,
+                            "All technical analysis components validated successfully")
+                
+        except Exception as e:
+            self.log_test("Technical Analysis Detailed Validation", False, error_msg=str(e))
     
     def run_all_tests(self):
         """Run all tests"""
@@ -311,6 +531,16 @@ class FinancialAnalysisAPITester:
         # Test ratio calculations
         print("🧮 Testing Ratio Calculations...")
         self.test_ratio_calculations_sample()
+        
+        # Test technical analysis endpoints
+        print("📈 Testing Technical Analysis - Valid Tickers...")
+        self.test_technical_analysis_valid_tickers()
+        
+        print("🚫 Testing Technical Analysis - Invalid Ticker...")
+        self.test_technical_analysis_invalid_ticker()
+        
+        print("🔍 Testing Technical Analysis - Detailed Validation...")
+        self.test_technical_analysis_detailed_validation()
         
         # Summary
         print("=" * 60)

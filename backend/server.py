@@ -2423,6 +2423,457 @@ async def delete_all_history():
         logging.error(f"Error deleting history: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al eliminar historial: {str(e)}")
 
+
+# ==================== TECHNICAL ANALYSIS ====================
+
+class FibonacciLevel(BaseModel):
+    level: str  # e.g., "0%", "23.6%", "38.2%", etc.
+    price: float
+    is_support: bool  # True if support, False if resistance
+    distance_percent: float  # Distance from current price as percentage
+
+class MovingAverage(BaseModel):
+    period: int  # 20, 50, or 200
+    value: float
+    signal: str  # "ALCISTA", "BAJISTA", "NEUTRAL"
+    price_position: str  # "SOBRE MA", "BAJO MA"
+    distance_percent: float  # Distance from current price as percentage
+
+class CamarillaPivot(BaseModel):
+    level: str  # R4, R3, R2, R1, PP, S1, S2, S3, S4
+    price: float
+    significance: str  # Description of the level's significance
+
+class TechnicalAnalysisResponse(BaseModel):
+    ticker: str
+    current_price: float
+    analysis_date: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Fibonacci
+    fibonacci_levels: List[FibonacciLevel]
+    current_fibonacci_zone: str
+    fibonacci_interpretation: str
+    swing_high: float
+    swing_low: float
+    trend_direction: str  # "ALCISTA", "BAJISTA"
+    
+    # Moving Averages
+    moving_averages: List[MovingAverage]
+    ma_summary: str
+    ma_trend_signal: str  # "COMPRAR", "VENDER", "NEUTRAL"
+    golden_cross: bool  # MA50 crossing above MA200
+    death_cross: bool  # MA50 crossing below MA200
+    
+    # Camarilla Pivots
+    camarilla_pivots: List[CamarillaPivot]
+    current_camarilla_zone: str
+    camarilla_interpretation: str
+    
+    # Overall Technical Summary
+    technical_score: float  # 0-100
+    technical_recommendation: str  # "COMPRAR", "VENDER", "MANTENER"
+    key_levels: Dict[str, float]  # Important support/resistance levels
+
+
+def calculate_fibonacci_levels(high: float, low: float, trend: str) -> List[FibonacciLevel]:
+    """Calculate Fibonacci retracement levels"""
+    diff = high - low
+    
+    # Standard Fibonacci levels
+    fib_ratios = {
+        "0%": 0.0,
+        "23.6%": 0.236,
+        "38.2%": 0.382,
+        "50%": 0.5,
+        "61.8%": 0.618,
+        "78.6%": 0.786,
+        "100%": 1.0,
+        "127.2%": 1.272,  # Extension
+        "161.8%": 1.618,  # Extension
+    }
+    
+    levels = []
+    for name, ratio in fib_ratios.items():
+        if trend == "ALCISTA":
+            # In uptrend, retracements are from high going down
+            price = high - (diff * ratio)
+            is_support = ratio <= 1.0
+        else:
+            # In downtrend, retracements are from low going up
+            price = low + (diff * ratio)
+            is_support = ratio > 0.5
+        
+        levels.append(FibonacciLevel(
+            level=name,
+            price=round(price, 2),
+            is_support=is_support,
+            distance_percent=0  # Will be calculated later
+        ))
+    
+    return levels
+
+
+def calculate_moving_averages(history_df: pd.DataFrame, current_price: float) -> List[MovingAverage]:
+    """Calculate moving averages for 20, 50, and 200 periods"""
+    mas = []
+    
+    for period in [20, 50, 200]:
+        if len(history_df) >= period:
+            ma_value = history_df['Close'].rolling(window=period).mean().iloc[-1]
+            
+            # Determine signal
+            distance_pct = ((current_price - ma_value) / ma_value) * 100
+            
+            if current_price > ma_value:
+                price_position = "SOBRE MA"
+                signal = "ALCISTA"
+            else:
+                price_position = "BAJO MA"
+                signal = "BAJISTA"
+            
+            mas.append(MovingAverage(
+                period=period,
+                value=round(ma_value, 2),
+                signal=signal,
+                price_position=price_position,
+                distance_percent=round(distance_pct, 2)
+            ))
+        else:
+            mas.append(MovingAverage(
+                period=period,
+                value=0,
+                signal="NEUTRAL",
+                price_position="N/A",
+                distance_percent=0
+            ))
+    
+    return mas
+
+
+def calculate_camarilla_pivots(high: float, low: float, close: float) -> List[CamarillaPivot]:
+    """Calculate Camarilla Pivot Points"""
+    range_val = high - low
+    
+    pivots = [
+        CamarillaPivot(
+            level="R4",
+            price=round(close + (range_val * 1.1 / 2), 2),
+            significance="Resistencia mayor - Posible reversa bajista o breakout alcista extremo"
+        ),
+        CamarillaPivot(
+            level="R3",
+            price=round(close + (range_val * 1.1 / 4), 2),
+            significance="Resistencia fuerte - Zona de venta para traders intradia"
+        ),
+        CamarillaPivot(
+            level="R2",
+            price=round(close + (range_val * 1.1 / 6), 2),
+            significance="Resistencia media - Primer objetivo alcista"
+        ),
+        CamarillaPivot(
+            level="R1",
+            price=round(close + (range_val * 1.1 / 12), 2),
+            significance="Resistencia menor - Nivel de salida parcial para largos"
+        ),
+        CamarillaPivot(
+            level="PP",
+            price=round((high + low + close) / 3, 2),
+            significance="Punto Pivote - Nivel central de equilibrio"
+        ),
+        CamarillaPivot(
+            level="S1",
+            price=round(close - (range_val * 1.1 / 12), 2),
+            significance="Soporte menor - Nivel de salida parcial para cortos"
+        ),
+        CamarillaPivot(
+            level="S2",
+            price=round(close - (range_val * 1.1 / 6), 2),
+            significance="Soporte medio - Primer objetivo bajista"
+        ),
+        CamarillaPivot(
+            level="S3",
+            price=round(close - (range_val * 1.1 / 4), 2),
+            significance="Soporte fuerte - Zona de compra para traders intradia"
+        ),
+        CamarillaPivot(
+            level="S4",
+            price=round(close - (range_val * 1.1 / 2), 2),
+            significance="Soporte mayor - Posible reversa alcista o breakdown bajista extremo"
+        ),
+    ]
+    
+    return pivots
+
+
+def get_fibonacci_interpretation(current_price: float, levels: List[FibonacciLevel], trend: str) -> tuple:
+    """Get interpretation of current price position relative to Fibonacci levels"""
+    
+    # Find which zone the price is in
+    sorted_levels = sorted(levels, key=lambda x: x.price, reverse=True)
+    
+    current_zone = "Por encima del 0%"
+    
+    for i, level in enumerate(sorted_levels):
+        if current_price >= level.price:
+            if i > 0:
+                current_zone = f"Entre {sorted_levels[i-1].level} y {level.level}"
+            else:
+                current_zone = f"Por encima del {level.level}"
+            break
+        current_zone = f"Por debajo del {level.level}"
+    
+    # Generate interpretation
+    key_levels = ["38.2%", "50%", "61.8%"]
+    interpretation_parts = []
+    
+    # Find closest level
+    closest_level = min(levels, key=lambda x: abs(x.price - current_price))
+    distance_to_closest = ((current_price - closest_level.price) / closest_level.price) * 100
+    
+    if trend == "ALCISTA":
+        if any(l.level in ["38.2%", "50%"] for l in levels if abs(l.price - current_price) / l.price < 0.02):
+            interpretation_parts.append("📈 El precio está cerca de un nivel de retroceso clave - zona de posible rebote alcista")
+        elif any(l.level == "61.8%" for l in levels if abs(l.price - current_price) / l.price < 0.02):
+            interpretation_parts.append("⚠️ El precio está en el nivel 61.8% - zona crítica, si rompe podría cambiar la tendencia")
+        elif current_price > max(l.price for l in levels if l.level == "0%"):
+            interpretation_parts.append("🚀 El precio está en nuevos máximos - tendencia alcista fuerte")
+        else:
+            interpretation_parts.append(f"📊 El precio está cerca del nivel Fibonacci {closest_level.level}")
+    else:
+        if any(l.level in ["38.2%", "50%"] for l in levels if abs(l.price - current_price) / l.price < 0.02):
+            interpretation_parts.append("📉 El precio está cerca de un nivel de rebote clave - zona de posible continuación bajista")
+        elif any(l.level == "61.8%" for l in levels if abs(l.price - current_price) / l.price < 0.02):
+            interpretation_parts.append("⚠️ El precio está en el nivel 61.8% - zona crítica para un posible cambio de tendencia")
+        else:
+            interpretation_parts.append(f"📊 El precio está cerca del nivel Fibonacci {closest_level.level}")
+    
+    interpretation_parts.append(f"Nivel más cercano: {closest_level.level} (${closest_level.price:.2f}) - Distancia: {abs(distance_to_closest):.1f}%")
+    
+    return current_zone, " | ".join(interpretation_parts)
+
+
+def get_camarilla_interpretation(current_price: float, pivots: List[CamarillaPivot]) -> tuple:
+    """Get interpretation of current price position relative to Camarilla pivots"""
+    
+    # Sort pivots by price
+    sorted_pivots = sorted(pivots, key=lambda x: x.price, reverse=True)
+    
+    current_zone = "Por encima de R4"
+    
+    for i, pivot in enumerate(sorted_pivots):
+        if current_price >= pivot.price:
+            if i > 0:
+                current_zone = f"Entre {sorted_pivots[i-1].level} y {pivot.level}"
+            else:
+                current_zone = f"Por encima de {pivot.level}"
+            break
+        current_zone = f"Por debajo de {pivot.level}"
+    
+    # Generate interpretation
+    pp_price = next(p.price for p in pivots if p.level == "PP")
+    r3_price = next(p.price for p in pivots if p.level == "R3")
+    s3_price = next(p.price for p in pivots if p.level == "S3")
+    r4_price = next(p.price for p in pivots if p.level == "R4")
+    s4_price = next(p.price for p in pivots if p.level == "S4")
+    
+    interpretation_parts = []
+    
+    if current_price > r3_price:
+        if current_price > r4_price:
+            interpretation_parts.append("🚀 BREAKOUT ALCISTA: Precio por encima de R4 - Tendencia muy alcista, posible extensión del movimiento")
+        else:
+            interpretation_parts.append("📈 ZONA DE VENTA: Precio entre R3 y R4 - Considera tomar ganancias en posiciones largas")
+    elif current_price < s3_price:
+        if current_price < s4_price:
+            interpretation_parts.append("📉 BREAKDOWN BAJISTA: Precio por debajo de S4 - Tendencia muy bajista, posible extensión a la baja")
+        else:
+            interpretation_parts.append("📈 ZONA DE COMPRA: Precio entre S3 y S4 - Considera entradas largas con stop bajo S4")
+    elif current_price > pp_price:
+        interpretation_parts.append("📊 SESGO ALCISTA: Precio sobre el Punto Pivote - Buscar oportunidades de compra hacia R1-R2")
+    else:
+        interpretation_parts.append("📊 SESGO BAJISTA: Precio bajo el Punto Pivote - Buscar oportunidades de venta hacia S1-S2")
+    
+    # Add key levels info
+    interpretation_parts.append(f"Niveles clave: Soporte S3=${s3_price:.2f} | Resistencia R3=${r3_price:.2f}")
+    
+    return current_zone, " | ".join(interpretation_parts)
+
+
+@api_router.get("/technical/{ticker}", response_model=TechnicalAnalysisResponse)
+async def get_technical_analysis(ticker: str):
+    """Get comprehensive technical analysis including Fibonacci, Moving Averages, and Camarilla Pivots"""
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        
+        # Get historical data (1 year for MAs, recent for pivots)
+        history_1y = stock.history(period="1y")
+        
+        if history_1y.empty:
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos para el ticker '{ticker}'")
+        
+        # Current price and recent data
+        current_price = history_1y['Close'].iloc[-1]
+        
+        # Get swing high and low from recent data (last 3 months for Fibonacci)
+        history_3m = history_1y.tail(63)  # ~3 months of trading days
+        swing_high = history_3m['High'].max()
+        swing_low = history_3m['Low'].min()
+        
+        # Determine trend
+        ma_50 = history_1y['Close'].rolling(window=50).mean().iloc[-1] if len(history_1y) >= 50 else current_price
+        ma_200 = history_1y['Close'].rolling(window=200).mean().iloc[-1] if len(history_1y) >= 200 else current_price
+        
+        if current_price > ma_50 and ma_50 > ma_200:
+            trend_direction = "ALCISTA"
+        elif current_price < ma_50 and ma_50 < ma_200:
+            trend_direction = "BAJISTA"
+        else:
+            trend_direction = "LATERAL"
+        
+        # Calculate Fibonacci levels
+        fibonacci_levels = calculate_fibonacci_levels(swing_high, swing_low, trend_direction)
+        
+        # Update Fibonacci distances
+        for level in fibonacci_levels:
+            level.distance_percent = round(((current_price - level.price) / level.price) * 100, 2)
+        
+        current_fib_zone, fib_interpretation = get_fibonacci_interpretation(current_price, fibonacci_levels, trend_direction)
+        
+        # Calculate Moving Averages
+        moving_averages = calculate_moving_averages(history_1y, current_price)
+        
+        # MA Summary
+        bullish_mas = sum(1 for ma in moving_averages if ma.signal == "ALCISTA")
+        if bullish_mas == 3:
+            ma_summary = "📈 Todas las medias móviles son ALCISTAS - Tendencia alcista fuerte"
+            ma_trend_signal = "COMPRAR"
+        elif bullish_mas == 0:
+            ma_summary = "📉 Todas las medias móviles son BAJISTAS - Tendencia bajista fuerte"
+            ma_trend_signal = "VENDER"
+        elif bullish_mas >= 2:
+            ma_summary = "📊 Mayoría de medias móviles alcistas - Sesgo moderadamente alcista"
+            ma_trend_signal = "COMPRAR"
+        else:
+            ma_summary = "📊 Mayoría de medias móviles bajistas - Sesgo moderadamente bajista"
+            ma_trend_signal = "VENDER"
+        
+        # Check for Golden Cross / Death Cross
+        if len(history_1y) >= 200:
+            ma50_recent = history_1y['Close'].rolling(window=50).mean().tail(5)
+            ma200_recent = history_1y['Close'].rolling(window=200).mean().tail(5)
+            
+            # Golden Cross: MA50 crosses above MA200
+            golden_cross = (ma50_recent.iloc[-1] > ma200_recent.iloc[-1] and 
+                          ma50_recent.iloc[-5] <= ma200_recent.iloc[-5])
+            
+            # Death Cross: MA50 crosses below MA200
+            death_cross = (ma50_recent.iloc[-1] < ma200_recent.iloc[-1] and 
+                         ma50_recent.iloc[-5] >= ma200_recent.iloc[-5])
+        else:
+            golden_cross = False
+            death_cross = False
+        
+        # Calculate Camarilla Pivots (using yesterday's data)
+        if len(history_1y) >= 2:
+            yesterday = history_1y.iloc[-2]
+            camarilla_pivots = calculate_camarilla_pivots(
+                yesterday['High'],
+                yesterday['Low'],
+                yesterday['Close']
+            )
+        else:
+            # Use today's data if no yesterday available
+            today = history_1y.iloc[-1]
+            camarilla_pivots = calculate_camarilla_pivots(
+                today['High'],
+                today['Low'],
+                today['Close']
+            )
+        
+        current_cam_zone, cam_interpretation = get_camarilla_interpretation(current_price, camarilla_pivots)
+        
+        # Calculate overall technical score
+        score = 50  # Start neutral
+        
+        # Fibonacci influence (+/- 15 points)
+        if "38.2%" in current_fib_zone or "50%" in current_fib_zone:
+            if trend_direction == "ALCISTA":
+                score += 10
+            else:
+                score -= 10
+        elif "61.8%" in current_fib_zone:
+            score += 5 if trend_direction == "ALCISTA" else -5
+        
+        # Moving Average influence (+/- 20 points)
+        score += (bullish_mas - 1.5) * 10
+        
+        # Golden/Death Cross influence (+/- 15 points)
+        if golden_cross:
+            score += 15
+        if death_cross:
+            score -= 15
+        
+        # Camarilla influence
+        pp_price = next(p.price for p in camarilla_pivots if p.level == "PP")
+        if current_price > pp_price:
+            score += 5
+        else:
+            score -= 5
+        
+        # Bound score
+        score = max(0, min(100, score))
+        
+        # Overall recommendation
+        if score >= 65:
+            technical_recommendation = "COMPRAR"
+        elif score <= 35:
+            technical_recommendation = "VENDER"
+        else:
+            technical_recommendation = "MANTENER"
+        
+        # Key levels summary
+        key_levels = {
+            "soporte_fibonacci_382": round(swing_high - (swing_high - swing_low) * 0.382, 2),
+            "soporte_fibonacci_618": round(swing_high - (swing_high - swing_low) * 0.618, 2),
+            "resistencia_fibonacci_0": round(swing_high, 2),
+            "ma_20": moving_averages[0].value if moving_averages else 0,
+            "ma_50": moving_averages[1].value if len(moving_averages) > 1 else 0,
+            "ma_200": moving_averages[2].value if len(moving_averages) > 2 else 0,
+            "camarilla_r3": next(p.price for p in camarilla_pivots if p.level == "R3"),
+            "camarilla_s3": next(p.price for p in camarilla_pivots if p.level == "S3"),
+            "camarilla_pp": pp_price,
+        }
+        
+        return TechnicalAnalysisResponse(
+            ticker=ticker,
+            current_price=round(current_price, 2),
+            fibonacci_levels=fibonacci_levels,
+            current_fibonacci_zone=current_fib_zone,
+            fibonacci_interpretation=fib_interpretation,
+            swing_high=round(swing_high, 2),
+            swing_low=round(swing_low, 2),
+            trend_direction=trend_direction,
+            moving_averages=moving_averages,
+            ma_summary=ma_summary,
+            ma_trend_signal=ma_trend_signal,
+            golden_cross=golden_cross,
+            death_cross=death_cross,
+            camarilla_pivots=camarilla_pivots,
+            current_camarilla_zone=current_cam_zone,
+            camarilla_interpretation=cam_interpretation,
+            technical_score=round(score, 1),
+            technical_recommendation=technical_recommendation,
+            key_levels=key_levels
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in technical analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al calcular análisis técnico: {str(e)}")
+
+
 # Include the router in the main app
 app.include_router(api_router)
 

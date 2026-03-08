@@ -51,6 +51,50 @@ interface ResultsScreenProps {
   onBack: () => void;
 }
 
+// Technical Analysis Interfaces
+interface FibonacciLevel {
+  level: string;
+  price: number;
+  is_support: boolean;
+  distance_percent: number;
+}
+
+interface MovingAverage {
+  period: number;
+  value: number;
+  signal: string;
+  price_position: string;
+  distance_percent: number;
+}
+
+interface CamarillaPivot {
+  level: string;
+  price: number;
+  significance: string;
+}
+
+interface TechnicalAnalysisData {
+  ticker: string;
+  current_price: number;
+  fibonacci_levels: FibonacciLevel[];
+  current_fibonacci_zone: string;
+  fibonacci_interpretation: string;
+  swing_high: number;
+  swing_low: number;
+  trend_direction: string;
+  moving_averages: MovingAverage[];
+  ma_summary: string;
+  ma_trend_signal: string;
+  golden_cross: boolean;
+  death_cross: boolean;
+  camarilla_pivots: CamarillaPivot[];
+  current_camarilla_zone: string;
+  camarilla_interpretation: string;
+  technical_score: number;
+  technical_recommendation: string;
+  key_levels: any;
+}
+
 export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   const { colors } = useTheme();
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([data.ratios[0]?.category]));
@@ -58,6 +102,11 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   const [loadingChart, setLoadingChart] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState('1y');
   const [showAIChat, setShowAIChat] = useState(false);
+  
+  // Technical Analysis State
+  const [technicalData, setTechnicalData] = useState<TechnicalAnalysisData | null>(null);
+  const [loadingTechnical, setLoadingTechnical] = useState(true);
+  const [expandedTechnical, setExpandedTechnical] = useState<Set<string>>(new Set(['fibonacci']));
 
   // Prepare analysis data for AI
   const aiAnalysisData = {
@@ -80,7 +129,30 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
 
   useEffect(() => {
     fetchChartData(selectedPeriod);
+    fetchTechnicalAnalysis();
   }, [selectedPeriod]);
+
+  const fetchTechnicalAnalysis = async () => {
+    setLoadingTechnical(true);
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/technical/${data.ticker}`);
+      setTechnicalData(response.data);
+    } catch (error) {
+      console.error('Error fetching technical analysis:', error);
+    } finally {
+      setLoadingTechnical(false);
+    }
+  };
+
+  const toggleTechnicalSection = (section: string) => {
+    const newExpanded = new Set(expandedTechnical);
+    if (newExpanded.has(section)) {
+      newExpanded.delete(section);
+    } else {
+      newExpanded.add(section);
+    }
+    setExpandedTechnical(newExpanded);
+  };
 
   const fetchChartData = async (period: string) => {
     setLoadingChart(true);
@@ -368,6 +440,394 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
             </View>
           </View>
         )}
+
+        {/* Technical Analysis Section */}
+        <View style={styles.technicalSection}>
+          <Text style={styles.sectionTitle}>📈 Análisis Técnico</Text>
+          
+          {loadingTechnical ? (
+            <View style={styles.technicalLoadingContainer}>
+              <ActivityIndicator size="large" color="#007AFF" />
+              <Text style={styles.technicalLoadingText}>Cargando análisis técnico...</Text>
+            </View>
+          ) : technicalData ? (
+            <>
+              {/* Technical Summary Card */}
+              <View style={[
+                styles.technicalSummaryCard,
+                { backgroundColor: technicalData.technical_recommendation === 'COMPRAR' ? '#34C75915' : 
+                                  technicalData.technical_recommendation === 'VENDER' ? '#FF3B3015' : '#FF950015' }
+              ]}>
+                <View style={styles.technicalSummaryRow}>
+                  <View style={styles.technicalSummaryItem}>
+                    <Text style={styles.technicalSummaryLabel}>Score Técnico</Text>
+                    <Text style={[
+                      styles.technicalSummaryValue,
+                      { color: technicalData.technical_score >= 65 ? '#34C759' : 
+                               technicalData.technical_score <= 35 ? '#FF3B30' : '#FF9500' }
+                    ]}>
+                      {technicalData.technical_score.toFixed(0)}/100
+                    </Text>
+                  </View>
+                  <View style={styles.technicalSummaryDivider} />
+                  <View style={styles.technicalSummaryItem}>
+                    <Text style={styles.technicalSummaryLabel}>Señal</Text>
+                    <View style={[
+                      styles.technicalSignalBadge,
+                      { backgroundColor: technicalData.technical_recommendation === 'COMPRAR' ? '#34C759' : 
+                                        technicalData.technical_recommendation === 'VENDER' ? '#FF3B30' : '#FF9500' }
+                    ]}>
+                      <Text style={styles.technicalSignalText}>{technicalData.technical_recommendation}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.technicalSummaryDivider} />
+                  <View style={styles.technicalSummaryItem}>
+                    <Text style={styles.technicalSummaryLabel}>Tendencia</Text>
+                    <View style={styles.trendIndicator}>
+                      <Ionicons 
+                        name={technicalData.trend_direction === 'ALCISTA' ? 'trending-up' : 
+                              technicalData.trend_direction === 'BAJISTA' ? 'trending-down' : 'remove'}
+                        size={20}
+                        color={technicalData.trend_direction === 'ALCISTA' ? '#34C759' : 
+                               technicalData.trend_direction === 'BAJISTA' ? '#FF3B30' : '#FF9500'}
+                      />
+                      <Text style={[
+                        styles.trendText,
+                        { color: technicalData.trend_direction === 'ALCISTA' ? '#34C759' : 
+                                 technicalData.trend_direction === 'BAJISTA' ? '#FF3B30' : '#FF9500' }
+                      ]}>
+                        {technicalData.trend_direction}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+                
+                {/* Golden/Death Cross Alert */}
+                {(technicalData.golden_cross || technicalData.death_cross) && (
+                  <View style={[
+                    styles.crossAlert,
+                    { backgroundColor: technicalData.golden_cross ? '#34C75930' : '#FF3B3030' }
+                  ]}>
+                    <Ionicons 
+                      name={technicalData.golden_cross ? 'star' : 'warning'}
+                      size={16}
+                      color={technicalData.golden_cross ? '#34C759' : '#FF3B30'}
+                    />
+                    <Text style={[
+                      styles.crossAlertText,
+                      { color: technicalData.golden_cross ? '#34C759' : '#FF3B30' }
+                    ]}>
+                      {technicalData.golden_cross ? '✨ Golden Cross Detectado - Señal Alcista Fuerte' : 
+                                                    '⚠️ Death Cross Detectado - Señal Bajista Fuerte'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Fibonacci Section */}
+              <View style={styles.technicalCard}>
+                <TouchableOpacity
+                  style={styles.technicalCardHeader}
+                  onPress={() => toggleTechnicalSection('fibonacci')}
+                >
+                  <View style={styles.technicalCardTitleRow}>
+                    <Text style={styles.technicalCardIcon}>📊</Text>
+                    <Text style={styles.technicalCardTitle}>Retrocesos de Fibonacci</Text>
+                  </View>
+                  <Ionicons
+                    name={expandedTechnical.has('fibonacci') ? 'chevron-up' : 'chevron-down'}
+                    size={24}
+                    color="#8E8E93"
+                  />
+                </TouchableOpacity>
+                
+                {expandedTechnical.has('fibonacci') && (
+                  <View style={styles.technicalCardContent}>
+                    {/* Fibonacci Info */}
+                    <View style={styles.fibonacciInfo}>
+                      <View style={styles.fibonacciInfoRow}>
+                        <Text style={styles.fibonacciInfoLabel}>Máximo (Swing High):</Text>
+                        <Text style={styles.fibonacciInfoValue}>${technicalData.swing_high.toFixed(2)}</Text>
+                      </View>
+                      <View style={styles.fibonacciInfoRow}>
+                        <Text style={styles.fibonacciInfoLabel}>Mínimo (Swing Low):</Text>
+                        <Text style={styles.fibonacciInfoValue}>${technicalData.swing_low.toFixed(2)}</Text>
+                      </View>
+                      <View style={styles.fibonacciInfoRow}>
+                        <Text style={styles.fibonacciInfoLabel}>Zona Actual:</Text>
+                        <Text style={[styles.fibonacciInfoValue, { color: '#007AFF' }]}>
+                          {technicalData.current_fibonacci_zone}
+                        </Text>
+                      </View>
+                    </View>
+                    
+                    {/* Fibonacci Interpretation */}
+                    <View style={styles.interpretationBox}>
+                      <Text style={styles.interpretationText}>
+                        {technicalData.fibonacci_interpretation}
+                      </Text>
+                    </View>
+                    
+                    {/* Fibonacci Levels Table */}
+                    <View style={styles.levelsTable}>
+                      <View style={styles.levelsTableHeader}>
+                        <Text style={[styles.levelsTableHeaderText, { flex: 1 }]}>Nivel</Text>
+                        <Text style={[styles.levelsTableHeaderText, { flex: 1.5 }]}>Precio</Text>
+                        <Text style={[styles.levelsTableHeaderText, { flex: 1 }]}>Dist. %</Text>
+                        <Text style={[styles.levelsTableHeaderText, { flex: 1 }]}>Tipo</Text>
+                      </View>
+                      {technicalData.fibonacci_levels.filter(l => !l.level.includes('127') && !l.level.includes('161')).map((level, idx) => (
+                        <View key={idx} style={[
+                          styles.levelsTableRow,
+                          Math.abs(level.distance_percent) < 2 && styles.levelsTableRowHighlight
+                        ]}>
+                          <Text style={[styles.levelsTableCell, { flex: 1, fontWeight: '600' }]}>
+                            {level.level}
+                          </Text>
+                          <Text style={[styles.levelsTableCell, { flex: 1.5 }]}>
+                            ${level.price.toFixed(2)}
+                          </Text>
+                          <Text style={[
+                            styles.levelsTableCell, 
+                            { flex: 1, color: level.distance_percent >= 0 ? '#34C759' : '#FF3B30' }
+                          ]}>
+                            {level.distance_percent >= 0 ? '+' : ''}{level.distance_percent.toFixed(1)}%
+                          </Text>
+                          <Text style={[
+                            styles.levelsTableCell, 
+                            { flex: 1, color: level.is_support ? '#34C759' : '#FF3B30' }
+                          ]}>
+                            {level.is_support ? 'Soporte' : 'Resistencia'}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* Moving Averages Section */}
+              <View style={styles.technicalCard}>
+                <TouchableOpacity
+                  style={styles.technicalCardHeader}
+                  onPress={() => toggleTechnicalSection('ma')}
+                >
+                  <View style={styles.technicalCardTitleRow}>
+                    <Text style={styles.technicalCardIcon}>📉</Text>
+                    <Text style={styles.technicalCardTitle}>Medias Móviles</Text>
+                  </View>
+                  <View style={styles.maSignalBadge}>
+                    <Text style={[
+                      styles.maSignalText,
+                      { color: technicalData.ma_trend_signal === 'COMPRAR' ? '#34C759' : 
+                               technicalData.ma_trend_signal === 'VENDER' ? '#FF3B30' : '#FF9500' }
+                    ]}>
+                      {technicalData.ma_trend_signal}
+                    </Text>
+                    <Ionicons
+                      name={expandedTechnical.has('ma') ? 'chevron-up' : 'chevron-down'}
+                      size={24}
+                      color="#8E8E93"
+                    />
+                  </View>
+                </TouchableOpacity>
+                
+                {expandedTechnical.has('ma') && (
+                  <View style={styles.technicalCardContent}>
+                    {/* MA Summary */}
+                    <View style={styles.interpretationBox}>
+                      <Text style={styles.interpretationText}>
+                        {technicalData.ma_summary}
+                      </Text>
+                    </View>
+                    
+                    {/* MA Table */}
+                    <View style={styles.maCardsContainer}>
+                      {technicalData.moving_averages.map((ma, idx) => (
+                        <View key={idx} style={styles.maCard}>
+                          <View style={styles.maCardHeader}>
+                            <Text style={styles.maCardTitle}>MA {ma.period}</Text>
+                            <View style={[
+                              styles.maCardSignal,
+                              { backgroundColor: ma.signal === 'ALCISTA' ? '#34C75920' : 
+                                                ma.signal === 'BAJISTA' ? '#FF3B3020' : '#FF950020' }
+                            ]}>
+                              <Ionicons 
+                                name={ma.signal === 'ALCISTA' ? 'arrow-up' : 
+                                      ma.signal === 'BAJISTA' ? 'arrow-down' : 'remove'}
+                                size={14}
+                                color={ma.signal === 'ALCISTA' ? '#34C759' : 
+                                       ma.signal === 'BAJISTA' ? '#FF3B30' : '#FF9500'}
+                              />
+                              <Text style={[
+                                styles.maCardSignalText,
+                                { color: ma.signal === 'ALCISTA' ? '#34C759' : 
+                                         ma.signal === 'BAJISTA' ? '#FF3B30' : '#FF9500' }
+                              ]}>
+                                {ma.signal}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={styles.maCardValue}>${ma.value.toFixed(2)}</Text>
+                          <View style={styles.maCardFooter}>
+                            <Text style={styles.maCardPosition}>{ma.price_position}</Text>
+                            <Text style={[
+                              styles.maCardDistance,
+                              { color: ma.distance_percent >= 0 ? '#34C759' : '#FF3B30' }
+                            ]}>
+                              {ma.distance_percent >= 0 ? '+' : ''}{ma.distance_percent.toFixed(1)}%
+                            </Text>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* Camarilla Pivots Section */}
+              <View style={styles.technicalCard}>
+                <TouchableOpacity
+                  style={styles.technicalCardHeader}
+                  onPress={() => toggleTechnicalSection('camarilla')}
+                >
+                  <View style={styles.technicalCardTitleRow}>
+                    <Text style={styles.technicalCardIcon}>🎯</Text>
+                    <Text style={styles.technicalCardTitle}>Puntos Pivote Camarilla</Text>
+                  </View>
+                  <Ionicons
+                    name={expandedTechnical.has('camarilla') ? 'chevron-up' : 'chevron-down'}
+                    size={24}
+                    color="#8E8E93"
+                  />
+                </TouchableOpacity>
+                
+                {expandedTechnical.has('camarilla') && (
+                  <View style={styles.technicalCardContent}>
+                    {/* Current Zone */}
+                    <View style={styles.fibonacciInfo}>
+                      <View style={styles.fibonacciInfoRow}>
+                        <Text style={styles.fibonacciInfoLabel}>Zona Actual:</Text>
+                        <Text style={[styles.fibonacciInfoValue, { color: '#007AFF' }]}>
+                          {technicalData.current_camarilla_zone}
+                        </Text>
+                      </View>
+                    </View>
+                    
+                    {/* Camarilla Interpretation */}
+                    <View style={styles.interpretationBox}>
+                      <Text style={styles.interpretationText}>
+                        {technicalData.camarilla_interpretation}
+                      </Text>
+                    </View>
+                    
+                    {/* Camarilla Pivots Table */}
+                    <View style={styles.camarillaContainer}>
+                      {/* Resistance Levels */}
+                      <Text style={styles.camarillaGroupTitle}>Resistencias</Text>
+                      {technicalData.camarilla_pivots
+                        .filter(p => p.level.startsWith('R'))
+                        .sort((a, b) => b.price - a.price)
+                        .map((pivot, idx) => (
+                          <View key={idx} style={[
+                            styles.camarillaRow,
+                            (pivot.level === 'R3' || pivot.level === 'R4') && styles.camarillaRowImportant
+                          ]}>
+                            <View style={styles.camarillaLevelBadge}>
+                              <Text style={[
+                                styles.camarillaLevelText,
+                                { color: pivot.level === 'R4' ? '#FF3B30' : 
+                                         pivot.level === 'R3' ? '#FF6B35' : '#FF9500' }
+                              ]}>
+                                {pivot.level}
+                              </Text>
+                            </View>
+                            <Text style={styles.camarillaPrice}>${pivot.price.toFixed(2)}</Text>
+                            <Text style={styles.camarillaSignificance} numberOfLines={2}>
+                              {pivot.significance.split(' - ')[1] || pivot.significance}
+                            </Text>
+                          </View>
+                        ))}
+                      
+                      {/* Pivot Point */}
+                      <View style={styles.pivotPointContainer}>
+                        {technicalData.camarilla_pivots
+                          .filter(p => p.level === 'PP')
+                          .map((pivot, idx) => (
+                            <View key={idx} style={styles.pivotPointRow}>
+                              <View style={styles.pivotPointBadge}>
+                                <Text style={styles.pivotPointText}>PP</Text>
+                              </View>
+                              <Text style={styles.pivotPointPrice}>${pivot.price.toFixed(2)}</Text>
+                              <Text style={styles.pivotPointLabel}>Punto Pivote Central</Text>
+                            </View>
+                          ))}
+                      </View>
+                      
+                      {/* Support Levels */}
+                      <Text style={styles.camarillaGroupTitle}>Soportes</Text>
+                      {technicalData.camarilla_pivots
+                        .filter(p => p.level.startsWith('S'))
+                        .sort((a, b) => b.price - a.price)
+                        .map((pivot, idx) => (
+                          <View key={idx} style={[
+                            styles.camarillaRow,
+                            (pivot.level === 'S3' || pivot.level === 'S4') && styles.camarillaRowImportantSupport
+                          ]}>
+                            <View style={styles.camarillaLevelBadge}>
+                              <Text style={[
+                                styles.camarillaLevelText,
+                                { color: pivot.level === 'S4' ? '#34C759' : 
+                                         pivot.level === 'S3' ? '#32D74B' : '#30D158' }
+                              ]}>
+                                {pivot.level}
+                              </Text>
+                            </View>
+                            <Text style={styles.camarillaPrice}>${pivot.price.toFixed(2)}</Text>
+                            <Text style={styles.camarillaSignificance} numberOfLines={2}>
+                              {pivot.significance.split(' - ')[1] || pivot.significance}
+                            </Text>
+                          </View>
+                        ))}
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {/* Key Levels Summary */}
+              <View style={styles.keyLevelsCard}>
+                <Text style={styles.keyLevelsTitle}>📍 Niveles Clave</Text>
+                <View style={styles.keyLevelsGrid}>
+                  <View style={styles.keyLevelItem}>
+                    <Text style={styles.keyLevelLabel}>Soporte Fib 38.2%</Text>
+                    <Text style={styles.keyLevelValue}>${technicalData.key_levels.soporte_fibonacci_382.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.keyLevelItem}>
+                    <Text style={styles.keyLevelLabel}>Soporte Fib 61.8%</Text>
+                    <Text style={styles.keyLevelValue}>${technicalData.key_levels.soporte_fibonacci_618.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.keyLevelItem}>
+                    <Text style={styles.keyLevelLabel}>Resistencia R3</Text>
+                    <Text style={[styles.keyLevelValue, { color: '#FF3B30' }]}>
+                      ${technicalData.key_levels.camarilla_r3.toFixed(2)}
+                    </Text>
+                  </View>
+                  <View style={styles.keyLevelItem}>
+                    <Text style={styles.keyLevelLabel}>Soporte S3</Text>
+                    <Text style={[styles.keyLevelValue, { color: '#34C759' }]}>
+                      ${technicalData.key_levels.camarilla_s3.toFixed(2)}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </>
+          ) : (
+            <View style={styles.technicalErrorContainer}>
+              <Ionicons name="alert-circle-outline" size={40} color="#8E8E93" />
+              <Text style={styles.technicalErrorText}>No se pudo cargar el análisis técnico</Text>
+            </View>
+          )}
+        </View>
 
         {/* Ratio Categories */}
         <View style={styles.ratiosSection}>
@@ -800,5 +1260,365 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
+  },
+  
+  // Technical Analysis Styles
+  technicalSection: {
+    margin: 16,
+  },
+  technicalLoadingContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 40,
+    alignItems: 'center',
+  },
+  technicalLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#6E6E73',
+  },
+  technicalErrorContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 40,
+    alignItems: 'center',
+  },
+  technicalErrorText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#8E8E93',
+  },
+  technicalSummaryCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  technicalSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+  },
+  technicalSummaryItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  technicalSummaryLabel: {
+    fontSize: 12,
+    color: '#6E6E73',
+    marginBottom: 4,
+  },
+  technicalSummaryValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  technicalSummaryDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: '#E0E0E0',
+  },
+  technicalSignalBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  technicalSignalText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  trendIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  trendText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  crossAlert: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+  },
+  crossAlertText: {
+    fontSize: 12,
+    fontWeight: '500',
+    flex: 1,
+  },
+  technicalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  technicalCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+  },
+  technicalCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  technicalCardIcon: {
+    fontSize: 20,
+  },
+  technicalCardTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  technicalCardContent: {
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    padding: 16,
+  },
+  fibonacciInfo: {
+    backgroundColor: '#F5F5F7',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  fibonacciInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  fibonacciInfoLabel: {
+    fontSize: 13,
+    color: '#6E6E73',
+  },
+  fibonacciInfoValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  interpretationBox: {
+    backgroundColor: '#007AFF10',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#007AFF',
+  },
+  interpretationText: {
+    fontSize: 13,
+    color: '#1D1D1F',
+    lineHeight: 18,
+  },
+  levelsTable: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  levelsTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#F5F5F7',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  levelsTableHeaderText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6E6E73',
+  },
+  levelsTableRow: {
+    flexDirection: 'row',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F7',
+  },
+  levelsTableRowHighlight: {
+    backgroundColor: '#007AFF10',
+  },
+  levelsTableCell: {
+    fontSize: 13,
+    color: '#1D1D1F',
+  },
+  maSignalBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  maSignalText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  maCardsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  maCard: {
+    flex: 1,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 12,
+    padding: 12,
+  },
+  maCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  maCardTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+  },
+  maCardSignal: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  maCardSignalText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  maCardValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007AFF',
+    marginBottom: 4,
+  },
+  maCardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  maCardPosition: {
+    fontSize: 10,
+    color: '#6E6E73',
+  },
+  maCardDistance: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  camarillaContainer: {
+    marginTop: 4,
+  },
+  camarillaGroupTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6E6E73',
+    marginTop: 8,
+    marginBottom: 8,
+    paddingLeft: 4,
+  },
+  camarillaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F7',
+    gap: 12,
+  },
+  camarillaRowImportant: {
+    backgroundColor: '#FF3B3010',
+    borderRadius: 8,
+    borderBottomWidth: 0,
+    marginBottom: 4,
+  },
+  camarillaRowImportantSupport: {
+    backgroundColor: '#34C75910',
+    borderRadius: 8,
+    borderBottomWidth: 0,
+    marginBottom: 4,
+  },
+  camarillaLevelBadge: {
+    width: 36,
+    alignItems: 'center',
+  },
+  camarillaLevelText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  camarillaPrice: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    width: 80,
+  },
+  camarillaSignificance: {
+    flex: 1,
+    fontSize: 11,
+    color: '#6E6E73',
+  },
+  pivotPointContainer: {
+    marginVertical: 12,
+  },
+  pivotPointRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#007AFF15',
+    borderRadius: 12,
+    padding: 12,
+    gap: 12,
+  },
+  pivotPointBadge: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pivotPointText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  pivotPointPrice: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#007AFF',
+  },
+  pivotPointLabel: {
+    flex: 1,
+    fontSize: 12,
+    color: '#6E6E73',
+  },
+  keyLevelsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+  },
+  keyLevelsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    marginBottom: 12,
+  },
+  keyLevelsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  keyLevelItem: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: '#F5F5F7',
+    borderRadius: 8,
+    padding: 12,
+  },
+  keyLevelLabel: {
+    fontSize: 11,
+    color: '#6E6E73',
+    marginBottom: 4,
+  },
+  keyLevelValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007AFF',
   },
 });
