@@ -13,11 +13,15 @@ import {
   Switch,
   KeyboardAvoidingView,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { PieChart } from 'react-native-gifted-charts';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const CHART_COLORS = ['#007AFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6', '#FF2D55', '#00C7BE'];
 
 interface WatchlistItem {
   id: string;
@@ -82,6 +86,7 @@ interface AlertInfo {
 }
 
 export default function AccountScreen() {
+  const { colors } = useTheme();
   const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -407,58 +412,105 @@ export default function AccountScreen() {
     const m = portfolio.metrics;
     
     return (
-      <View style={styles.metricsCard}>
-        <Text style={styles.metricsTitle}>Métricas del Portafolio</Text>
+      <View style={[styles.metricsCard, { backgroundColor: colors.card }]}>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>Métricas del Portafolio</Text>
         <View style={styles.metricsGrid}>
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Beta</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Beta</Text>
             <Text style={[
               styles.metricValue,
-              { color: m.portfolio_beta <= 1 ? '#34C759' : '#FF9500' }
+              { color: m.portfolio_beta <= 1 ? colors.success : colors.warning }
             ]}>
               {m.portfolio_beta.toFixed(2)}
             </Text>
-            <Text style={styles.metricHint}>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
               {m.portfolio_beta < 0.8 ? 'Defensivo' : m.portfolio_beta > 1.2 ? 'Agresivo' : 'Moderado'}
             </Text>
           </View>
           
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Alpha</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Alpha</Text>
             <Text style={[
               styles.metricValue,
-              { color: m.portfolio_alpha >= 0 ? '#34C759' : '#FF3B30' }
+              { color: m.portfolio_alpha >= 0 ? colors.success : colors.danger }
             ]}>
               {m.portfolio_alpha >= 0 ? '+' : ''}{m.portfolio_alpha.toFixed(2)}%
             </Text>
-            <Text style={styles.metricHint}>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
               {m.portfolio_alpha > 0 ? 'Supera mercado' : 'Bajo mercado'}
             </Text>
           </View>
           
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Sharpe Ratio</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Sharpe Ratio</Text>
             <Text style={[
               styles.metricValue,
-              { color: m.sharpe_ratio >= 1 ? '#34C759' : m.sharpe_ratio >= 0 ? '#FF9500' : '#FF3B30' }
+              { color: m.sharpe_ratio >= 1 ? colors.success : m.sharpe_ratio >= 0 ? colors.warning : colors.danger }
             ]}>
               {m.sharpe_ratio.toFixed(2)}
             </Text>
-            <Text style={styles.metricHint}>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
               {m.sharpe_ratio >= 2 ? 'Excelente' : m.sharpe_ratio >= 1 ? 'Bueno' : 'Bajo'}
             </Text>
           </View>
           
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Retorno Anual</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Retorno Anual</Text>
             <Text style={[
               styles.metricValue,
-              { color: m.average_return >= 0 ? '#34C759' : '#FF3B30' }
+              { color: m.average_return >= 0 ? colors.success : colors.danger }
             ]}>
               {m.average_return >= 0 ? '+' : ''}{m.average_return.toFixed(2)}%
             </Text>
-            <Text style={styles.metricHint}>Promedio esperado</Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Promedio esperado</Text>
           </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderPieChart = () => {
+    if (!portfolio || portfolio.holdings.length === 0) return null;
+    
+    const pieData = portfolio.holdings.map((holding, index) => ({
+      value: holding.current_value,
+      color: CHART_COLORS[index % CHART_COLORS.length],
+      text: `${((holding.current_value / portfolio.current_value) * 100).toFixed(0)}%`,
+      label: holding.ticker,
+    }));
+    
+    return (
+      <View style={[styles.pieChartCard, { backgroundColor: colors.card }]}>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribución del Portafolio</Text>
+        <View style={styles.pieChartContainer}>
+          <PieChart
+            data={pieData}
+            donut
+            radius={80}
+            innerRadius={50}
+            innerCircleColor={colors.card}
+            centerLabelComponent={() => (
+              <View style={styles.pieChartCenter}>
+                <Text style={[styles.pieChartCenterText, { color: colors.text }]}>
+                  {portfolio.holdings.length}
+                </Text>
+                <Text style={[styles.pieChartCenterLabel, { color: colors.textSecondary }]}>
+                  Activos
+                </Text>
+              </View>
+            )}
+          />
+        </View>
+        <View style={styles.pieLegend}>
+          {portfolio.holdings.map((holding, index) => (
+            <View key={holding.ticker} style={styles.pieLegendItem}>
+              <View style={[styles.pieLegendDot, { backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }]} />
+              <Text style={[styles.pieLegendText, { color: colors.text }]}>{holding.ticker}</Text>
+              <Text style={[styles.pieLegendValue, { color: colors.textSecondary }]}>
+                {((holding.current_value / portfolio.current_value) * 100).toFixed(1)}%
+              </Text>
+            </View>
+          ))}
         </View>
       </View>
     );
@@ -587,10 +639,13 @@ export default function AccountScreen() {
                     </View>
                   </View>
                   
+                  {/* Pie Chart */}
+                  {renderPieChart()}
+                  
                   {/* Portfolio Metrics */}
                   {renderMetricsCard()}
                   
-                  <Text style={styles.sectionTitle}>Posiciones</Text>
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>Posiciones</Text>
                   {portfolio.holdings.map(renderPortfolioHolding)}
                 </>
               ) : (
@@ -1249,6 +1304,51 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#8E8E93',
     marginTop: 2,
+  },
+  pieChartCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+  },
+  pieChartContainer: {
+    alignItems: 'center',
+    marginVertical: 16,
+  },
+  pieChartCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pieChartCenterText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  pieChartCenterLabel: {
+    fontSize: 11,
+  },
+  pieLegend: {
+    marginTop: 12,
+  },
+  pieLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  pieLegendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 10,
+  },
+  pieLegendText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pieLegendValue: {
+    fontSize: 14,
   },
   sectionTitle: {
     fontSize: 16,

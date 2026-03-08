@@ -7,10 +7,13 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
 import axios from 'axios';
+import AIAssistant from '../../components/AIAssistant';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const screenWidth = Dimensions.get('window').width;
@@ -49,10 +52,31 @@ interface ResultsScreenProps {
 }
 
 export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
+  const { colors } = useTheme();
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([data.ratios[0]?.category]));
   const [chartData, setChartData] = useState<any>(null);
   const [loadingChart, setLoadingChart] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState('1y');
+  const [showAIChat, setShowAIChat] = useState(false);
+
+  // Prepare analysis data for AI
+  const aiAnalysisData = {
+    ticker: data.ticker,
+    company_name: data.company_name,
+    recommendation: data.recommendation,
+    favorable_percentage: data.favorable_percentage,
+    current_price: data.metadata?.current_price,
+    ratios: data.ratios.reduce((acc: any, cat) => {
+      cat.metrics.forEach(m => {
+        acc[m.name.toLowerCase().replace(/\s+/g, '_')] = {
+          value: m.value,
+          is_favorable: m.passed,
+          threshold: m.threshold,
+        };
+      });
+      return acc;
+    }, {}),
+  };
 
   useEffect(() => {
     fetchChartData(selectedPeriod);
@@ -394,6 +418,23 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
           ))}
         </View>
       </ScrollView>
+
+      {/* AI Assistant FAB */}
+      <TouchableOpacity
+        style={styles.aiFab}
+        onPress={() => setShowAIChat(true)}
+      >
+        <Ionicons name="sparkles" size={24} color="#FFFFFF" />
+      </TouchableOpacity>
+
+      {/* AI Chat Modal */}
+      <Modal visible={showAIChat} animationType="slide">
+        <AIAssistant
+          analysisData={aiAnalysisData}
+          onClose={() => setShowAIChat(false)}
+          colors={colors}
+        />
+      </Modal>
     </View>
   );
 }
@@ -743,5 +784,21 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: '#8E8E93',
+  },
+  aiFab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 30,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#AF52DE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
   },
 });

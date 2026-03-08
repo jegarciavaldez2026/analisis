@@ -1,104 +1,138 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '../../contexts/ThemeContext';
 
 export default function InfoScreen() {
+  const { isDark, toggleTheme, colors } = useTheme();
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView 
+      style={[styles.container, { backgroundColor: colors.background }]} 
+      contentContainerStyle={styles.content}
+    >
+      {/* Dark Mode Toggle */}
+      <View style={[styles.settingsCard, { backgroundColor: colors.card }]}>
+        <View style={styles.settingRow}>
+          <View style={styles.settingInfo}>
+            <Ionicons name={isDark ? 'moon' : 'sunny'} size={24} color={colors.primary} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Modo Oscuro</Text>
+          </View>
+          <Switch
+            value={isDark}
+            onValueChange={toggleTheme}
+            trackColor={{ false: '#E0E0E0', true: colors.primary }}
+            thumbColor="#FFFFFF"
+          />
+        </View>
+      </View>
+
       <View style={styles.header}>
-        <Ionicons name="information-circle" size={60} color="#007AFF" />
-        <Text style={styles.title}>Análisis Financiero</Text>
-        <Text style={styles.subtitle}>Tu asistente para decisiones de inversión</Text>
+        <Ionicons name="information-circle" size={60} color={colors.primary} />
+        <Text style={[styles.title, { color: colors.text }]}>Análisis Financiero</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Tu asistente para decisiones de inversión</Text>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>📊 ¿Qué hace esta app?</Text>
-        <Text style={styles.sectionText}>
-          Esta aplicación analiza acciones que cotizan en bolsa utilizando más de 25 ratios financieros clave.
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>📊 ¿Qué hace esta app?</Text>
+        <Text style={[styles.sectionText, { backgroundColor: colors.card, color: colors.text }]}>
+          Esta aplicación analiza acciones que cotizan en bolsa utilizando más de 50 ratios financieros clave.
           Proporciona una recomendación clara (Comprar, Mantener o Vender) basada en métricas fundamentales.
+          Incluye un asistente de IA para interpretar los resultados.
         </Text>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🎯 Categorías de Análisis</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>🎯 Categorías de Análisis</Text>
         <View style={styles.categoryList}>
-          <CategoryItem icon="trending-up" title="Rentabilidad" description="ROE, ROA, ROIC, Márgenes" />
-          <CategoryItem icon="water" title="Liquidez" description="Ratios corrientes, rápidos y de efectivo" />
-          <CategoryItem icon="shield-checkmark" title="Apalancamiento" description="Deuda/Capital, Ratio de deuda" />
-          <CategoryItem icon="pricetag" title="Valoración" description="P/E, EV/EBIT, Earning Yield" />
-          <CategoryItem icon="cash" title="Flujo de Caja" description="FCF, Márgenes de efectivo" />
-          <CategoryItem icon="fitness" title="Salud Financiera" description="Altman Z-Score, Piotroski F-Score" />
+          <CategoryItem icon="trending-up" title="Rentabilidad" description="ROE, ROA, ROIC, Márgenes" colors={colors} />
+          <CategoryItem icon="water" title="Liquidez" description="Ratios corrientes, rápidos y de efectivo" colors={colors} />
+          <CategoryItem icon="shield-checkmark" title="Apalancamiento" description="Deuda/Capital, Ratio de deuda" colors={colors} />
+          <CategoryItem icon="pricetag" title="Valoración" description="P/E, EV/EBIT, DCF, Graham" colors={colors} />
+          <CategoryItem icon="cash" title="Flujo de Caja" description="FCF, Márgenes de efectivo" colors={colors} />
+          <CategoryItem icon="fitness" title="Salud Financiera" description="Altman Z-Score, Piotroski F-Score" colors={colors} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>📈 Cómo usar</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>🤖 Asistente IA</Text>
+        <Text style={[styles.sectionText, { backgroundColor: colors.card, color: colors.text }]}>
+          Después de analizar una acción, puedes usar el asistente de IA para:
+          {'\n'}• Obtener una valoración detallada de las métricas
+          {'\n'}• Hacer preguntas sobre la acción
+          {'\n'}• Recibir recomendaciones personalizadas
+          {'\n'}• Entender el nivel de riesgo
+        </Text>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>📈 Cómo usar</Text>
         <View style={styles.stepsList}>
-          <StepItem number="1" text="Ingresa el ticker de una acción (ej: AAPL, MSFT, GOOGL)" />
-          <StepItem number="2" text="La app extrae datos financieros usando Yahoo Finance" />
-          <StepItem number="3" text="Se calculan automáticamente todos los ratios" />
-          <StepItem number="4" text="Recibe una recomendación basada en el análisis" />
+          <StepItem number="1" text="Ingresa el ticker de una acción (ej: AAPL, MSFT, GOOGL)" colors={colors} />
+          <StepItem number="2" text="La app extrae datos financieros usando Yahoo Finance" colors={colors} />
+          <StepItem number="3" text="Se calculan automáticamente todos los ratios" colors={colors} />
+          <StepItem number="4" text="Usa el asistente IA para interpretar los resultados" colors={colors} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>✅ Interpretación</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>✅ Interpretación</Text>
         <View style={styles.interpretationList}>
-          <InterpretationItem color="#34C759" label="COMPRAR" description="≥60% métricas favorables" />
-          <InterpretationItem color="#FF9500" label="MANTENER" description="40-60% métricas favorables" />
-          <InterpretationItem color="#FF3B30" label="VENDER" description="<40% métricas favorables" />
+          <InterpretationItem color={colors.success} label="COMPRAR" description="≥60% métricas favorables" colors={colors} />
+          <InterpretationItem color={colors.warning} label="MANTENER" description="40-60% métricas favorables" colors={colors} />
+          <InterpretationItem color={colors.danger} label="VENDER" description="<40% métricas favorables" colors={colors} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>⚠️ Advertencia</Text>
-        <Text style={styles.warningText}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>⚠️ Advertencia</Text>
+        <Text style={[styles.warningText, { backgroundColor: isDark ? '#3D2E00' : '#FFF3CD' }]}>
           Esta aplicación proporciona análisis automatizado basado en ratios financieros históricos.
           No constituye asesoramiento financiero. Siempre consulta con un profesional antes de tomar
           decisiones de inversión.
         </Text>
       </View>
 
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>Powered by Yahoo Finance</Text>
-        <Text style={styles.versionText}>Versión 1.0.0</Text>
+      <View style={[styles.footer, { borderTopColor: colors.border }]}>
+        <Text style={[styles.footerText, { color: colors.textSecondary }]}>Powered by Yahoo Finance</Text>
+        <Text style={[styles.versionText, { color: colors.textSecondary }]}>Versión 2.0.0</Text>
       </View>
     </ScrollView>
   );
 }
 
-function CategoryItem({ icon, title, description }: { icon: any; title: string; description: string }) {
+function CategoryItem({ icon, title, description, colors }: { icon: any; title: string; description: string; colors: any }) {
   return (
-    <View style={styles.categoryItem}>
-      <View style={styles.categoryIcon}>
-        <Ionicons name={icon} size={24} color="#007AFF" />
+    <View style={[styles.categoryItem, { backgroundColor: colors.card }]}>
+      <View style={[styles.categoryIcon, { backgroundColor: colors.primary + '15' }]}>
+        <Ionicons name={icon} size={24} color={colors.primary} />
       </View>
       <View style={styles.categoryContent}>
-        <Text style={styles.categoryTitle}>{title}</Text>
-        <Text style={styles.categoryDescription}>{description}</Text>
+        <Text style={[styles.categoryTitle, { color: colors.text }]}>{title}</Text>
+        <Text style={[styles.categoryDescription, { color: colors.textSecondary }]}>{description}</Text>
       </View>
     </View>
   );
 }
 
-function StepItem({ number, text }: { number: string; text: string }) {
+function StepItem({ number, text, colors }: { number: string; text: string; colors: any }) {
   return (
-    <View style={styles.stepItem}>
-      <View style={styles.stepNumber}>
+    <View style={[styles.stepItem, { backgroundColor: colors.card }]}>
+      <View style={[styles.stepNumber, { backgroundColor: colors.primary }]}>
         <Text style={styles.stepNumberText}>{number}</Text>
       </View>
-      <Text style={styles.stepText}>{text}</Text>
+      <Text style={[styles.stepText, { color: colors.text }]}>{text}</Text>
     </View>
   );
 }
 
-function InterpretationItem({ color, label, description }: { color: string; label: string; description: string }) {
+function InterpretationItem({ color, label, description, colors }: { color: string; label: string; description: string; colors: any }) {
   return (
-    <View style={styles.interpretationItem}>
+    <View style={[styles.interpretationItem, { backgroundColor: colors.card }]}>
       <View style={[styles.interpretationBadge, { backgroundColor: color }]}>
         <Text style={styles.interpretationLabel}>{label}</Text>
       </View>
-      <Text style={styles.interpretationDescription}>{description}</Text>
+      <Text style={[styles.interpretationDescription, { color: colors.textSecondary }]}>{description}</Text>
     </View>
   );
 }
@@ -106,26 +140,42 @@ function InterpretationItem({ color, label, description }: { color: string; labe
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   content: {
     padding: 20,
     paddingBottom: 40,
   },
+  settingsCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+  },
+  settingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  settingInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  settingLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
   header: {
     alignItems: 'center',
     marginBottom: 32,
-    paddingTop: 20,
+    paddingTop: 10,
   },
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#1D1D1F',
     marginTop: 12,
   },
   subtitle: {
     fontSize: 16,
-    color: '#6E6E73',
     marginTop: 4,
   },
   section: {
@@ -134,14 +184,11 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#1D1D1F',
     marginBottom: 12,
   },
   sectionText: {
     fontSize: 15,
-    color: '#1D1D1F',
     lineHeight: 22,
-    backgroundColor: '#FFFFFF',
     padding: 16,
     borderRadius: 12,
   },
@@ -150,7 +197,6 @@ const styles = StyleSheet.create({
   },
   categoryItem: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
     padding: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -159,7 +205,6 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#007AFF15',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -170,12 +215,10 @@ const styles = StyleSheet.create({
   categoryTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1D1D1F',
     marginBottom: 2,
   },
   categoryDescription: {
     fontSize: 13,
-    color: '#6E6E73',
   },
   stepsList: {
     gap: 12,
@@ -183,7 +226,6 @@ const styles = StyleSheet.create({
   stepItem: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#FFFFFF',
     padding: 16,
     borderRadius: 12,
   },
@@ -191,7 +233,6 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#007AFF',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -204,7 +245,6 @@ const styles = StyleSheet.create({
   stepText: {
     flex: 1,
     fontSize: 14,
-    color: '#1D1D1F',
     lineHeight: 20,
     paddingTop: 4,
   },
@@ -214,7 +254,6 @@ const styles = StyleSheet.create({
   interpretationItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
     padding: 16,
     borderRadius: 12,
   },
@@ -234,13 +273,11 @@ const styles = StyleSheet.create({
   interpretationDescription: {
     flex: 1,
     fontSize: 14,
-    color: '#6E6E73',
   },
   warningText: {
     fontSize: 14,
-    color: '#1D1D1F',
+    color: '#856404',
     lineHeight: 20,
-    backgroundColor: '#FFF3CD',
     padding: 16,
     borderRadius: 12,
     borderLeftWidth: 4,
@@ -251,15 +288,12 @@ const styles = StyleSheet.create({
     marginTop: 24,
     paddingTop: 24,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
   },
   footerText: {
     fontSize: 14,
-    color: '#6E6E73',
     marginBottom: 4,
   },
   versionText: {
     fontSize: 12,
-    color: '#8E8E93',
   },
 });
