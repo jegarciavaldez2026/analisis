@@ -28,7 +28,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="search"
         options={{
-          title: 'Análisis Financiero',
+          title: 'Análisis',
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'search' : 'search-outline'} size={size} color={color} />
           ),
@@ -40,6 +40,15 @@ export default function TabLayout() {
           title: 'Mercado',
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'pulse' : 'pulse-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="account"
+        options={{
+          title: 'Mi Cuenta',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons name={focused ? 'person' : 'person-outline'} size={size} color={color} />
           ),
         }}
       />

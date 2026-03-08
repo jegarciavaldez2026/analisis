@@ -1946,6 +1946,411 @@ async def get_market_indicators():
         logging.error(f"Error fetching market indicators: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener indicadores de mercado: {str(e)}")
 
+# ============================================
+# WATCHLIST MODELS AND ENDPOINTS
+# ============================================
+
+class WatchlistItem(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ticker: str
+    company_name: str
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    notify_on_price_change: bool = False
+    price_change_threshold: float = 5.0  # Percentage
+    added_date: datetime = Field(default_factory=datetime.utcnow)
+    current_price: Optional[float] = None
+    last_checked: Optional[datetime] = None
+    notes: Optional[str] = None
+
+class WatchlistItemCreate(BaseModel):
+    ticker: str
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    notify_on_price_change: bool = False
+    price_change_threshold: float = 5.0
+    notes: Optional[str] = None
+
+class WatchlistItemUpdate(BaseModel):
+    target_buy_price: Optional[float] = None
+    target_sell_price: Optional[float] = None
+    notify_on_price_change: Optional[bool] = None
+    price_change_threshold: Optional[float] = None
+    notes: Optional[str] = None
+
+@api_router.get("/watchlist", response_model=List[WatchlistItem])
+async def get_watchlist():
+    """Get all watchlist items with current prices"""
+    try:
+        items = await db.watchlist.find().sort("added_date", -1).to_list(100)
+        result = []
+        for item in items:
+            # Update current price
+            try:
+                stock = yf.Ticker(item['ticker'])
+                info = stock.info
+                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                item['current_price'] = current_price
+                item['last_checked'] = datetime.utcnow()
+                # Update in DB
+                await db.watchlist.update_one(
+                    {"id": item['id']},
+                    {"$set": {"current_price": current_price, "last_checked": datetime.utcnow()}}
+                )
+            except:
+                pass
+            result.append(WatchlistItem(**item))
+        return result
+    except Exception as e:
+        logging.error(f"Error fetching watchlist: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener watchlist: {str(e)}")
+
+@api_router.post("/watchlist", response_model=WatchlistItem)
+async def add_to_watchlist(item: WatchlistItemCreate):
+    """Add a stock to watchlist"""
+    try:
+        ticker = item.ticker.upper().strip()
+        
+        # Check if already in watchlist
+        existing = await db.watchlist.find_one({"ticker": ticker})
+        if existing:
+            raise HTTPException(status_code=400, detail=f"{ticker} ya está en tu watchlist")
+        
+        # Fetch stock info
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        if not info or 'symbol' not in info:
+            raise HTTPException(status_code=404, detail=f"No se encontró el ticker {ticker}")
+        
+        watchlist_item = WatchlistItem(
+            ticker=ticker,
+            company_name=info.get('longName', info.get('shortName', ticker)),
+            target_buy_price=item.target_buy_price,
+            target_sell_price=item.target_sell_price,
+            notify_on_price_change=item.notify_on_price_change,
+            price_change_threshold=item.price_change_threshold,
+            current_price=info.get('currentPrice', info.get('regularMarketPrice', 0)),
+            last_checked=datetime.utcnow(),
+            notes=item.notes
+        )
+        
+        await db.watchlist.insert_one(watchlist_item.dict())
+        return watchlist_item
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error adding to watchlist: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al agregar a watchlist: {str(e)}")
+
+@api_router.put("/watchlist/{item_id}", response_model=WatchlistItem)
+async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate):
+    """Update a watchlist item"""
+    try:
+        existing = await db.watchlist.find_one({"id": item_id})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Item no encontrado en watchlist")
+        
+        update_data = {k: v for k, v in update.dict().items() if v is not None}
+        if update_data:
+            await db.watchlist.update_one({"id": item_id}, {"$set": update_data})
+        
+        updated = await db.watchlist.find_one({"id": item_id})
+        return WatchlistItem(**updated)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating watchlist item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al actualizar item: {str(e)}")
+
+@api_router.delete("/watchlist/{item_id}")
+async def remove_from_watchlist(item_id: str):
+    """Remove a stock from watchlist"""
+    try:
+        result = await db.watchlist.delete_one({"id": item_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Item no encontrado en watchlist")
+        return {"message": "Item eliminado de watchlist"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error removing from watchlist: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar de watchlist: {str(e)}")
+
+@api_router.get("/watchlist/alerts")
+async def check_watchlist_alerts():
+    """Check all watchlist items for price alerts"""
+    try:
+        items = await db.watchlist.find().to_list(100)
+        alerts = []
+        
+        for item in items:
+            try:
+                stock = yf.Ticker(item['ticker'])
+                info = stock.info
+                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                
+                alert_info = {
+                    "ticker": item['ticker'],
+                    "company_name": item['company_name'],
+                    "current_price": current_price,
+                    "alerts": []
+                }
+                
+                # Check target buy price
+                if item.get('target_buy_price') and current_price <= item['target_buy_price']:
+                    alert_info["alerts"].append({
+                        "type": "buy",
+                        "message": f"Precio objetivo de compra alcanzado: ${current_price:.2f} <= ${item['target_buy_price']:.2f}"
+                    })
+                
+                # Check target sell price
+                if item.get('target_sell_price') and current_price >= item['target_sell_price']:
+                    alert_info["alerts"].append({
+                        "type": "sell",
+                        "message": f"Precio objetivo de venta alcanzado: ${current_price:.2f} >= ${item['target_sell_price']:.2f}"
+                    })
+                
+                # Check price change threshold
+                if item.get('notify_on_price_change') and item.get('current_price'):
+                    old_price = item['current_price']
+                    if old_price > 0:
+                        change_pct = ((current_price - old_price) / old_price) * 100
+                        threshold = item.get('price_change_threshold', 5.0)
+                        if abs(change_pct) >= threshold:
+                            direction = "subido" if change_pct > 0 else "bajado"
+                            alert_info["alerts"].append({
+                                "type": "change",
+                                "message": f"El precio ha {direction} {abs(change_pct):.2f}%"
+                            })
+                
+                if alert_info["alerts"]:
+                    alerts.append(alert_info)
+                    
+            except Exception as e:
+                logging.warning(f"Error checking alert for {item['ticker']}: {str(e)}")
+                continue
+        
+        return {"alerts": alerts, "checked_at": datetime.utcnow()}
+        
+    except Exception as e:
+        logging.error(f"Error checking alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al verificar alertas: {str(e)}")
+
+# ============================================
+# PORTFOLIO MODELS AND ENDPOINTS
+# ============================================
+
+class PortfolioTransaction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ticker: str
+    company_name: str
+    transaction_type: str  # "buy" or "sell"
+    shares: float
+    price_per_share: float
+    total_amount: float
+    commission: float = 0.0
+    transaction_date: datetime
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class PortfolioTransactionCreate(BaseModel):
+    ticker: str
+    transaction_type: str  # "buy" or "sell"
+    shares: float
+    price_per_share: float
+    commission: float = 0.0
+    transaction_date: datetime
+    notes: Optional[str] = None
+
+class PortfolioHolding(BaseModel):
+    ticker: str
+    company_name: str
+    total_shares: float
+    average_cost: float
+    total_invested: float
+    current_price: float
+    current_value: float
+    profit_loss: float
+    profit_loss_percent: float
+    transactions: List[PortfolioTransaction]
+
+class PortfolioSummary(BaseModel):
+    total_invested: float
+    current_value: float
+    total_profit_loss: float
+    total_profit_loss_percent: float
+    holdings: List[PortfolioHolding]
+
+@api_router.get("/portfolio", response_model=PortfolioSummary)
+async def get_portfolio():
+    """Get portfolio summary with current values"""
+    try:
+        transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
+        
+        # Group transactions by ticker
+        holdings_map = {}
+        for tx in transactions:
+            ticker = tx['ticker']
+            if ticker not in holdings_map:
+                holdings_map[ticker] = {
+                    "ticker": ticker,
+                    "company_name": tx['company_name'],
+                    "transactions": [],
+                    "total_shares": 0,
+                    "total_cost": 0
+                }
+            
+            holdings_map[ticker]["transactions"].append(PortfolioTransaction(**tx))
+            
+            if tx['transaction_type'] == 'buy':
+                holdings_map[ticker]["total_shares"] += tx['shares']
+                holdings_map[ticker]["total_cost"] += tx['total_amount'] + tx.get('commission', 0)
+            else:  # sell
+                holdings_map[ticker]["total_shares"] -= tx['shares']
+                holdings_map[ticker]["total_cost"] -= tx['total_amount'] - tx.get('commission', 0)
+        
+        # Calculate current values
+        holdings = []
+        total_invested = 0
+        current_value = 0
+        
+        for ticker, data in holdings_map.items():
+            if data["total_shares"] <= 0:
+                continue  # Skip if sold all shares
+            
+            # Get current price
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+            except:
+                curr_price = 0
+            
+            curr_value = data["total_shares"] * curr_price
+            avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
+            profit_loss = curr_value - data["total_cost"]
+            profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
+            
+            holding = PortfolioHolding(
+                ticker=ticker,
+                company_name=data["company_name"],
+                total_shares=data["total_shares"],
+                average_cost=avg_cost,
+                total_invested=data["total_cost"],
+                current_price=curr_price,
+                current_value=curr_value,
+                profit_loss=profit_loss,
+                profit_loss_percent=profit_loss_pct,
+                transactions=data["transactions"]
+            )
+            holdings.append(holding)
+            total_invested += data["total_cost"]
+            current_value += curr_value
+        
+        total_pl = current_value - total_invested
+        total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+        
+        return PortfolioSummary(
+            total_invested=total_invested,
+            current_value=current_value,
+            total_profit_loss=total_pl,
+            total_profit_loss_percent=total_pl_pct,
+            holdings=holdings
+        )
+        
+    except Exception as e:
+        logging.error(f"Error fetching portfolio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener portafolio: {str(e)}")
+
+@api_router.post("/portfolio", response_model=PortfolioTransaction)
+async def add_portfolio_transaction(tx: PortfolioTransactionCreate):
+    """Add a transaction to portfolio"""
+    try:
+        ticker = tx.ticker.upper().strip()
+        
+        # Fetch stock info
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        if not info or 'symbol' not in info:
+            raise HTTPException(status_code=404, detail=f"No se encontró el ticker {ticker}")
+        
+        transaction = PortfolioTransaction(
+            ticker=ticker,
+            company_name=info.get('longName', info.get('shortName', ticker)),
+            transaction_type=tx.transaction_type,
+            shares=tx.shares,
+            price_per_share=tx.price_per_share,
+            total_amount=tx.shares * tx.price_per_share,
+            commission=tx.commission,
+            transaction_date=tx.transaction_date,
+            notes=tx.notes
+        )
+        
+        await db.portfolio.insert_one(transaction.dict())
+        return transaction
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error adding portfolio transaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al agregar transacción: {str(e)}")
+
+@api_router.delete("/portfolio/{transaction_id}")
+async def delete_portfolio_transaction(transaction_id: str):
+    """Delete a portfolio transaction"""
+    try:
+        result = await db.portfolio.delete_one({"id": transaction_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Transacción no encontrada")
+        return {"message": "Transacción eliminada"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting transaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar transacción: {str(e)}")
+
+@api_router.get("/portfolio/transactions", response_model=List[PortfolioTransaction])
+async def get_portfolio_transactions():
+    """Get all portfolio transactions"""
+    try:
+        transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
+        return [PortfolioTransaction(**tx) for tx in transactions]
+    except Exception as e:
+        logging.error(f"Error fetching transactions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener transacciones: {str(e)}")
+
+# ============================================
+# HISTORY DELETE ENDPOINTS
+# ============================================
+
+@api_router.delete("/history/{analysis_id}")
+async def delete_analysis(analysis_id: str):
+    """Delete a single analysis from history"""
+    try:
+        result = await db.analyses.delete_one({"id": analysis_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Análisis no encontrado")
+        return {"message": "Análisis eliminado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar análisis: {str(e)}")
+
+@api_router.delete("/history")
+async def delete_all_history():
+    """Delete all analysis history"""
+    try:
+        result = await db.analyses.delete_many({})
+        return {"message": f"Se eliminaron {result.deleted_count} análisis"}
+    except Exception as e:
+        logging.error(f"Error deleting history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar historial: {str(e)}")
+
 # Include the router in the main app
 app.include_router(api_router)
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +27,7 @@ export default function HistoryScreen() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const fetchHistory = async () => {
     try {
@@ -43,9 +45,60 @@ export default function HistoryScreen() {
     fetchHistory();
   }, []);
 
-  const onRefresh = () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
     fetchHistory();
+  }, []);
+
+  const deleteAnalysis = async (id: string, ticker: string) => {
+    Alert.alert(
+      'Eliminar Análisis',
+      `¿Eliminar el análisis de ${ticker}?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(id);
+            try {
+              await axios.delete(`${BACKEND_URL}/api/history/${id}`);
+              setHistory(prev => prev.filter(item => item.id !== id));
+            } catch (error) {
+              Alert.alert('Error', 'No se pudo eliminar el análisis');
+            } finally {
+              setDeleting(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const deleteAllHistory = () => {
+    Alert.alert(
+      'Eliminar Todo el Historial',
+      '¿Estás seguro de que quieres eliminar todo el historial? Esta acción no se puede deshacer.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar Todo',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              await axios.delete(`${BACKEND_URL}/api/history`);
+              setHistory([]);
+              Alert.alert('Éxito', 'Historial eliminado');
+            } catch (error) {
+              Alert.alert('Error', 'No se pudo eliminar el historial');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const getRecommendationColor = (recommendation: string) => {
@@ -75,19 +128,32 @@ export default function HistoryScreen() {
   const renderItem = ({ item }: { item: HistoryItem }) => (
     <View style={styles.historyCard}>
       <View style={styles.cardHeader}>
-        <View>
+        <View style={styles.tickerInfo}>
           <Text style={styles.ticker}>{item.ticker}</Text>
           <Text style={styles.companyName} numberOfLines={1}>
             {item.company_name}
           </Text>
         </View>
-        <View
-          style={[
-            styles.recommendationBadge,
-            { backgroundColor: getRecommendationColor(item.recommendation) },
-          ]}
-        >
-          <Text style={styles.recommendationText}>{item.recommendation}</Text>
+        <View style={styles.cardActions}>
+          <View
+            style={[
+              styles.recommendationBadge,
+              { backgroundColor: getRecommendationColor(item.recommendation) },
+            ]}
+          >
+            <Text style={styles.recommendationText}>{item.recommendation}</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => deleteAnalysis(item.id, item.ticker)}
+            disabled={deleting === item.id}
+          >
+            {deleting === item.id ? (
+              <ActivityIndicator size="small" color="#FF3B30" />
+            ) : (
+              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+            )}
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -128,6 +194,18 @@ export default function HistoryScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Header with Delete All Button */}
+      <View style={styles.headerBar}>
+        <Text style={styles.headerTitle}>{history.length} análisis</Text>
+        <TouchableOpacity
+          style={styles.deleteAllButton}
+          onPress={deleteAllHistory}
+        >
+          <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+          <Text style={styles.deleteAllText}>Borrar todo</Text>
+        </TouchableOpacity>
+      </View>
+
       <FlashList
         data={history}
         renderItem={renderItem}
@@ -175,6 +253,35 @@ const styles = StyleSheet.create({
     color: '#6E6E73',
     textAlign: 'center',
   },
+  headerBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  headerTitle: {
+    fontSize: 14,
+    color: '#6E6E73',
+    fontWeight: '500',
+  },
+  deleteAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF3B3010',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  deleteAllText: {
+    fontSize: 14,
+    color: '#FF3B30',
+    fontWeight: '600',
+  },
   listContent: {
     padding: 16,
   },
@@ -195,6 +302,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 12,
   },
+  tickerInfo: {
+    flex: 1,
+  },
   ticker: {
     fontSize: 20,
     fontWeight: 'bold',
@@ -204,7 +314,12 @@ const styles = StyleSheet.create({
   companyName: {
     fontSize: 14,
     color: '#6E6E73',
-    maxWidth: 200,
+    maxWidth: 180,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   recommendationBadge: {
     paddingHorizontal: 12,
@@ -215,6 +330,11 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  deleteButton: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#FF3B3010',
   },
   cardFooter: {
     flexDirection: 'row',
