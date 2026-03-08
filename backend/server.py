@@ -1825,6 +1825,127 @@ async def get_volume_data(ticker: str, period: str = "1y", sma_period: int = 20)
         logging.error(f"Error fetching volume data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener datos de volumen: {str(e)}")
 
+class MarketIndicator(BaseModel):
+    name: str
+    ticker: str
+    current_value: float
+    change: float
+    change_percent: float
+    updated: str
+    description: str
+
+class MarketIndicatorsResponse(BaseModel):
+    vix: MarketIndicator
+    treasury_10y: MarketIndicator
+    sp500: MarketIndicator
+    fear_greed_level: str
+    market_sentiment: str
+
+@api_router.get("/market-indicators", response_model=MarketIndicatorsResponse)
+async def get_market_indicators():
+    """Get market indicators: VIX, 10Y Treasury, S&P 500"""
+    try:
+        # VIX - Volatility Index
+        vix = yf.Ticker("^VIX")
+        vix_data = vix.history(period="5d")
+        
+        if not vix_data.empty:
+            vix_current = float(vix_data['Close'].iloc[-1])
+            vix_prev = float(vix_data['Close'].iloc[-2]) if len(vix_data) > 1 else vix_current
+            vix_change = vix_current - vix_prev
+            vix_change_pct = (vix_change / vix_prev) * 100 if vix_prev > 0 else 0
+            vix_date = vix_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            vix_current = 0
+            vix_change = 0
+            vix_change_pct = 0
+            vix_date = ""
+        
+        # 10-Year Treasury Yield
+        treasury = yf.Ticker("^TNX")
+        treasury_data = treasury.history(period="5d")
+        
+        if not treasury_data.empty:
+            treasury_current = float(treasury_data['Close'].iloc[-1])
+            treasury_prev = float(treasury_data['Close'].iloc[-2]) if len(treasury_data) > 1 else treasury_current
+            treasury_change = treasury_current - treasury_prev
+            treasury_change_pct = (treasury_change / treasury_prev) * 100 if treasury_prev > 0 else 0
+            treasury_date = treasury_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            treasury_current = 0
+            treasury_change = 0
+            treasury_change_pct = 0
+            treasury_date = ""
+        
+        # S&P 500
+        sp500 = yf.Ticker("^GSPC")
+        sp500_data = sp500.history(period="5d")
+        
+        if not sp500_data.empty:
+            sp500_current = float(sp500_data['Close'].iloc[-1])
+            sp500_prev = float(sp500_data['Close'].iloc[-2]) if len(sp500_data) > 1 else sp500_current
+            sp500_change = sp500_current - sp500_prev
+            sp500_change_pct = (sp500_change / sp500_prev) * 100 if sp500_prev > 0 else 0
+            sp500_date = sp500_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            sp500_current = 0
+            sp500_change = 0
+            sp500_change_pct = 0
+            sp500_date = ""
+        
+        # Determine Fear & Greed level based on VIX
+        if vix_current < 12:
+            fear_greed = "Extrema Codicia"
+            sentiment = "Mercado muy optimista"
+        elif vix_current < 17:
+            fear_greed = "Codicia"
+            sentiment = "Mercado optimista"
+        elif vix_current < 25:
+            fear_greed = "Neutral"
+            sentiment = "Mercado equilibrado"
+        elif vix_current < 35:
+            fear_greed = "Miedo"
+            sentiment = "Mercado pesimista"
+        else:
+            fear_greed = "Extremo Miedo"
+            sentiment = "Mercado muy pesimista"
+        
+        return MarketIndicatorsResponse(
+            vix=MarketIndicator(
+                name="VIX - Índice de Volatilidad",
+                ticker="^VIX",
+                current_value=vix_current,
+                change=vix_change,
+                change_percent=vix_change_pct,
+                updated=vix_date,
+                description="Mide la volatilidad esperada del S&P 500. Mayor VIX = Mayor miedo en el mercado"
+            ),
+            treasury_10y=MarketIndicator(
+                name="Bonos del Tesoro 10 Años",
+                ticker="^TNX",
+                current_value=treasury_current,
+                change=treasury_change,
+                change_percent=treasury_change_pct,
+                updated=treasury_date,
+                description="Rendimiento de los bonos del tesoro de EEUU a 10 años. Indicador de tasas de interés"
+            ),
+            sp500=MarketIndicator(
+                name="S&P 500",
+                ticker="^GSPC",
+                current_value=sp500_current,
+                change=sp500_change,
+                change_percent=sp500_change_pct,
+                updated=sp500_date,
+                description="Índice bursátil de las 500 empresas más grandes de EEUU"
+            ),
+            fear_greed_level=fear_greed,
+            market_sentiment=sentiment
+        )
+        
+    except Exception as e:
+        logging.error(f"Error fetching market indicators: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener indicadores de mercado: {str(e)}")
+
 # Include the router in the main app
 app.include_router(api_router)
 
