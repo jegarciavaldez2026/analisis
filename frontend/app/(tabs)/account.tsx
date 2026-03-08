@@ -17,11 +17,12 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import { PieChart } from 'react-native-gifted-charts';
+import { PieChart, LineChart } from 'react-native-gifted-charts';
 import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const CHART_COLORS = ['#007AFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6', '#FF2D55', '#00C7BE'];
+const screenWidth = Dimensions.get('window').width;
 
 interface WatchlistItem {
   id: string;
@@ -101,8 +102,32 @@ interface AlertInfo {
   alerts: { type: string; message: string }[];
 }
 
+interface CashMovement {
+  id: string;
+  movement_type: 'deposit' | 'withdrawal';
+  amount: number;
+  description: string | null;
+  movement_date: string;
+}
+
+interface PortfolioHistoryPoint {
+  date: string;
+  total_value: number;
+  invested_value: number;
+  cash_balance: number;
+  profit_loss: number;
+  profit_loss_percent: number;
+}
+
+interface PortfolioEvolution {
+  history: PortfolioHistoryPoint[];
+  current_value: number;
+  total_change: number;
+  total_change_percent: number;
+}
+
 export default function AccountScreen() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -110,6 +135,18 @@ export default function AccountScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [alerts, setAlerts] = useState<AlertInfo[]>([]);
+  
+  // New states for cash movements and evolution
+  const [cashMovements, setCashMovements] = useState<CashMovement[]>([]);
+  const [portfolioEvolution, setPortfolioEvolution] = useState<PortfolioEvolution | null>(null);
+  const [hideValues, setHideValues] = useState(false);
+  const [showCashModal, setShowCashModal] = useState(false);
+  
+  // Cash form states
+  const [cashType, setCashType] = useState<'deposit' | 'withdrawal'>('deposit');
+  const [cashAmount, setCashAmount] = useState('');
+  const [cashDescription, setCashDescription] = useState('');
+  const [cashDate, setCashDate] = useState(new Date().toISOString().split('T')[0]);
   
   // Modal states
   const [showAddWatchlist, setShowAddWatchlist] = useState(false);
@@ -147,12 +184,16 @@ export default function AccountScreen() {
           setAlerts(alertsResponse.data.alerts);
         }
       } else {
-        const [portfolioRes, transactionsRes] = await Promise.all([
+        const [portfolioRes, transactionsRes, cashRes, evolutionRes] = await Promise.all([
           axios.get(`${BACKEND_URL}/api/portfolio`),
-          axios.get(`${BACKEND_URL}/api/portfolio/transactions`)
+          axios.get(`${BACKEND_URL}/api/portfolio/transactions`),
+          axios.get(`${BACKEND_URL}/api/portfolio/cash`),
+          axios.get(`${BACKEND_URL}/api/portfolio/evolution`)
         ]);
         setPortfolio(portfolioRes.data);
         setAllTransactions(transactionsRes.data);
+        setCashMovements(cashRes.data);
+        setPortfolioEvolution(evolutionRes.data);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -291,6 +332,66 @@ export default function AccountScreen() {
     setTxCommission('0');
     setTxNotes('');
     setTxDate(new Date().toISOString().split('T')[0]);
+  };
+
+  const resetCashForm = () => {
+    setCashType('deposit');
+    setCashAmount('');
+    setCashDescription('');
+    setCashDate(new Date().toISOString().split('T')[0]);
+  };
+
+  const addCashMovement = async () => {
+    if (!cashAmount || parseFloat(cashAmount) <= 0) {
+      Alert.alert('Error', 'Ingresa un monto válido');
+      return;
+    }
+    
+    setSubmitting(true);
+    try {
+      await axios.post(`${BACKEND_URL}/api/portfolio/cash`, {
+        movement_type: cashType,
+        amount: parseFloat(cashAmount),
+        description: cashDescription || null,
+        movement_date: new Date(cashDate).toISOString(),
+      });
+      
+      setShowCashModal(false);
+      resetCashForm();
+      fetchData();
+      Alert.alert('Éxito', cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado');
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar el movimiento');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const deleteCashMovement = async (id: string) => {
+    Alert.alert(
+      'Eliminar Movimiento',
+      '¿Eliminar este movimiento de efectivo?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await axios.delete(`${BACKEND_URL}/api/portfolio/cash/${id}`);
+              fetchData();
+            } catch (error) {
+              Alert.alert('Error', 'No se pudo eliminar');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const formatCurrency = (value: number) => {
+    if (hideValues) return '••••••';
+    return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
   const formatDate = (dateString: string) => {
@@ -675,8 +776,250 @@ export default function AccountScreen() {
     );
   };
 
+  const renderEvolutionChart = () => {
+    if (!portfolioEvolution || portfolioEvolution.history.length === 0) return null;
+    
+    const lineData = portfolioEvolution.history.map(point => ({
+      value: point.total_value,
+      label: point.date.slice(5, 7), // Month
+      dataPointText: '',
+    }));
+    
+    return (
+      <View style={[styles.evolutionCard, { backgroundColor: colors.card }]}>
+        <View style={styles.evolutionHeader}>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>Evolución del Portafolio</Text>
+          <View style={[
+            styles.evolutionChange,
+            { backgroundColor: portfolioEvolution.total_change >= 0 ? '#34C75915' : '#FF3B3015' }
+          ]}>
+            <Ionicons
+              name={portfolioEvolution.total_change >= 0 ? 'trending-up' : 'trending-down'}
+              size={14}
+              color={portfolioEvolution.total_change >= 0 ? '#34C759' : '#FF3B30'}
+            />
+            <Text style={{
+              color: portfolioEvolution.total_change >= 0 ? '#34C759' : '#FF3B30',
+              fontSize: 12,
+              fontWeight: '600'
+            }}>
+              {portfolioEvolution.total_change >= 0 ? '+' : ''}{portfolioEvolution.total_change_percent.toFixed(1)}%
+            </Text>
+          </View>
+        </View>
+        <View style={styles.evolutionChartContainer}>
+          <LineChart
+            data={lineData}
+            width={screenWidth - 80}
+            height={150}
+            color={colors.primary}
+            thickness={2}
+            hideDataPoints
+            curved
+            startFillColor={colors.primary + '40'}
+            endFillColor={colors.primary + '05'}
+            startOpacity={0.4}
+            endOpacity={0.05}
+            areaChart
+            yAxisColor={colors.border}
+            xAxisColor={colors.border}
+            yAxisTextStyle={{ color: colors.textSecondary, fontSize: 10 }}
+            xAxisLabelTextStyle={{ color: colors.textSecondary, fontSize: 9 }}
+            hideRules
+            spacing={Math.max((screenWidth - 100) / lineData.length, 20)}
+          />
+        </View>
+      </View>
+    );
+  };
+
+  const renderCashMovements = () => {
+    const totalDeposits = cashMovements.filter(m => m.movement_type === 'deposit').reduce((sum, m) => sum + m.amount, 0);
+    const totalWithdrawals = cashMovements.filter(m => m.movement_type === 'withdrawal').reduce((sum, m) => sum + m.amount, 0);
+    const cashBalance = totalDeposits - totalWithdrawals;
+    
+    return (
+      <View style={[styles.cashCard, { backgroundColor: colors.card }]}>
+        <View style={styles.cashHeader}>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>Efectivo</Text>
+          <TouchableOpacity
+            style={[styles.addCashButton, { backgroundColor: colors.primary }]}
+            onPress={() => setShowCashModal(true)}
+          >
+            <Ionicons name="add" size={18} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+        
+        <View style={styles.cashSummary}>
+          <View style={styles.cashItem}>
+            <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Depósitos</Text>
+            <Text style={[styles.cashValue, { color: '#34C759' }]}>
+              {hideValues ? '••••••' : `+$${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+            </Text>
+          </View>
+          <View style={styles.cashItem}>
+            <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Retiros</Text>
+            <Text style={[styles.cashValue, { color: '#FF3B30' }]}>
+              {hideValues ? '••••••' : `-$${totalWithdrawals.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+            </Text>
+          </View>
+          <View style={[styles.cashItem, styles.cashBalanceItem, { borderTopColor: colors.border }]}>
+            <Text style={[styles.cashLabel, { color: colors.text, fontWeight: '600' }]}>Balance</Text>
+            <Text style={[styles.cashBalance, { color: cashBalance >= 0 ? colors.primary : '#FF3B30' }]}>
+              {hideValues ? '••••••' : `$${cashBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+            </Text>
+          </View>
+        </View>
+        
+        {cashMovements.length > 0 && (
+          <View style={styles.cashHistory}>
+            <Text style={[styles.cashHistoryTitle, { color: colors.textSecondary }]}>Últimos movimientos</Text>
+            {cashMovements.slice(0, 3).map((movement) => (
+              <View key={movement.id} style={[styles.cashMovementItem, { borderBottomColor: colors.border }]}>
+                <View style={styles.cashMovementInfo}>
+                  <Ionicons
+                    name={movement.movement_type === 'deposit' ? 'arrow-down-circle' : 'arrow-up-circle'}
+                    size={20}
+                    color={movement.movement_type === 'deposit' ? '#34C759' : '#FF3B30'}
+                  />
+                  <View style={styles.cashMovementDetails}>
+                    <Text style={[styles.cashMovementType, { color: colors.text }]}>
+                      {movement.movement_type === 'deposit' ? 'Depósito' : 'Retiro'}
+                    </Text>
+                    <Text style={[styles.cashMovementDate, { color: colors.textSecondary }]}>
+                      {formatDate(movement.movement_date)}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.cashMovementActions}>
+                  <Text style={[
+                    styles.cashMovementAmount,
+                    { color: movement.movement_type === 'deposit' ? '#34C759' : '#FF3B30' }
+                  ]}>
+                    {movement.movement_type === 'deposit' ? '+' : '-'}
+                    {hideValues ? '••••' : `$${movement.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                  </Text>
+                  <TouchableOpacity onPress={() => deleteCashMovement(movement.id)}>
+                    <Ionicons name="trash-outline" size={16} color="#FF3B30" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderCashModal = () => (
+    <Modal
+      visible={showCashModal}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={() => setShowCashModal(false)}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.modalOverlay}
+      >
+        <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
+            </Text>
+            <TouchableOpacity onPress={() => setShowCashModal(false)}>
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          
+          {/* Type Selector */}
+          <View style={styles.cashTypeSelector}>
+            <TouchableOpacity
+              style={[
+                styles.cashTypeButton,
+                { borderColor: colors.border },
+                cashType === 'deposit' && { backgroundColor: '#34C75920', borderColor: '#34C759' }
+              ]}
+              onPress={() => setCashType('deposit')}
+            >
+              <Ionicons name="arrow-down-circle" size={20} color={cashType === 'deposit' ? '#34C759' : colors.textSecondary} />
+              <Text style={[styles.cashTypeText, { color: cashType === 'deposit' ? '#34C759' : colors.textSecondary }]}>
+                Depósito
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.cashTypeButton,
+                { borderColor: colors.border },
+                cashType === 'withdrawal' && { backgroundColor: '#FF3B3020', borderColor: '#FF3B30' }
+              ]}
+              onPress={() => setCashType('withdrawal')}
+            >
+              <Ionicons name="arrow-up-circle" size={20} color={cashType === 'withdrawal' ? '#FF3B30' : colors.textSecondary} />
+              <Text style={[styles.cashTypeText, { color: cashType === 'withdrawal' ? '#FF3B30' : colors.textSecondary }]}>
+                Retiro
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.inputGroup}>
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Monto *</Text>
+            <TextInput
+              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              placeholder="0.00"
+              placeholderTextColor={colors.textSecondary}
+              value={cashAmount}
+              onChangeText={setCashAmount}
+              keyboardType="decimal-pad"
+            />
+          </View>
+          
+          <View style={styles.inputGroup}>
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Descripción</Text>
+            <TextInput
+              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              placeholder="Opcional"
+              placeholderTextColor={colors.textSecondary}
+              value={cashDescription}
+              onChangeText={setCashDescription}
+            />
+          </View>
+          
+          <View style={styles.inputGroup}>
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Fecha</Text>
+            <TextInput
+              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.textSecondary}
+              value={cashDate}
+              onChangeText={setCashDate}
+            />
+          </View>
+          
+          <TouchableOpacity
+            style={[
+              styles.submitButton,
+              { backgroundColor: cashType === 'deposit' ? '#34C759' : '#FF3B30' },
+              submitting && styles.submitButtonDisabled
+            ]}
+            onPress={addCashMovement}
+            disabled={submitting}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.submitButtonText}>
+                {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Tab Selector */}
       <View style={styles.tabSelector}>
         <TouchableOpacity
@@ -766,20 +1109,32 @@ export default function AccountScreen() {
             <>
               {portfolio && portfolio.holdings.length > 0 ? (
                 <>
-                  {/* Portfolio Summary */}
-                  <View style={styles.summaryCard}>
-                    <Text style={styles.summaryTitle}>Resumen del Portafolio</Text>
+                  {/* Portfolio Summary with Hide Toggle */}
+                  <View style={[styles.summaryCard, { backgroundColor: colors.card }]}>
+                    <View style={styles.summaryHeader}>
+                      <Text style={[styles.summaryTitle, { color: colors.text }]}>Resumen del Portafolio</Text>
+                      <TouchableOpacity
+                        style={styles.hideToggle}
+                        onPress={() => setHideValues(!hideValues)}
+                      >
+                        <Ionicons
+                          name={hideValues ? 'eye-off' : 'eye'}
+                          size={20}
+                          color={colors.textSecondary}
+                        />
+                      </TouchableOpacity>
+                    </View>
                     <View style={styles.summaryRow}>
                       <View style={styles.summaryItem}>
-                        <Text style={styles.summaryLabel}>Invertido</Text>
-                        <Text style={styles.summaryValue}>
-                          ${portfolio.total_invested.toFixed(2)}
+                        <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Invertido</Text>
+                        <Text style={[styles.summaryValue, { color: colors.text }]}>
+                          {formatCurrency(portfolio.total_invested)}
                         </Text>
                       </View>
                       <View style={styles.summaryItem}>
-                        <Text style={styles.summaryLabel}>Valor Actual</Text>
-                        <Text style={styles.summaryValue}>
-                          ${portfolio.current_value.toFixed(2)}
+                        <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Valor Actual</Text>
+                        <Text style={[styles.summaryValue, { color: colors.text }]}>
+                          {formatCurrency(portfolio.current_value)}
                         </Text>
                       </View>
                     </View>
@@ -787,16 +1142,21 @@ export default function AccountScreen() {
                       styles.totalPLContainer,
                       { backgroundColor: portfolio.total_profit_loss >= 0 ? '#34C75915' : '#FF3B3015' }
                     ]}>
-                      <Text style={styles.totalPLLabel}>Ganancia/Pérdida Total</Text>
+                      <Text style={[styles.totalPLLabel, { color: colors.text }]}>Ganancia/Pérdida Total</Text>
                       <Text style={[
                         styles.totalPLValue,
                         { color: portfolio.total_profit_loss >= 0 ? '#34C759' : '#FF3B30' }
                       ]}>
-                        {portfolio.total_profit_loss >= 0 ? '+' : ''}${portfolio.total_profit_loss.toFixed(2)}
-                        ({portfolio.total_profit_loss_percent >= 0 ? '+' : ''}{portfolio.total_profit_loss_percent.toFixed(2)}%)
+                        {hideValues ? '••••••' : `${portfolio.total_profit_loss >= 0 ? '+' : ''}$${portfolio.total_profit_loss.toFixed(2)} (${portfolio.total_profit_loss_percent >= 0 ? '+' : ''}${portfolio.total_profit_loss_percent.toFixed(2)}%)`}
                       </Text>
                     </View>
                   </View>
+                  
+                  {/* Cash Movements */}
+                  {renderCashMovements()}
+                  
+                  {/* Evolution Chart */}
+                  {renderEvolutionChart()}
                   
                   {/* Pie Chart */}
                   {renderPieChart()}
@@ -811,13 +1171,18 @@ export default function AccountScreen() {
                   {portfolio.holdings.map(renderPortfolioHolding)}
                 </>
               ) : (
-                <View style={styles.emptyContainer}>
-                  <Ionicons name="briefcase-outline" size={60} color="#C7C7CC" />
-                  <Text style={styles.emptyTitle}>Portafolio vacío</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Registra tus compras para llevar control
-                  </Text>
-                </View>
+                <>
+                  {/* Show cash section even when no holdings */}
+                  {renderCashMovements()}
+                  
+                  <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+                    <Ionicons name="briefcase-outline" size={60} color={colors.textSecondary} />
+                    <Text style={[styles.emptyTitle, { color: colors.text }]}>Portafolio vacío</Text>
+                    <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
+                      Registra tus compras para llevar control
+                    </Text>
+                  </View>
+                </>
               )}
             </>
           )}
@@ -1164,6 +1529,9 @@ export default function AccountScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Cash Movement Modal */}
+      {renderCashModal()}
     </View>
   );
 }
@@ -1786,5 +2154,146 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     color: '#1D1D1F',
+  },
+  // New styles for hide toggle, cash, and evolution
+  summaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  hideToggle: {
+    padding: 8,
+    borderRadius: 8,
+  },
+  cashCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  cashHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  addCashButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cashSummary: {
+    gap: 8,
+  },
+  cashItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  cashLabel: {
+    fontSize: 14,
+  },
+  cashValue: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  cashBalanceItem: {
+    borderTopWidth: 1,
+    marginTop: 8,
+    paddingTop: 12,
+  },
+  cashBalance: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  cashHistory: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  cashHistoryTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  cashMovementItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  cashMovementInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  cashMovementDetails: {
+    gap: 2,
+  },
+  cashMovementType: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  cashMovementDate: {
+    fontSize: 11,
+  },
+  cashMovementActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  cashMovementAmount: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  cashTypeSelector: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  cashTypeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  cashTypeText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  evolutionCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  evolutionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  evolutionChange: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  evolutionChartContainer: {
+    alignItems: 'center',
+    overflow: 'hidden',
   },
 });

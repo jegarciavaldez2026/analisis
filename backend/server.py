@@ -2706,6 +2706,38 @@ class PortfolioSummary(BaseModel):
     holdings: List[PortfolioHolding]
     metrics: Optional[PortfolioMetrics] = None
     sector_allocation: List[SectorAllocation] = []
+    cash_balance: float = 0.0
+    total_deposits: float = 0.0
+    total_withdrawals: float = 0.0
+
+# Cash Movement Models (Deposits/Withdrawals)
+class CashMovement(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    movement_type: str  # "deposit" or "withdrawal"
+    amount: float
+    description: Optional[str] = None
+    movement_date: datetime
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class CashMovementCreate(BaseModel):
+    movement_type: str  # "deposit" or "withdrawal"
+    amount: float
+    description: Optional[str] = None
+    movement_date: datetime
+
+class PortfolioHistoryPoint(BaseModel):
+    date: str
+    total_value: float
+    invested_value: float
+    cash_balance: float
+    profit_loss: float
+    profit_loss_percent: float
+
+class PortfolioEvolution(BaseModel):
+    history: List[PortfolioHistoryPoint]
+    current_value: float
+    total_change: float
+    total_change_percent: float
 
 @api_router.get("/portfolio", response_model=PortfolioSummary)
 async def get_portfolio():
@@ -2987,6 +3019,213 @@ async def get_portfolio_transactions():
     except Exception as e:
         logging.error(f"Error fetching transactions: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener transacciones: {str(e)}")
+
+# ============================================
+# CASH MOVEMENTS (DEPOSITS/WITHDRAWALS)
+# ============================================
+
+@api_router.post("/portfolio/cash", response_model=CashMovement)
+async def add_cash_movement(movement: CashMovementCreate):
+    """Add a deposit or withdrawal"""
+    try:
+        if movement.movement_type not in ['deposit', 'withdrawal']:
+            raise HTTPException(status_code=400, detail="Tipo debe ser 'deposit' o 'withdrawal'")
+        
+        if movement.amount <= 0:
+            raise HTTPException(status_code=400, detail="El monto debe ser positivo")
+        
+        cash_doc = CashMovement(
+            movement_type=movement.movement_type,
+            amount=movement.amount,
+            description=movement.description,
+            movement_date=movement.movement_date
+        )
+        
+        await db.cash_movements.insert_one(cash_doc.model_dump())
+        return cash_doc
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error adding cash movement: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al registrar movimiento: {str(e)}")
+
+@api_router.get("/portfolio/cash", response_model=List[CashMovement])
+async def get_cash_movements():
+    """Get all cash movements"""
+    try:
+        movements = await db.cash_movements.find().sort("movement_date", -1).to_list(1000)
+        return [CashMovement(**m) for m in movements]
+    except Exception as e:
+        logging.error(f"Error fetching cash movements: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener movimientos: {str(e)}")
+
+@api_router.delete("/portfolio/cash/{movement_id}")
+async def delete_cash_movement(movement_id: str):
+    """Delete a cash movement"""
+    try:
+        result = await db.cash_movements.delete_one({"id": movement_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+        return {"message": "Movimiento eliminado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting cash movement: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar movimiento: {str(e)}")
+
+@api_router.get("/portfolio/cash/summary")
+async def get_cash_summary():
+    """Get cash balance summary"""
+    try:
+        movements = await db.cash_movements.find().to_list(1000)
+        
+        total_deposits = sum(m['amount'] for m in movements if m['movement_type'] == 'deposit')
+        total_withdrawals = sum(m['amount'] for m in movements if m['movement_type'] == 'withdrawal')
+        cash_balance = total_deposits - total_withdrawals
+        
+        return {
+            "total_deposits": total_deposits,
+            "total_withdrawals": total_withdrawals,
+            "cash_balance": cash_balance,
+            "movements_count": len(movements)
+        }
+    except Exception as e:
+        logging.error(f"Error getting cash summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener resumen: {str(e)}")
+
+@api_router.get("/portfolio/evolution", response_model=PortfolioEvolution)
+async def get_portfolio_evolution():
+    """Get portfolio value evolution over time"""
+    try:
+        # Get all transactions sorted by date
+        transactions = await db.portfolio.find().sort("transaction_date", 1).to_list(1000)
+        cash_movements = await db.cash_movements.find().sort("movement_date", 1).to_list(1000)
+        
+        if not transactions and not cash_movements:
+            return PortfolioEvolution(
+                history=[],
+                current_value=0,
+                total_change=0,
+                total_change_percent=0
+            )
+        
+        # Determine date range
+        all_dates = []
+        if transactions:
+            all_dates.extend([tx['transaction_date'] for tx in transactions])
+        if cash_movements:
+            all_dates.extend([m['movement_date'] for m in cash_movements])
+        
+        if not all_dates:
+            return PortfolioEvolution(
+                history=[],
+                current_value=0,
+                total_change=0,
+                total_change_percent=0
+            )
+        
+        start_date = min(all_dates)
+        end_date = datetime.utcnow()
+        
+        # Generate monthly data points
+        history = []
+        current_date = start_date.replace(day=1)
+        
+        # Get unique tickers
+        tickers = list(set(tx['ticker'] for tx in transactions)) if transactions else []
+        
+        # Fetch historical prices for all tickers
+        ticker_prices = {}
+        for ticker in tickers:
+            try:
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period="5y")
+                if not hist.empty:
+                    ticker_prices[ticker] = hist['Close']
+            except:
+                pass
+        
+        while current_date <= end_date:
+            # Calculate holdings at this date
+            holdings_at_date = {}
+            invested_at_date = 0
+            
+            for tx in transactions:
+                if tx['transaction_date'].replace(tzinfo=None) <= current_date.replace(tzinfo=None):
+                    ticker = tx['ticker']
+                    if ticker not in holdings_at_date:
+                        holdings_at_date[ticker] = {'shares': 0, 'cost': 0}
+                    
+                    if tx['transaction_type'] == 'buy':
+                        holdings_at_date[ticker]['shares'] += tx['shares']
+                        holdings_at_date[ticker]['cost'] += tx['total_amount']
+                        invested_at_date += tx['total_amount']
+                    else:
+                        holdings_at_date[ticker]['shares'] -= tx['shares']
+                        holdings_at_date[ticker]['cost'] -= tx['total_amount']
+                        invested_at_date -= tx['total_amount']
+            
+            # Calculate cash balance at this date
+            cash_at_date = 0
+            for m in cash_movements:
+                if m['movement_date'].replace(tzinfo=None) <= current_date.replace(tzinfo=None):
+                    if m['movement_type'] == 'deposit':
+                        cash_at_date += m['amount']
+                    else:
+                        cash_at_date -= m['amount']
+            
+            # Calculate portfolio value at this date
+            portfolio_value = cash_at_date
+            for ticker, holding in holdings_at_date.items():
+                if holding['shares'] > 0 and ticker in ticker_prices:
+                    # Find closest price to current_date
+                    prices = ticker_prices[ticker]
+                    try:
+                        closest_date = prices.index.asof(current_date)
+                        if pd.notna(closest_date):
+                            price = prices.loc[closest_date]
+                            portfolio_value += holding['shares'] * price
+                    except:
+                        # Use cost as fallback
+                        portfolio_value += holding['cost']
+            
+            # Calculate profit/loss
+            total_invested_with_cash = invested_at_date + cash_at_date
+            profit_loss = portfolio_value - total_invested_with_cash if total_invested_with_cash > 0 else 0
+            profit_loss_pct = (profit_loss / total_invested_with_cash * 100) if total_invested_with_cash > 0 else 0
+            
+            history.append(PortfolioHistoryPoint(
+                date=current_date.strftime('%Y-%m-%d'),
+                total_value=round(portfolio_value, 2),
+                invested_value=round(invested_at_date, 2),
+                cash_balance=round(cash_at_date, 2),
+                profit_loss=round(profit_loss, 2),
+                profit_loss_percent=round(profit_loss_pct, 2)
+            ))
+            
+            # Move to next month
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1)
+        
+        # Calculate current totals
+        current_value = history[-1].total_value if history else 0
+        first_value = history[0].total_value if history else 0
+        total_change = current_value - first_value
+        total_change_pct = (total_change / first_value * 100) if first_value > 0 else 0
+        
+        return PortfolioEvolution(
+            history=history,
+            current_value=current_value,
+            total_change=round(total_change, 2),
+            total_change_percent=round(total_change_pct, 2)
+        )
+        
+    except Exception as e:
+        logging.error(f"Error getting portfolio evolution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener evolución: {str(e)}")
 
 # ============================================
 # HISTORY DELETE ENDPOINTS
