@@ -11,7 +11,7 @@ La aplicación no se ejecuta en Expo Go desde iPhone.
 
 **El tunnel URL de tu aplicación es:**
 ```
-https://invest-oracle-8.preview.emergentagent.com
+https://finratio-hub-1.preview.emergentagent.com
 ```
 
 **Pasos en tu iPhone:**
@@ -24,7 +24,7 @@ https://invest-oracle-8.preview.emergentagent.com
    ```
    O también puedes probar con:
    ```
-   https://invest-oracle-8.preview.emergentagent.com
+   https://finratio-hub-1.preview.emergentagent.com
    ```
 
 4. **Presiona "Connect"** o "Abrir"
@@ -96,7 +96,7 @@ Si nada funciona:
 Como última opción, puedes probar la versión web:
 
 1. Abre **Safari** en tu iPhone
-2. Navega a: `https://invest-oracle-8.preview.emergentagent.com`
+2. Navega a: `https://finratio-hub-1.preview.emergentagent.com`
 3. La app debería cargar como web app
 4. Para mejor experiencia, presiona el botón de **compartir** y selecciona **"Añadir a pantalla de inicio"**
 
@@ -147,9 +147,9 @@ Como última opción, puedes probar la versión web:
 ## 📞 Información de Soporte
 
 ### URLs del Proyecto
-- **Tunnel URL**: `https://invest-oracle-8.preview.emergentagent.com`
+- **Tunnel URL**: `https://finratio-hub-1.preview.emergentagent.com`
 - **Expo URL**: `exp://invest-oracle-8.preview.emergentagent.com`
-- **Web URL**: `https://invest-oracle-8.preview.emergentagent.com`
+- **Web URL**: `https://finratio-hub-1.preview.emergentagent.com`
 
 ### Estado del Servidor
 ✅ Backend: Corriendo en puerto 8001

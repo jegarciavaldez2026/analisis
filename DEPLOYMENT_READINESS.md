@@ -35,9 +35,9 @@
 
 #### 4. Configuration Files
 - ✅ **frontend/.env**: Presente y configurado
-  - EXPO_TUNNEL_SUBDOMAIN=invest-oracle-8
-  - EXPO_PACKAGER_HOSTNAME=https://invest-oracle-8.preview.emergentagent.com
-  - EXPO_PUBLIC_BACKEND_URL=https://invest-oracle-8.preview.emergentagent.com
+  - EXPO_TUNNEL_SUBDOMAIN=finratio-hub-1
+  - EXPO_PACKAGER_HOSTNAME=https://finratio-hub-1.preview.emergentagent.com
+  - EXPO_PUBLIC_BACKEND_URL=https://finratio-hub-1.preview.emergentagent.com
   - EXPO_USE_FAST_RESOLVER="1"
   - METRO_CACHE_ROOT=/app/frontend/.metro-cache
 
@@ -128,7 +128,7 @@
 - **SDK Version**: 54.0.32
 - **Router**: File-based routing (expo-router 5.1.4)
 - **Platform Support**: iOS, Android, Web
-- **Preview**: Tunnel activo en https://invest-oracle-8.preview.emergentagent.com
+- **Preview**: Tunnel activo en https://finratio-hub-1.preview.emergentagent.com
 - **QR Code**: Disponible para testing en Expo Go app
 
 ### Production Readiness

@@ -35,6 +35,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="market"
+        options={{
+          title: 'Mercado',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons name={focused ? 'pulse' : 'pulse-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="history"
         options={{
           title: 'Historial',
@@ -46,7 +55,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="info"
         options={{
-          title: 'Información',
+          title: 'Info',
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons name={focused ? 'information-circle' : 'information-circle-outline'} size={size} color={color} />
           ),
