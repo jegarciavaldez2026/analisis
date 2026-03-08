@@ -1836,16 +1836,86 @@ class MarketIndicator(BaseModel):
     updated: str
     description: str
 
+class CommodityIndicator(BaseModel):
+    name: str
+    ticker: str
+    current_value: float
+    change: float
+    change_percent: float
+    unit: str
+    updated: str
+
+class CurrencyPair(BaseModel):
+    name: str
+    ticker: str
+    rate: float
+    change: float
+    change_percent: float
+    updated: str
+
+class MarketHours(BaseModel):
+    market_name: str
+    location: str
+    timezone: str
+    open_time: str
+    close_time: str
+    status: str  # "Abierto", "Cerrado", "Pre-Market", "After-Hours"
+    next_open: str
+
 class MarketIndicatorsResponse(BaseModel):
     vix: MarketIndicator
     treasury_10y: MarketIndicator
     sp500: MarketIndicator
     fear_greed_level: str
     market_sentiment: str
+    # New fields
+    gold: CommodityIndicator
+    oil: CommodityIndicator
+    eur_usd: CurrencyPair
+    market_hours: List[MarketHours]
+
+def get_market_status(timezone_name: str, open_hour: int, open_min: int, close_hour: int, close_min: int) -> tuple:
+    """Get current market status based on timezone"""
+    from datetime import datetime
+    import pytz
+    
+    try:
+        tz = pytz.timezone(timezone_name)
+        now = datetime.now(tz)
+        current_time = now.hour * 60 + now.minute
+        open_time = open_hour * 60 + open_min
+        close_time = close_hour * 60 + close_min
+        
+        # Check if weekend
+        if now.weekday() >= 5:  # Saturday or Sunday
+            status = "Cerrado (Fin de semana)"
+            # Calculate next Monday
+            days_until_monday = 7 - now.weekday()
+            next_open_dt = now + timedelta(days=days_until_monday)
+            next_open = next_open_dt.strftime('%A %d/%m %H:%M')
+        elif current_time < open_time - 30:
+            status = "Cerrado"
+            next_open = now.strftime('%H:%M') + f" (abre a las {open_hour:02d}:{open_min:02d})"
+        elif current_time < open_time:
+            status = "Pre-Market"
+            next_open = f"Abre en {open_time - current_time} min"
+        elif current_time < close_time:
+            status = "Abierto"
+            next_open = f"Cierra en {close_time - current_time} min"
+        elif current_time < close_time + 120:  # 2 hours after close
+            status = "After-Hours"
+            next_open = "Mañana a las " + f"{open_hour:02d}:{open_min:02d}"
+        else:
+            status = "Cerrado"
+            next_open = "Mañana a las " + f"{open_hour:02d}:{open_min:02d}"
+        
+        return status, next_open
+    except:
+        return "Desconocido", "N/A"
 
 @api_router.get("/market-indicators", response_model=MarketIndicatorsResponse)
 async def get_market_indicators():
-    """Get market indicators: VIX, 10Y Treasury, S&P 500"""
+    """Get market indicators: VIX, 10Y Treasury, S&P 500, Gold, Oil, EUR/USD, and Market Hours"""
     try:
         # VIX - Volatility Index
         vix = yf.Ticker("^VIX")
@@ -1895,6 +1965,129 @@ async def get_market_indicators():
             sp500_change_pct = 0
             sp500_date = ""
         
+        # Gold (GC=F - Gold Futures)
+        gold = yf.Ticker("GC=F")
+        gold_data = gold.history(period="5d")
+        
+        if not gold_data.empty:
+            gold_current = float(gold_data['Close'].iloc[-1])
+            gold_prev = float(gold_data['Close'].iloc[-2]) if len(gold_data) > 1 else gold_current
+            gold_change = gold_current - gold_prev
+            gold_change_pct = (gold_change / gold_prev) * 100 if gold_prev > 0 else 0
+            gold_date = gold_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            gold_current = 0
+            gold_change = 0
+            gold_change_pct = 0
+            gold_date = ""
+        
+        # Oil (CL=F - Crude Oil Futures WTI)
+        oil = yf.Ticker("CL=F")
+        oil_data = oil.history(period="5d")
+        
+        if not oil_data.empty:
+            oil_current = float(oil_data['Close'].iloc[-1])
+            oil_prev = float(oil_data['Close'].iloc[-2]) if len(oil_data) > 1 else oil_current
+            oil_change = oil_current - oil_prev
+            oil_change_pct = (oil_change / oil_prev) * 100 if oil_prev > 0 else 0
+            oil_date = oil_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            oil_current = 0
+            oil_change = 0
+            oil_change_pct = 0
+            oil_date = ""
+        
+        # EUR/USD
+        eurusd = yf.Ticker("EURUSD=X")
+        eurusd_data = eurusd.history(period="5d")
+        
+        if not eurusd_data.empty:
+            eurusd_current = float(eurusd_data['Close'].iloc[-1])
+            eurusd_prev = float(eurusd_data['Close'].iloc[-2]) if len(eurusd_data) > 1 else eurusd_current
+            eurusd_change = eurusd_current - eurusd_prev
+            eurusd_change_pct = (eurusd_change / eurusd_prev) * 100 if eurusd_prev > 0 else 0
+            eurusd_date = eurusd_data.index[-1].strftime('%Y-%m-%d')
+        else:
+            eurusd_current = 0
+            eurusd_change = 0
+            eurusd_change_pct = 0
+            eurusd_date = ""
+        
+        # Market Hours - Major World Markets
+        market_hours = []
+        
+        # New York Stock Exchange (NYSE)
+        nyse_status, nyse_next = get_market_status("America/New_York", 9, 30, 16, 0)
+        market_hours.append(MarketHours(
+            market_name="NYSE / NASDAQ",
+            location="Nueva York, EEUU",
+            timezone="EST/EDT",
+            open_time="09:30",
+            close_time="16:00",
+            status=nyse_status,
+            next_open=nyse_next
+        ))
+        
+        # London Stock Exchange (LSE)
+        lse_status, lse_next = get_market_status("Europe/London", 8, 0, 16, 30)
+        market_hours.append(MarketHours(
+            market_name="London Stock Exchange",
+            location="Londres, UK",
+            timezone="GMT/BST",
+            open_time="08:00",
+            close_time="16:30",
+            status=lse_status,
+            next_open=lse_next
+        ))
+        
+        # Tokyo Stock Exchange
+        tse_status, tse_next = get_market_status("Asia/Tokyo", 9, 0, 15, 0)
+        market_hours.append(MarketHours(
+            market_name="Tokyo Stock Exchange",
+            location="Tokio, Japón",
+            timezone="JST",
+            open_time="09:00",
+            close_time="15:00",
+            status=tse_status,
+            next_open=tse_next
+        ))
+        
+        # Hong Kong Stock Exchange
+        hkex_status, hkex_next = get_market_status("Asia/Hong_Kong", 9, 30, 16, 0)
+        market_hours.append(MarketHours(
+            market_name="Hong Kong Exchange",
+            location="Hong Kong",
+            timezone="HKT",
+            open_time="09:30",
+            close_time="16:00",
+            status=hkex_status,
+            next_open=hkex_next
+        ))
+        
+        # Frankfurt Stock Exchange (Xetra)
+        xetra_status, xetra_next = get_market_status("Europe/Berlin", 9, 0, 17, 30)
+        market_hours.append(MarketHours(
+            market_name="Frankfurt (Xetra)",
+            location="Frankfurt, Alemania",
+            timezone="CET/CEST",
+            open_time="09:00",
+            close_time="17:30",
+            status=xetra_status,
+            next_open=xetra_next
+        ))
+        
+        # Bolsa Mexicana de Valores
+        bmv_status, bmv_next = get_market_status("America/Mexico_City", 8, 30, 15, 0)
+        market_hours.append(MarketHours(
+            market_name="Bolsa Mexicana",
+            location="CDMX, México",
+            timezone="CST/CDT",
+            open_time="08:30",
+            close_time="15:00",
+            status=bmv_status,
+            next_open=bmv_next
+        ))
+        
         # Determine Fear & Greed level based on VIX
         if vix_current < 12:
             fear_greed = "Extrema Codicia"
@@ -1940,6 +2133,33 @@ async def get_market_indicators():
                 updated=sp500_date,
                 description="Índice bursátil de las 500 empresas más grandes de EEUU"
             ),
+            gold=CommodityIndicator(
+                name="Oro",
+                ticker="GC=F",
+                current_value=gold_current,
+                change=gold_change,
+                change_percent=gold_change_pct,
+                unit="USD/oz",
+                updated=gold_date
+            ),
+            oil=CommodityIndicator(
+                name="Petróleo WTI",
+                ticker="CL=F",
+                current_value=oil_current,
+                change=oil_change,
+                change_percent=oil_change_pct,
+                unit="USD/barril",
+                updated=oil_date
+            ),
+            eur_usd=CurrencyPair(
+                name="EUR/USD",
+                ticker="EURUSD=X",
+                rate=eurusd_current,
+                change=eurusd_change,
+                change_percent=eurusd_change_pct,
+                updated=eurusd_date
+            ),
+            market_hours=market_hours,
             fear_greed_level=fear_greed,
             market_sentiment=sentiment
         )
@@ -3208,6 +3428,22 @@ def get_financial_system_prompt(ticker: str, stock_data: Dict[str, Any]) -> str:
     metadata = stock_data.get('metadata', {})
     summary_flags = stock_data.get('summary_flags', {})
     
+    # Safe formatting helper
+    def safe_format(value, format_type='str'):
+        if value is None or value == 'N/A':
+            return 'N/A'
+        try:
+            if format_type == 'money':
+                return f"${float(value):,.0f}"
+            elif format_type == 'percent':
+                return f"{float(value):.1f}%"
+            elif format_type == 'price':
+                return f"${float(value):.2f}"
+            else:
+                return str(value)
+        except:
+            return str(value) if value else 'N/A'
+    
     # Format summary flags
     flags_text = ""
     if summary_flags:
@@ -3225,6 +3461,15 @@ def get_financial_system_prompt(ticker: str, stock_data: Dict[str, Any]) -> str:
                 flags_list.append(f"{icon} {label}")
         flags_text = " | ".join(flags_list)
     
+    # Get values safely
+    current_price = stock_data.get('current_price') or metadata.get('current_price')
+    market_cap = metadata.get('market_cap')
+    pe_ratio = metadata.get('pe_ratio')
+    div_yield = metadata.get('dividend_yield')
+    week_high = metadata.get('fifty_two_week_high')
+    week_low = metadata.get('fifty_two_week_low')
+    fav_pct = stock_data.get('favorable_percentage')
+    
     return f"""Eres un analista financiero experto y amigable especializado en análisis de acciones. Tu nombre es "FinBot". 
 Estás analizando la acción {ticker} ({stock_data.get('company_name', ticker)}).
 
@@ -3235,19 +3480,19 @@ Estás analizando la acción {ticker} ({stock_data.get('company_name', ticker)})
 - Nombre: {stock_data.get('company_name', 'N/A')}
 - Sector: {metadata.get('sector', 'N/A')}
 - Industria: {metadata.get('industry', 'N/A')}
-- Precio Actual: ${stock_data.get('current_price', metadata.get('current_price', 'N/A'))}
-- Market Cap: ${metadata.get('market_cap', 'N/A'):,.0f} (si es número)
-- P/E Ratio: {metadata.get('pe_ratio', 'N/A')}
-- Dividend Yield: {metadata.get('dividend_yield', 'N/A')}%
-- 52 Week High: ${metadata.get('fifty_two_week_high', 'N/A')}
-- 52 Week Low: ${metadata.get('fifty_two_week_low', 'N/A')}
+- Precio Actual: {safe_format(current_price, 'price')}
+- Market Cap: {safe_format(market_cap, 'money')}
+- P/E Ratio: {safe_format(pe_ratio)}
+- Dividend Yield: {safe_format(div_yield, 'percent') if div_yield else 'N/A'}
+- 52 Week High: {safe_format(week_high, 'price')}
+- 52 Week Low: {safe_format(week_low, 'price')}
 
 ═══════════════════════════════════════════════════
 🎯 RESULTADO DEL ANÁLISIS
 ═══════════════════════════════════════════════════
 - Recomendación: {stock_data.get('recommendation', 'N/A')}
 - Nivel de Riesgo: {stock_data.get('risk_level', 'N/A')}
-- Métricas Favorables: {stock_data.get('favorable_metrics', 'N/A')} de {stock_data.get('total_metrics', 'N/A')} ({stock_data.get('favorable_percentage', 'N/A'):.1f}%)
+- Métricas Favorables: {stock_data.get('favorable_metrics', 'N/A')} de {stock_data.get('total_metrics', 'N/A')} ({safe_format(fav_pct, 'percent') if fav_pct else 'N/A'})
 
 INDICADORES CLAVE:
 {flags_text if flags_text else 'No disponibles'}

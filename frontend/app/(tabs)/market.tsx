@@ -25,10 +25,43 @@ interface MarketIndicator {
   description: string;
 }
 
+interface CommodityIndicator {
+  name: string;
+  ticker: string;
+  current_value: number;
+  change: number;
+  change_percent: number;
+  unit: string;
+  updated: string;
+}
+
+interface CurrencyPair {
+  name: string;
+  ticker: string;
+  rate: number;
+  change: number;
+  change_percent: number;
+  updated: string;
+}
+
+interface MarketHours {
+  market_name: string;
+  location: string;
+  timezone: string;
+  open_time: string;
+  close_time: string;
+  status: string;
+  next_open: string;
+}
+
 interface MarketData {
   vix: MarketIndicator;
   treasury_10y: MarketIndicator;
   sp500: MarketIndicator;
+  gold: CommodityIndicator;
+  oil: CommodityIndicator;
+  eur_usd: CurrencyPair;
+  market_hours: MarketHours[];
   fear_greed_level: string;
   market_sentiment: string;
 }
@@ -328,6 +361,160 @@ export default function MarketScreen() {
         <Text style={styles.indicatorDescription}>{data.sp500.description}</Text>
         <Text style={styles.updateTime}>Actualizado: {data.sp500.updated}</Text>
       </View>
+
+      {/* Commodities Section */}
+      <View style={styles.sectionHeader}>
+        <Ionicons name="cube" size={22} color="#FF9500" />
+        <Text style={styles.sectionHeaderTitle}>Commodities</Text>
+      </View>
+      
+      <View style={styles.commoditiesRow}>
+        {/* Gold Card */}
+        {data.gold && (
+          <View style={[styles.commodityCard, { backgroundColor: '#FFD70015', borderColor: '#FFD700' }]}>
+            <View style={styles.commodityHeader}>
+              <Text style={styles.commodityEmoji}>🥇</Text>
+              <Text style={styles.commodityName}>Oro</Text>
+            </View>
+            <Text style={styles.commodityPrice}>${data.gold.current_value.toFixed(2)}</Text>
+            <Text style={styles.commodityUnit}>{data.gold.unit}</Text>
+            <View style={[
+              styles.commodityChange,
+              { backgroundColor: data.gold.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.gold.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.gold.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.commodityChangeText,
+                { color: data.gold.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.gold.change >= 0 ? '+' : ''}{data.gold.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+        
+        {/* Oil Card */}
+        {data.oil && (
+          <View style={[styles.commodityCard, { backgroundColor: '#1a1a1a10', borderColor: '#1a1a1a' }]}>
+            <View style={styles.commodityHeader}>
+              <Text style={styles.commodityEmoji}>🛢️</Text>
+              <Text style={styles.commodityName}>Petróleo WTI</Text>
+            </View>
+            <Text style={styles.commodityPrice}>${data.oil.current_value.toFixed(2)}</Text>
+            <Text style={styles.commodityUnit}>{data.oil.unit}</Text>
+            <View style={[
+              styles.commodityChange,
+              { backgroundColor: data.oil.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.oil.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.oil.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.commodityChangeText,
+                { color: data.oil.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.oil.change >= 0 ? '+' : ''}{data.oil.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+      </View>
+
+      {/* Currency Section */}
+      {data.eur_usd && (
+        <View style={styles.currencySection}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="swap-horizontal" size={22} color="#007AFF" />
+            <Text style={styles.sectionHeaderTitle}>Divisas</Text>
+          </View>
+          
+          <View style={styles.currencyCard}>
+            <View style={styles.currencyInfo}>
+              <View style={styles.currencyFlags}>
+                <Text style={styles.currencyFlag}>🇪🇺</Text>
+                <Ionicons name="swap-horizontal" size={16} color="#8E8E93" />
+                <Text style={styles.currencyFlag}>🇺🇸</Text>
+              </View>
+              <Text style={styles.currencyPairName}>EUR/USD</Text>
+            </View>
+            <View style={styles.currencyRateContainer}>
+              <Text style={styles.currencyRate}>{data.eur_usd.rate.toFixed(4)}</Text>
+              <View style={[
+                styles.currencyChangeContainer,
+                { backgroundColor: data.eur_usd.change >= 0 ? '#34C75920' : '#FF3B3020' }
+              ]}>
+                <Ionicons 
+                  name={data.eur_usd.change >= 0 ? 'trending-up' : 'trending-down'} 
+                  size={12} 
+                  color={data.eur_usd.change >= 0 ? '#34C759' : '#FF3B30'} 
+                />
+                <Text style={[
+                  styles.currencyChangeText,
+                  { color: data.eur_usd.change >= 0 ? '#34C759' : '#FF3B30' }
+                ]}>
+                  {data.eur_usd.change >= 0 ? '+' : ''}{data.eur_usd.change_percent.toFixed(2)}%
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Market Hours Section */}
+      {data.market_hours && data.market_hours.length > 0 && (
+        <View style={styles.marketHoursSection}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="time" size={22} color="#AF52DE" />
+            <Text style={styles.sectionHeaderTitle}>Horarios de Mercado</Text>
+          </View>
+          
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.marketHoursScroll}
+          >
+            {data.market_hours.map((market, index) => (
+              <View key={index} style={styles.marketHourCard}>
+                <View style={styles.marketHourHeader}>
+                  <Text style={styles.marketHourName} numberOfLines={1}>{market.market_name}</Text>
+                  <View style={[
+                    styles.marketStatusBadge,
+                    { backgroundColor: market.status.includes('Abierto') ? '#34C75920' : 
+                                      market.status.includes('Pre') ? '#FF950020' : '#8E8E9320' }
+                  ]}>
+                    <View style={[
+                      styles.marketStatusDot,
+                      { backgroundColor: market.status.includes('Abierto') ? '#34C759' : 
+                                        market.status.includes('Pre') ? '#FF9500' : '#8E8E93' }
+                    ]} />
+                    <Text style={[
+                      styles.marketStatusText,
+                      { color: market.status.includes('Abierto') ? '#34C759' : 
+                               market.status.includes('Pre') ? '#FF9500' : '#8E8E93' }
+                    ]} numberOfLines={1}>
+                      {market.status.length > 12 ? market.status.substring(0, 12) : market.status}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.marketLocation}>{market.location}</Text>
+                <View style={styles.marketTimeRow}>
+                  <Ionicons name="enter-outline" size={14} color="#34C759" />
+                  <Text style={styles.marketTimeText}>{market.open_time}</Text>
+                  <Ionicons name="exit-outline" size={14} color="#FF3B30" />
+                  <Text style={styles.marketTimeText}>{market.close_time}</Text>
+                </View>
+                <Text style={styles.marketTimezone}>{market.timezone}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Info Section */}
       <View style={styles.infoSection}>
@@ -761,5 +948,187 @@ const styles = StyleSheet.create({
   },
   newsChevron: {
     marginLeft: 8,
+  },
+  // New styles for commodities, currencies, and market hours
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 12,
+    gap: 8,
+  },
+  sectionHeaderTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+  },
+  commoditiesRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  commodityCard: {
+    flex: 1,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  commodityHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  commodityEmoji: {
+    fontSize: 24,
+  },
+  commodityName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  commodityPrice: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+    marginBottom: 2,
+  },
+  commodityUnit: {
+    fontSize: 11,
+    color: '#8E8E93',
+    marginBottom: 8,
+  },
+  commodityChange: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  commodityChangeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  currencySection: {
+    marginTop: 8,
+  },
+  currencyCard: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  currencyInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  currencyFlags: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  currencyFlag: {
+    fontSize: 24,
+  },
+  currencyPairName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+  },
+  currencyRateContainer: {
+    alignItems: 'flex-end',
+  },
+  currencyRate: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#007AFF',
+    marginBottom: 4,
+  },
+  currencyChangeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  currencyChangeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  marketHoursSection: {
+    marginTop: 8,
+  },
+  marketHoursScroll: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  marketHourCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+    width: 170,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  marketHourHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 6,
+  },
+  marketHourName: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+    flex: 1,
+    marginRight: 4,
+  },
+  marketStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+    gap: 4,
+  },
+  marketStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  marketStatusText: {
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  marketLocation: {
+    fontSize: 11,
+    color: '#6E6E73',
+    marginBottom: 8,
+  },
+  marketTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  marketTimeText: {
+    fontSize: 12,
+    color: '#1D1D1F',
+    marginRight: 8,
+  },
+  marketTimezone: {
+    fontSize: 10,
+    color: '#8E8E93',
   },
 });
