@@ -11,7 +11,7 @@ from datetime import datetime
 import sys
 
 # Get backend URL from frontend .env
-BACKEND_URL = "https://finratio-hub-1.preview.emergentagent.com/api"
+BACKEND_URL = "https://fintech-hub-196.preview.emergentagent.com/api"
 
 class FinancialAnalysisAPITester:
     def __init__(self, base_url):
