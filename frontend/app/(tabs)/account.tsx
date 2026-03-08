@@ -133,6 +133,19 @@ interface PortfolioEvolution {
   total_change_percent: number;
 }
 
+interface BenchmarkComparison {
+  portfolio_return: number;
+  benchmark_return: number;
+  alpha: number;
+  tracking_error: number;
+  sharpe_portfolio: number;
+  sharpe_benchmark: number;
+  portfolio_volatility: number;
+  benchmark_volatility: number;
+  correlation: number;
+  period: string;
+}
+
 export default function AccountScreen() {
   const { colors, isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
@@ -146,6 +159,7 @@ export default function AccountScreen() {
   // New states for cash movements and evolution
   const [cashMovements, setCashMovements] = useState<CashMovement[]>([]);
   const [portfolioEvolution, setPortfolioEvolution] = useState<PortfolioEvolution | null>(null);
+  const [benchmark, setBenchmark] = useState<BenchmarkComparison | null>(null);
   const [hideValues, setHideValues] = useState(false);
   const [showCashModal, setShowCashModal] = useState(false);
   
@@ -211,6 +225,14 @@ export default function AccountScreen() {
           setPortfolioEvolution(evolutionRes.data);
         } catch (e) {
           console.log('Evolution fetch failed, skipping');
+        }
+        
+        // Fetch benchmark comparison
+        try {
+          const benchmarkRes = await axios.get(`${BACKEND_URL}/api/portfolio/benchmark`, { timeout: 30000 });
+          setBenchmark(benchmarkRes.data);
+        } catch (e) {
+          console.log('Benchmark fetch failed, skipping');
         }
       }
     } catch (error) {
@@ -851,6 +873,63 @@ export default function AccountScreen() {
     );
   };
 
+  const renderBenchmarkCard = () => {
+    if (!benchmark) return null;
+    
+    return (
+      <View style={[styles.benchmarkCard, { backgroundColor: colors.card }]}>
+        <View style={styles.benchmarkHeader}>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>vs S&P 500</Text>
+          <Text style={[styles.benchmarkPeriod, { color: colors.textSecondary }]}>{benchmark.period}</Text>
+        </View>
+        
+        <View style={styles.benchmarkComparison}>
+          <View style={styles.benchmarkItem}>
+            <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>Tu Portafolio</Text>
+            <Text style={[
+              styles.benchmarkValue,
+              { color: benchmark.portfolio_return >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {benchmark.portfolio_return >= 0 ? '+' : ''}{benchmark.portfolio_return.toFixed(1)}%
+            </Text>
+          </View>
+          <View style={[styles.benchmarkDivider, { backgroundColor: colors.border }]} />
+          <View style={styles.benchmarkItem}>
+            <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>S&P 500</Text>
+            <Text style={[
+              styles.benchmarkValue,
+              { color: benchmark.benchmark_return >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {benchmark.benchmark_return >= 0 ? '+' : ''}{benchmark.benchmark_return.toFixed(1)}%
+            </Text>
+          </View>
+        </View>
+        
+        <View style={[styles.alphaContainer, { backgroundColor: benchmark.alpha >= 0 ? '#34C75915' : '#FF3B3015' }]}>
+          <Text style={[styles.alphaLabel, { color: colors.text }]}>Alpha (Exceso de retorno)</Text>
+          <Text style={[styles.alphaValue, { color: benchmark.alpha >= 0 ? '#34C759' : '#FF3B30' }]}>
+            {benchmark.alpha >= 0 ? '+' : ''}{benchmark.alpha.toFixed(2)}%
+          </Text>
+        </View>
+        
+        <View style={styles.benchmarkMetrics}>
+          <View style={styles.benchmarkMetricItem}>
+            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Sharpe</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.sharpe_portfolio.toFixed(2)}</Text>
+          </View>
+          <View style={styles.benchmarkMetricItem}>
+            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Volatilidad</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.portfolio_volatility.toFixed(1)}%</Text>
+          </View>
+          <View style={styles.benchmarkMetricItem}>
+            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Correlación</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.correlation.toFixed(2)}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderCashMovements = () => {
     // Use portfolio data if available, otherwise calculate locally
     const cashAvailable = portfolio?.cash_available ?? 0;
@@ -1222,6 +1301,9 @@ export default function AccountScreen() {
                   
                   {/* Evolution Chart */}
                   {renderEvolutionChart()}
+                  
+                  {/* Benchmark Comparison */}
+                  {renderBenchmarkCard()}
                   
                   {/* Pie Chart */}
                   {renderPieChart()}
@@ -2467,5 +2549,75 @@ const styles = StyleSheet.create({
   totalPortfolioHint: {
     fontSize: 11,
     marginTop: 2,
+  },
+  // Benchmark styles
+  benchmarkCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  benchmarkHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  benchmarkPeriod: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  benchmarkComparison: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  benchmarkItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  benchmarkDivider: {
+    width: 1,
+    height: 40,
+  },
+  benchmarkLabel: {
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  benchmarkValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  alphaContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 16,
+  },
+  alphaLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  alphaValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  benchmarkMetrics: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  benchmarkMetricItem: {
+    alignItems: 'center',
+  },
+  benchmarkMetricLabel: {
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  benchmarkMetricValue: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

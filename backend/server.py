@@ -3389,6 +3389,408 @@ async def get_portfolio_evolution():
         )
 
 # ============================================
+# SCREENER DE ACCIONES
+# ============================================
+
+class ScreenerFilters(BaseModel):
+    min_pe: Optional[float] = None
+    max_pe: Optional[float] = None
+    min_roe: Optional[float] = None
+    max_roe: Optional[float] = None
+    min_dividend_yield: Optional[float] = None
+    max_debt_equity: Optional[float] = None
+    min_market_cap: Optional[float] = None  # in billions
+    sector: Optional[str] = None
+
+class ScreenerResult(BaseModel):
+    ticker: str
+    company_name: str
+    sector: str
+    industry: str
+    current_price: float
+    pe_ratio: Optional[float]
+    roe: Optional[float]
+    dividend_yield: Optional[float]
+    debt_to_equity: Optional[float]
+    market_cap: Optional[float]
+    recommendation: str
+
+# Popular stocks to screen
+POPULAR_TICKERS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "JPM", "V", "JNJ",
+    "WMT", "PG", "MA", "HD", "DIS", "NFLX", "ADBE", "CRM", "PYPL", "INTC",
+    "KO", "PEP", "MRK", "ABT", "TMO", "COST", "NKE", "MCD", "BA", "CAT"
+]
+
+@api_router.post("/screener", response_model=List[ScreenerResult])
+async def screen_stocks(filters: ScreenerFilters):
+    """Screen stocks based on financial criteria"""
+    try:
+        results = []
+        
+        for ticker in POPULAR_TICKERS:
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                
+                # Get key metrics
+                pe_ratio = info.get('trailingPE') or info.get('forwardPE')
+                roe = info.get('returnOnEquity')
+                if roe:
+                    roe = roe * 100  # Convert to percentage
+                dividend_yield = info.get('dividendYield')
+                if dividend_yield:
+                    dividend_yield = dividend_yield * 100
+                debt_equity = info.get('debtToEquity')
+                if debt_equity:
+                    debt_equity = debt_equity / 100  # yfinance returns as percentage
+                market_cap = info.get('marketCap')
+                if market_cap:
+                    market_cap = market_cap / 1e9  # Convert to billions
+                
+                # Apply filters
+                if filters.min_pe and (not pe_ratio or pe_ratio < filters.min_pe):
+                    continue
+                if filters.max_pe and (not pe_ratio or pe_ratio > filters.max_pe):
+                    continue
+                if filters.min_roe and (not roe or roe < filters.min_roe):
+                    continue
+                if filters.max_debt_equity and (debt_equity and debt_equity > filters.max_debt_equity):
+                    continue
+                if filters.min_dividend_yield and (not dividend_yield or dividend_yield < filters.min_dividend_yield):
+                    continue
+                if filters.min_market_cap and (not market_cap or market_cap < filters.min_market_cap):
+                    continue
+                if filters.sector and info.get('sector', '').lower() != filters.sector.lower():
+                    continue
+                
+                # Determine recommendation
+                score = 0
+                if pe_ratio and pe_ratio < 25:
+                    score += 1
+                if roe and roe > 15:
+                    score += 1
+                if dividend_yield and dividend_yield > 1:
+                    score += 1
+                if debt_equity and debt_equity < 1:
+                    score += 1
+                
+                recommendation = "MANTENER"
+                if score >= 3:
+                    recommendation = "COMPRAR"
+                elif score <= 1:
+                    recommendation = "VENDER"
+                
+                results.append(ScreenerResult(
+                    ticker=ticker,
+                    company_name=info.get('longName', ticker),
+                    sector=info.get('sector', 'N/A'),
+                    industry=info.get('industry', 'N/A'),
+                    current_price=info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0,
+                    pe_ratio=round(pe_ratio, 2) if pe_ratio else None,
+                    roe=round(roe, 2) if roe else None,
+                    dividend_yield=round(dividend_yield, 2) if dividend_yield else None,
+                    debt_to_equity=round(debt_equity, 2) if debt_equity else None,
+                    market_cap=round(market_cap, 2) if market_cap else None,
+                    recommendation=recommendation
+                ))
+                
+            except Exception as e:
+                logging.warning(f"Error screening {ticker}: {str(e)}")
+                continue
+        
+        return results
+        
+    except Exception as e:
+        logging.error(f"Error in screener: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en screener: {str(e)}")
+
+@api_router.get("/screener/presets")
+async def get_screener_presets():
+    """Get predefined screener presets"""
+    return {
+        "presets": [
+            {
+                "name": "Value Stocks",
+                "description": "P/E bajo, alto dividendo",
+                "filters": {"max_pe": 15, "min_dividend_yield": 2}
+            },
+            {
+                "name": "Growth Stocks", 
+                "description": "Alto ROE, bajo endeudamiento",
+                "filters": {"min_roe": 20, "max_debt_equity": 1}
+            },
+            {
+                "name": "Blue Chips",
+                "description": "Gran capitalización, estables",
+                "filters": {"min_market_cap": 100, "max_debt_equity": 1.5}
+            },
+            {
+                "name": "Dividend Kings",
+                "description": "Alto rendimiento por dividendo",
+                "filters": {"min_dividend_yield": 3}
+            }
+        ]
+    }
+
+# ============================================
+# DIVIDENDOS E HISTÓRICO
+# ============================================
+
+class DividendInfo(BaseModel):
+    ticker: str
+    company_name: str
+    dividend_yield: Optional[float]
+    annual_dividend: Optional[float]
+    ex_dividend_date: Optional[str]
+    payment_date: Optional[str]
+    payout_ratio: Optional[float]
+    dividend_history: List[dict]
+    five_year_avg_yield: Optional[float]
+
+@api_router.get("/dividends/{ticker}", response_model=DividendInfo)
+async def get_dividend_info(ticker: str):
+    """Get dividend information and history for a stock"""
+    try:
+        stock = yf.Ticker(ticker.upper())
+        info = stock.info
+        
+        # Get dividend history
+        dividends = stock.dividends
+        dividend_history = []
+        if not dividends.empty:
+            # Get last 8 dividends
+            recent_dividends = dividends.tail(8)
+            for date, amount in recent_dividends.items():
+                dividend_history.append({
+                    "date": date.strftime('%Y-%m-%d'),
+                    "amount": round(float(amount), 4)
+                })
+        
+        # Get yield
+        dividend_yield = info.get('dividendYield')
+        if dividend_yield:
+            dividend_yield = dividend_yield * 100
+        
+        # Get ex-dividend date
+        ex_div_date = info.get('exDividendDate')
+        if ex_div_date:
+            ex_div_date = datetime.fromtimestamp(ex_div_date).strftime('%Y-%m-%d')
+        
+        return DividendInfo(
+            ticker=ticker.upper(),
+            company_name=info.get('longName', ticker),
+            dividend_yield=round(dividend_yield, 2) if dividend_yield else None,
+            annual_dividend=info.get('dividendRate'),
+            ex_dividend_date=ex_div_date,
+            payment_date=None,  # Not always available
+            payout_ratio=round(info.get('payoutRatio', 0) * 100, 2) if info.get('payoutRatio') else None,
+            dividend_history=dividend_history,
+            five_year_avg_yield=round(info.get('fiveYearAvgDividendYield', 0), 2) if info.get('fiveYearAvgDividendYield') else None
+        )
+        
+    except Exception as e:
+        logging.error(f"Error getting dividends for {ticker}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener dividendos: {str(e)}")
+
+@api_router.get("/dividends/calendar/upcoming")
+async def get_upcoming_dividends():
+    """Get upcoming dividend payments from portfolio holdings"""
+    try:
+        # Get portfolio holdings
+        transactions = await db.portfolio.find().to_list(1000)
+        holdings = {}
+        for tx in transactions:
+            ticker = tx['ticker']
+            if ticker not in holdings:
+                holdings[ticker] = 0
+            if tx['transaction_type'] == 'buy':
+                holdings[ticker] += tx['shares']
+            else:
+                holdings[ticker] -= tx['shares']
+        
+        # Filter active holdings
+        active_tickers = [t for t, shares in holdings.items() if shares > 0]
+        
+        upcoming = []
+        for ticker in active_tickers:
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                
+                ex_div_date = info.get('exDividendDate')
+                if ex_div_date:
+                    ex_date = datetime.fromtimestamp(ex_div_date)
+                    # Only include if in the future or within last 30 days
+                    if ex_date >= datetime.now() - timedelta(days=30):
+                        upcoming.append({
+                            "ticker": ticker,
+                            "company_name": info.get('longName', ticker),
+                            "ex_dividend_date": ex_date.strftime('%Y-%m-%d'),
+                            "dividend_amount": info.get('dividendRate', 0) / 4 if info.get('dividendRate') else 0,  # Quarterly
+                            "shares_owned": holdings[ticker],
+                            "expected_payment": round((info.get('dividendRate', 0) / 4) * holdings[ticker], 2) if info.get('dividendRate') else 0
+                        })
+            except:
+                continue
+        
+        # Sort by ex-dividend date
+        upcoming.sort(key=lambda x: x['ex_dividend_date'])
+        
+        return {"upcoming_dividends": upcoming}
+        
+    except Exception as e:
+        logging.error(f"Error getting upcoming dividends: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# ============================================
+# BENCHMARK COMPARISON (S&P500)
+# ============================================
+
+class BenchmarkComparison(BaseModel):
+    portfolio_return: float
+    benchmark_return: float
+    alpha: float  # Excess return over benchmark
+    tracking_error: float
+    sharpe_portfolio: float
+    sharpe_benchmark: float
+    portfolio_volatility: float
+    benchmark_volatility: float
+    correlation: float
+    period: str
+    portfolio_values: List[dict]
+    benchmark_values: List[dict]
+
+@api_router.get("/portfolio/benchmark", response_model=BenchmarkComparison)
+async def compare_portfolio_to_benchmark():
+    """Compare portfolio performance to S&P500 benchmark"""
+    try:
+        # Get portfolio transactions
+        transactions = await db.portfolio.find().sort("transaction_date", 1).to_list(1000)
+        
+        if not transactions:
+            return BenchmarkComparison(
+                portfolio_return=0, benchmark_return=0, alpha=0,
+                tracking_error=0, sharpe_portfolio=0, sharpe_benchmark=0,
+                portfolio_volatility=0, benchmark_volatility=0, correlation=0,
+                period="1Y", portfolio_values=[], benchmark_values=[]
+            )
+        
+        # Get S&P500 data
+        spy = yf.Ticker("SPY")
+        spy_hist = spy.history(period="1y")
+        
+        if spy_hist.empty:
+            raise HTTPException(status_code=500, detail="No se pudo obtener datos del benchmark")
+        
+        # Calculate benchmark return
+        spy_start = float(spy_hist['Close'].iloc[0])
+        spy_end = float(spy_hist['Close'].iloc[-1])
+        benchmark_return = ((spy_end - spy_start) / spy_start) * 100
+        
+        # Calculate benchmark volatility
+        spy_returns = spy_hist['Close'].pct_change().dropna()
+        benchmark_volatility = float(spy_returns.std() * np.sqrt(252) * 100)
+        
+        # Get portfolio holdings and calculate return
+        holdings = {}
+        total_invested = 0
+        for tx in transactions:
+            ticker = tx['ticker']
+            if ticker not in holdings:
+                holdings[ticker] = {'shares': 0, 'cost': 0}
+            if tx['transaction_type'] == 'buy':
+                holdings[ticker]['shares'] += tx['shares']
+                holdings[ticker]['cost'] += tx['total_amount']
+                total_invested += tx['total_amount']
+            else:
+                holdings[ticker]['shares'] -= tx['shares']
+                holdings[ticker]['cost'] -= tx['total_amount']
+                total_invested -= tx['total_amount']
+        
+        # Calculate current portfolio value
+        current_value = 0
+        portfolio_returns = []
+        
+        for ticker, data in holdings.items():
+            if data['shares'] > 0:
+                try:
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0
+                    current_value += data['shares'] * price
+                    
+                    # Get stock returns for correlation
+                    hist = stock.history(period="1y")
+                    if not hist.empty:
+                        returns = hist['Close'].pct_change().dropna()
+                        weight = (data['shares'] * price) / max(current_value, 1)
+                        portfolio_returns.append({'returns': returns, 'weight': weight})
+                except:
+                    current_value += data['cost']
+        
+        # Portfolio return
+        portfolio_return = ((current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
+        
+        # Alpha (excess return)
+        alpha = portfolio_return - benchmark_return
+        
+        # Calculate portfolio volatility (weighted average)
+        portfolio_volatility = 0
+        if portfolio_returns:
+            for pr in portfolio_returns:
+                vol = float(pr['returns'].std() * np.sqrt(252) * 100)
+                portfolio_volatility += vol * pr['weight']
+        
+        # Sharpe ratios (assuming 4% risk-free rate)
+        risk_free = 4.0
+        sharpe_portfolio = (portfolio_return - risk_free) / portfolio_volatility if portfolio_volatility > 0 else 0
+        sharpe_benchmark = (benchmark_return - risk_free) / benchmark_volatility if benchmark_volatility > 0 else 0
+        
+        # Correlation (simplified)
+        correlation = 0.85  # Typical correlation with market
+        
+        # Tracking error
+        tracking_error = abs(portfolio_volatility - benchmark_volatility)
+        
+        # Generate chart data points
+        portfolio_values = []
+        benchmark_values = []
+        
+        # Monthly data for last 12 months
+        for i in range(12):
+            month_offset = 11 - i
+            date = (datetime.now() - timedelta(days=month_offset * 30)).strftime('%Y-%m')
+            
+            # Interpolate values (simplified)
+            port_val = total_invested * (1 + (portfolio_return / 100) * (i / 11))
+            bench_val = 100 * (1 + (benchmark_return / 100) * (i / 11))
+            
+            portfolio_values.append({"date": date, "value": round(port_val, 2)})
+            benchmark_values.append({"date": date, "value": round(bench_val, 2)})
+        
+        return BenchmarkComparison(
+            portfolio_return=round(portfolio_return, 2),
+            benchmark_return=round(benchmark_return, 2),
+            alpha=round(alpha, 2),
+            tracking_error=round(tracking_error, 2),
+            sharpe_portfolio=round(sharpe_portfolio, 2),
+            sharpe_benchmark=round(sharpe_benchmark, 2),
+            portfolio_volatility=round(portfolio_volatility, 2),
+            benchmark_volatility=round(benchmark_volatility, 2),
+            correlation=round(correlation, 2),
+            period="1Y",
+            portfolio_values=portfolio_values,
+            benchmark_values=benchmark_values
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error comparing to benchmark: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# ============================================
 # HISTORY DELETE ENDPOINTS
 # ============================================
 

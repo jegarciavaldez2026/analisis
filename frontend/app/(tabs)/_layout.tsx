@@ -47,6 +47,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="screener"
+        options={{
+          title: 'Screener',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons name={focused ? 'filter' : 'filter-outline'} size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="account"
         options={{
           title: 'Mi Cuenta',
