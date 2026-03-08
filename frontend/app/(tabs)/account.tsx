@@ -93,6 +93,13 @@ interface PortfolioSummary {
   holdings: PortfolioHolding[];
   metrics: PortfolioMetrics | null;
   sector_allocation: SectorAllocation[];
+  cash_balance: number;
+  cash_available: number;
+  total_deposits: number;
+  total_withdrawals: number;
+  realized_gains: number;
+  unrealized_gains: number;
+  total_portfolio_value: number;
 }
 
 interface AlertInfo {
@@ -834,14 +841,19 @@ export default function AccountScreen() {
   };
 
   const renderCashMovements = () => {
+    // Use portfolio data if available, otherwise calculate locally
+    const cashAvailable = portfolio?.cash_available ?? 0;
+    const realizedGains = portfolio?.realized_gains ?? 0;
+    const unrealizedGains = portfolio?.unrealized_gains ?? 0;
+    const totalPortfolioValue = portfolio?.total_portfolio_value ?? 0;
+    
     const totalDeposits = cashMovements.filter(m => m.movement_type === 'deposit').reduce((sum, m) => sum + m.amount, 0);
     const totalWithdrawals = cashMovements.filter(m => m.movement_type === 'withdrawal').reduce((sum, m) => sum + m.amount, 0);
-    const cashBalance = totalDeposits - totalWithdrawals;
     
     return (
       <View style={[styles.cashCard, { backgroundColor: colors.card }]}>
         <View style={styles.cashHeader}>
-          <Text style={[styles.metricsTitle, { color: colors.text }]}>Efectivo</Text>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>Resumen Financiero</Text>
           <TouchableOpacity
             style={[styles.addCashButton, { backgroundColor: colors.primary }]}
             onPress={() => setShowCashModal(true)}
@@ -850,29 +862,68 @@ export default function AccountScreen() {
           </TouchableOpacity>
         </View>
         
-        <View style={styles.cashSummary}>
-          <View style={styles.cashItem}>
-            <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Depósitos</Text>
-            <Text style={[styles.cashValue, { color: '#34C759' }]}>
-              {hideValues ? '••••••' : `+$${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-            </Text>
-          </View>
-          <View style={styles.cashItem}>
-            <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Retiros</Text>
-            <Text style={[styles.cashValue, { color: '#FF3B30' }]}>
-              {hideValues ? '••••••' : `-$${totalWithdrawals.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-            </Text>
-          </View>
-          <View style={[styles.cashItem, styles.cashBalanceItem, { borderTopColor: colors.border }]}>
-            <Text style={[styles.cashLabel, { color: colors.text, fontWeight: '600' }]}>Balance</Text>
-            <Text style={[styles.cashBalance, { color: cashBalance >= 0 ? colors.primary : '#FF3B30' }]}>
-              {hideValues ? '••••••' : `$${cashBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-            </Text>
+        {/* Cash Section */}
+        <View style={[styles.cashSection, { borderBottomColor: colors.border }]}>
+          <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>EFECTIVO</Text>
+          <View style={styles.cashSummary}>
+            <View style={styles.cashItem}>
+              <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Depósitos</Text>
+              <Text style={[styles.cashValue, { color: '#34C759' }]}>
+                {hideValues ? '••••••' : `+$${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              </Text>
+            </View>
+            <View style={styles.cashItem}>
+              <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Retiros</Text>
+              <Text style={[styles.cashValue, { color: '#FF3B30' }]}>
+                {hideValues ? '••••••' : `-$${totalWithdrawals.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              </Text>
+            </View>
+            <View style={[styles.cashItem, styles.cashBalanceItem, { borderTopColor: colors.border }]}>
+              <Text style={[styles.cashLabel, { color: colors.text, fontWeight: '600' }]}>Cash Disponible</Text>
+              <Text style={[styles.cashBalance, { color: cashAvailable >= 0 ? colors.primary : '#FF3B30' }]}>
+                {hideValues ? '••••••' : `$${cashAvailable.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              </Text>
+            </View>
           </View>
         </View>
         
+        {/* Gains Section */}
+        <View style={[styles.gainsSection, { marginTop: 16 }]}>
+          <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>GANANCIAS / PÉRDIDAS</Text>
+          <View style={styles.gainsGrid}>
+            <View style={[styles.gainCard, { backgroundColor: isDark ? '#1C1C1E' : '#F5F5F7' }]}>
+              <Text style={[styles.gainLabel, { color: colors.textSecondary }]}>Realizadas</Text>
+              <Text style={[styles.gainValue, { color: realizedGains >= 0 ? '#34C759' : '#FF3B30' }]}>
+                {hideValues ? '••••••' : `${realizedGains >= 0 ? '+' : ''}$${realizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              </Text>
+              <Text style={[styles.gainHint, { color: colors.textSecondary }]}>Ventas cerradas</Text>
+            </View>
+            <View style={[styles.gainCard, { backgroundColor: isDark ? '#1C1C1E' : '#F5F5F7' }]}>
+              <Text style={[styles.gainLabel, { color: colors.textSecondary }]}>No Realizadas</Text>
+              <Text style={[styles.gainValue, { color: unrealizedGains >= 0 ? '#34C759' : '#FF3B30' }]}>
+                {hideValues ? '••••••' : `${unrealizedGains >= 0 ? '+' : ''}$${unrealizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              </Text>
+              <Text style={[styles.gainHint, { color: colors.textSecondary }]}>Posiciones abiertas</Text>
+            </View>
+          </View>
+        </View>
+        
+        {/* Total Portfolio Value */}
+        {totalPortfolioValue > 0 && (
+          <View style={[styles.totalPortfolioValue, { borderTopColor: colors.border }]}>
+            <Text style={[styles.totalPortfolioLabel, { color: colors.text }]}>Valor Total del Portafolio</Text>
+            <Text style={[styles.totalPortfolioAmount, { color: colors.primary }]}>
+              {hideValues ? '••••••' : `$${totalPortfolioValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+            </Text>
+            <Text style={[styles.totalPortfolioHint, { color: colors.textSecondary }]}>
+              (Acciones + Cash disponible)
+            </Text>
+          </View>
+        )}
+        
+        {/* Recent Cash Movements */}
         {cashMovements.length > 0 && (
-          <View style={styles.cashHistory}>
+          <View style={[styles.cashHistory, { borderTopColor: colors.border }]}>
             <Text style={[styles.cashHistoryTitle, { color: colors.textSecondary }]}>Últimos movimientos</Text>
             {cashMovements.slice(0, 3).map((movement) => (
               <View key={movement.id} style={[styles.cashMovementItem, { borderBottomColor: colors.border }]}>
@@ -922,13 +973,16 @@ export default function AccountScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.modalOverlay}
       >
-        <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
-          <View style={styles.modalHeader}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>
+        <View style={[styles.cashModalContent, { backgroundColor: colors.card }]}>
+          <View style={styles.cashModalHeader}>
+            <Text style={[styles.cashModalTitle, { color: colors.text }]}>
               {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
             </Text>
-            <TouchableOpacity onPress={() => setShowCashModal(false)}>
-              <Ionicons name="close" size={24} color={colors.textSecondary} />
+            <TouchableOpacity 
+              style={styles.cashModalCloseBtn}
+              onPress={() => setShowCashModal(false)}
+            >
+              <Ionicons name="close-circle" size={28} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
           
@@ -962,10 +1016,10 @@ export default function AccountScreen() {
             </TouchableOpacity>
           </View>
           
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Monto *</Text>
+          <View style={styles.cashInputGroup}>
+            <Text style={[styles.cashInputLabel, { color: colors.textSecondary }]}>Monto *</Text>
             <TextInput
-              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              style={[styles.cashInput, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
               placeholder="0.00"
               placeholderTextColor={colors.textSecondary}
               value={cashAmount}
@@ -974,10 +1028,10 @@ export default function AccountScreen() {
             />
           </View>
           
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Descripción</Text>
+          <View style={styles.cashInputGroup}>
+            <Text style={[styles.cashInputLabel, { color: colors.textSecondary }]}>Descripción</Text>
             <TextInput
-              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              style={[styles.cashInput, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
               placeholder="Opcional"
               placeholderTextColor={colors.textSecondary}
               value={cashDescription}
@@ -985,10 +1039,10 @@ export default function AccountScreen() {
             />
           </View>
           
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Fecha</Text>
+          <View style={styles.cashInputGroup}>
+            <Text style={[styles.cashInputLabel, { color: colors.textSecondary }]}>Fecha</Text>
             <TextInput
-              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              style={[styles.cashInput, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
               placeholder="YYYY-MM-DD"
               placeholderTextColor={colors.textSecondary}
               value={cashDate}
@@ -998,7 +1052,7 @@ export default function AccountScreen() {
           
           <TouchableOpacity
             style={[
-              styles.submitButton,
+              styles.cashSubmitButton,
               { backgroundColor: cashType === 'deposit' ? '#34C759' : '#FF3B30' },
               submitting && styles.submitButtonDisabled
             ]}
@@ -1008,7 +1062,7 @@ export default function AccountScreen() {
             {submitting ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Text style={styles.submitButtonText}>
+              <Text style={styles.cashSubmitButtonText}>
                 {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
               </Text>
             )}
@@ -2295,5 +2349,112 @@ const styles = StyleSheet.create({
   evolutionChartContainer: {
     alignItems: 'center',
     overflow: 'hidden',
+  },
+  // Cash modal improved styles
+  cashModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    marginHorizontal: 20,
+    maxHeight: '80%',
+  },
+  cashModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  cashModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  cashModalCloseBtn: {
+    padding: 4,
+  },
+  cashInputGroup: {
+    marginBottom: 16,
+  },
+  cashInputLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  cashInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 16,
+  },
+  cashSubmitButton: {
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  cashSubmitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Gains section styles
+  cashSection: {
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+  },
+  cashSectionTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 10,
+  },
+  gainsSection: {
+    gap: 10,
+  },
+  gainsGrid: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  gainCard: {
+    flex: 1,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+  },
+  gainLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  gainValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  gainHint: {
+    fontSize: 10,
+  },
+  totalPortfolioValue: {
+    borderTopWidth: 1,
+    marginTop: 16,
+    paddingTop: 16,
+    alignItems: 'center',
+  },
+  totalPortfolioLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  totalPortfolioAmount: {
+    fontSize: 28,
+    fontWeight: 'bold',
+  },
+  totalPortfolioHint: {
+    fontSize: 11,
+    marginTop: 2,
   },
 });

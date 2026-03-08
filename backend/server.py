@@ -2707,8 +2707,12 @@ class PortfolioSummary(BaseModel):
     metrics: Optional[PortfolioMetrics] = None
     sector_allocation: List[SectorAllocation] = []
     cash_balance: float = 0.0
+    cash_available: float = 0.0  # Cash disponible para invertir
     total_deposits: float = 0.0
     total_withdrawals: float = 0.0
+    realized_gains: float = 0.0  # Ganancias realizadas (ventas)
+    unrealized_gains: float = 0.0  # Ganancias no realizadas (posiciones abiertas)
+    total_portfolio_value: float = 0.0  # Valor total incluyendo cash
 
 # Cash Movement Models (Deposits/Withdrawals)
 class CashMovement(BaseModel):
@@ -2881,6 +2885,75 @@ async def get_portfolio():
         # Sort by percentage descending
         sector_allocation.sort(key=lambda x: x.percentage, reverse=True)
         
+        # Get cash movements to calculate cash available
+        cash_movements = await db.cash_movements.find().to_list(1000)
+        total_deposits = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'deposit')
+        total_withdrawals = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'withdrawal')
+        
+        # Calculate cash used in purchases and received from sales
+        cash_used_in_buys = sum(
+            tx['total_amount'] + tx.get('commission', 0) 
+            for tx in transactions 
+            if tx['transaction_type'] == 'buy'
+        )
+        cash_from_sells = sum(
+            tx['total_amount'] - tx.get('commission', 0) 
+            for tx in transactions 
+            if tx['transaction_type'] == 'sell'
+        )
+        
+        # Cash available = Deposits - Withdrawals - Buys + Sells
+        cash_available = total_deposits - total_withdrawals - cash_used_in_buys + cash_from_sells
+        
+        # Calculate realized gains (from sales)
+        realized_gains = 0.0
+        for tx in transactions:
+            if tx['transaction_type'] == 'sell':
+                ticker = tx['ticker']
+                sell_price = tx['price_per_share']
+                sell_shares = tx['shares']
+                
+                # Find the average cost for this ticker from buys before this sale
+                buys_before = [
+                    t for t in transactions 
+                    if t['ticker'] == ticker 
+                    and t['transaction_type'] == 'buy' 
+                    and t['transaction_date'] <= tx['transaction_date']
+                ]
+                if buys_before:
+                    total_buy_shares = sum(b['shares'] for b in buys_before)
+                    total_buy_cost = sum(b['total_amount'] for b in buys_before)
+                    avg_buy_price = total_buy_cost / total_buy_shares if total_buy_shares > 0 else 0
+                    realized_gains += (sell_price - avg_buy_price) * sell_shares
+        
+        # Unrealized gains = current profit/loss from open positions
+        unrealized_gains = total_pl
+        
+        # Total portfolio value including cash
+        total_portfolio_value = current_value + max(cash_available, 0)
+        
+        # Recalculate sector allocation to include cash if available
+        if cash_available > 0 and total_portfolio_value > 0:
+            # Recalculate percentages with cash included
+            for sa in sector_allocation:
+                sa.percentage = round((sa.value / total_portfolio_value) * 100, 2)
+            
+            # Add cash as a "sector"
+            cash_percentage = round((cash_available / total_portfolio_value) * 100, 2)
+            sector_allocation.append(SectorAllocation(
+                sector="Efectivo Disponible",
+                value=round(cash_available, 2),
+                percentage=cash_percentage,
+                holdings_count=1
+            ))
+            
+            # Re-sort
+            sector_allocation.sort(key=lambda x: x.percentage, reverse=True)
+            
+            # Also update holding weight percentages
+            for holding in holdings:
+                holding.weight_percent = round((holding.current_value / total_portfolio_value) * 100, 2)
+        
         # Calculate portfolio metrics
         metrics = PortfolioMetrics()
         
@@ -2955,7 +3028,14 @@ async def get_portfolio():
             total_profit_loss_percent=total_pl_pct,
             holdings=holdings,
             metrics=metrics,
-            sector_allocation=sector_allocation
+            sector_allocation=sector_allocation,
+            cash_balance=total_deposits - total_withdrawals,
+            cash_available=round(cash_available, 2),
+            total_deposits=total_deposits,
+            total_withdrawals=total_withdrawals,
+            realized_gains=round(realized_gains, 2),
+            unrealized_gains=round(unrealized_gains, 2),
+            total_portfolio_value=round(total_portfolio_value, 2)
         )
         
     except Exception as e:
