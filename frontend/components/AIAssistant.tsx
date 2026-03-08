@@ -12,7 +12,9 @@ import {
   SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import localAI from '../utils/localAI';
+import axios from 'axios';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 interface Message {
   id: string;
@@ -31,24 +33,85 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [sessionId, setSessionId] = useState<string>('');
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  const [isInitializing, setIsInitializing] = useState(true);
   const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     if (analysisData) {
-      localAI.setAnalysisData(analysisData);
-      // Generate initial analysis
-      const initial = localAI.generateInitialAnalysis();
+      initializeAISession();
+    }
+    
+    // Cleanup session on unmount
+    return () => {
+      if (sessionId) {
+        axios.delete(`${BACKEND_URL}/api/ai-assistant/session/${sessionId}`).catch(() => {});
+      }
+    };
+  }, [analysisData]);
+
+  const initializeAISession = async () => {
+    try {
+      setIsInitializing(true);
+      const newSessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Prepare stock data for the AI
+      const stockData = {
+        company_name: analysisData.company_name || analysisData.ticker,
+        current_price: analysisData.metadata?.current_price || 0,
+        recommendation: analysisData.recommendation || 'N/A',
+        favorable_percentage: analysisData.favorable_percentage || 50,
+        ratios: analysisData.ratios?.reduce((acc: any, category: any) => {
+          category.metrics?.forEach((m: any) => {
+            acc[m.name] = {
+              value: m.value,
+              is_favorable: m.passed,
+              threshold: m.threshold,
+            };
+          });
+          return acc;
+        }, {}) || {},
+      };
+
+      const response = await axios.post(`${BACKEND_URL}/api/ai-assistant/init`, {
+        session_id: newSessionId,
+        ticker: analysisData.ticker,
+        stock_data: stockData,
+      });
+
+      setSessionId(response.data.session_id);
+      setSuggestedQuestions(response.data.suggested_questions || []);
+      
+      // Add initial message from AI
       setMessages([{
         id: '1',
         role: 'assistant',
-        content: initial.message,
+        content: response.data.initial_analysis,
         timestamp: new Date(),
       }]);
+      
+    } catch (error) {
+      console.error('Error initializing AI session:', error);
+      // Fallback message if API fails
+      setMessages([{
+        id: '1',
+        role: 'assistant',
+        content: `¡Hola! 👋 Soy tu asistente financiero. Estoy listo para ayudarte a analizar ${analysisData?.ticker || 'esta acción'}. \n\n⚠️ Hubo un problema al conectar con el servidor AI. Por favor, intenta de nuevo más tarde o haz tus preguntas y haré mi mejor esfuerzo para ayudarte.`,
+        timestamp: new Date(),
+      }]);
+      setSuggestedQuestions([
+        '¿Cuáles son los principales riesgos?',
+        '¿Cómo se compara con competidores?',
+        '¿Es buen momento para comprar?',
+      ]);
+    } finally {
+      setIsInitializing(false);
     }
-  }, [analysisData]);
+  };
 
-  const sendMessage = () => {
-    if (!input.trim()) return;
+  const sendMessage = async () => {
+    if (!input.trim() || isTyping) return;
     
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -58,32 +121,47 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
     };
     
     setMessages(prev => [...prev, userMessage]);
+    const userInput = input.trim();
     setInput('');
     setIsTyping(true);
     
-    // Simulate typing delay
-    setTimeout(() => {
-      const response = localAI.processQuestion(userMessage.content);
+    try {
+      const response = await axios.post(`${BACKEND_URL}/api/ai-assistant/chat`, {
+        session_id: sessionId,
+        message: userInput,
+      });
+      
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.message,
+        content: response.data.response,
         timestamp: new Date(),
       };
+      
       setMessages(prev => [...prev, assistantMessage]);
+      
+      // Update suggested questions based on context
+      if (response.data.suggested_questions?.length > 0) {
+        setSuggestedQuestions(response.data.suggested_questions);
+      }
+      
+    } catch (error) {
+      console.error('Error sending message:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: '⚠️ Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
       setIsTyping(false);
-    }, 500 + Math.random() * 500);
+    }
   };
-
-  const quickQuestions = [
-    '¿Debería comprar?',
-    '¿Cuál es el riesgo?',
-    '¿Está cara o barata?',
-    '¿Cómo está su deuda?',
-  ];
 
   const handleQuickQuestion = (question: string) => {
     setInput(question);
+    // Wait a brief moment for the input to be set, then send
     setTimeout(() => {
       const userMessage: Message = {
         id: Date.now().toString(),
@@ -92,20 +170,36 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, userMessage]);
+      setInput('');
       setIsTyping(true);
       
-      setTimeout(() => {
-        const response = localAI.processQuestion(question);
+      // Send to API
+      axios.post(`${BACKEND_URL}/api/ai-assistant/chat`, {
+        session_id: sessionId,
+        message: question,
+      }).then(response => {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: response.message,
+          content: response.data.response,
           timestamp: new Date(),
         };
         setMessages(prev => [...prev, assistantMessage]);
+        if (response.data.suggested_questions?.length > 0) {
+          setSuggestedQuestions(response.data.suggested_questions);
+        }
+      }).catch(error => {
+        console.error('Error with quick question:', error);
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '⚠️ Lo siento, hubo un error. Por favor, intenta de nuevo.',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }).finally(() => {
         setIsTyping(false);
-        setInput('');
-      }, 500 + Math.random() * 500);
+      });
     }, 100);
   };
 
@@ -121,8 +215,8 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
         ]}
       >
         {!isUser && (
-          <View style={[styles.avatarContainer, { backgroundColor: colors.primary + '20' }]}>
-            <Ionicons name="sparkles" size={16} color={colors.primary} />
+          <View style={[styles.avatarContainer, { backgroundColor: '#AF52DE20' }]}>
+            <Ionicons name="sparkles" size={16} color="#AF52DE" />
           </View>
         )}
         <View
@@ -146,6 +240,23 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
     );
   };
 
+  if (isInitializing) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.loadingContainer}>
+          <View style={[styles.loadingIcon, { backgroundColor: '#AF52DE20' }]}>
+            <Ionicons name="sparkles" size={32} color="#AF52DE" />
+          </View>
+          <Text style={[styles.loadingTitle, { color: colors.text }]}>Iniciando FinBot...</Text>
+          <Text style={[styles.loadingSubtitle, { color: colors.textSecondary }]}>
+            Preparando análisis de {analysisData?.ticker || 'la acción'}
+          </Text>
+          <ActivityIndicator size="large" color="#AF52DE" style={{ marginTop: 20 }} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <KeyboardAvoidingView
@@ -163,81 +274,93 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
             <Text style={[styles.closeButtonText, { color: colors.danger }]}>Cerrar</Text>
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <View style={[styles.aiIcon, { backgroundColor: colors.primary + '20' }]}>
-              <Ionicons name="sparkles" size={20} color={colors.primary} />
+            <View style={[styles.aiIcon, { backgroundColor: '#AF52DE20' }]}>
+              <Ionicons name="sparkles" size={20} color="#AF52DE" />
             </View>
             <View>
-              <Text style={[styles.headerTitle, { color: colors.text }]}>Asistente IA</Text>
+              <Text style={[styles.headerTitle, { color: colors.text }]}>FinBot AI</Text>
               <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                {analysisData?.ticker || 'acción'}
+                Analizando {analysisData?.ticker || 'acción'}
               </Text>
             </View>
           </View>
-          <View style={styles.headerSpacer} />
+          <View style={[styles.aiStatusBadge, { backgroundColor: '#34C75920' }]}>
+            <View style={styles.aiStatusDot} />
+            <Text style={styles.aiStatusText}>GPT-4o</Text>
+          </View>
         </View>
 
-      {/* Messages */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.messagesContainer}
-        contentContainerStyle={styles.messagesContent}
-        onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
-      >
-        {messages.map(renderMessage)}
-        
-        {isTyping && (
-          <View style={[styles.messageContainer, styles.assistantMessageContainer]}>
-            <View style={[styles.avatarContainer, { backgroundColor: colors.primary + '20' }]}>
-              <Ionicons name="sparkles" size={16} color={colors.primary} />
-            </View>
-            <View style={[styles.messageBubble, styles.assistantBubble, { backgroundColor: colors.card }]}>
-              <View style={styles.typingIndicator}>
-                <View style={[styles.typingDot, { backgroundColor: colors.textSecondary }]} />
-                <View style={[styles.typingDot, styles.typingDotDelay1, { backgroundColor: colors.textSecondary }]} />
-                <View style={[styles.typingDot, styles.typingDotDelay2, { backgroundColor: colors.textSecondary }]} />
+        {/* Messages */}
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.messagesContainer}
+          contentContainerStyle={styles.messagesContent}
+          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+        >
+          {messages.map(renderMessage)}
+          
+          {isTyping && (
+            <View style={[styles.messageContainer, styles.assistantMessageContainer]}>
+              <View style={[styles.avatarContainer, { backgroundColor: '#AF52DE20' }]}>
+                <Ionicons name="sparkles" size={16} color="#AF52DE" />
+              </View>
+              <View style={[styles.messageBubble, styles.assistantBubble, { backgroundColor: colors.card }]}>
+                <View style={styles.typingIndicator}>
+                  <ActivityIndicator size="small" color="#AF52DE" />
+                  <Text style={[styles.typingText, { color: colors.textSecondary }]}>
+                    FinBot está pensando...
+                  </Text>
+                </View>
               </View>
             </View>
-          </View>
-        )}
-      </ScrollView>
+          )}
+        </ScrollView>
 
-      {/* Quick Questions */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={[styles.quickQuestionsContainer, { backgroundColor: colors.card }]}
-        contentContainerStyle={styles.quickQuestionsContent}
-      >
-        {quickQuestions.map((question, index) => (
-          <TouchableOpacity
-            key={index}
-            style={[styles.quickQuestionButton, { borderColor: colors.border }]}
-            onPress={() => handleQuickQuestion(question)}
+        {/* Suggested Questions */}
+        {suggestedQuestions.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={[styles.quickQuestionsContainer, { backgroundColor: colors.card }]}
+            contentContainerStyle={styles.quickQuestionsContent}
           >
-            <Text style={[styles.quickQuestionText, { color: colors.primary }]}>{question}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+            {suggestedQuestions.map((question, index) => (
+              <TouchableOpacity
+                key={index}
+                style={[styles.quickQuestionButton, { borderColor: '#AF52DE40', backgroundColor: '#AF52DE10' }]}
+                onPress={() => handleQuickQuestion(question)}
+                disabled={isTyping}
+              >
+                <Ionicons name="chatbubble-outline" size={14} color="#AF52DE" style={{ marginRight: 4 }} />
+                <Text style={[styles.quickQuestionText, { color: '#AF52DE' }]}>{question}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
-      {/* Input */}
-      <View style={[styles.inputContainer, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
-        <TextInput
-          style={[styles.input, { backgroundColor: colors.inputBackground, color: colors.text }]}
-          placeholder="Pregunta sobre esta acción..."
-          placeholderTextColor={colors.textSecondary}
-          value={input}
-          onChangeText={setInput}
-          multiline
-          maxLength={500}
-        />
-        <TouchableOpacity
-          style={[styles.sendButton, { backgroundColor: input.trim() ? colors.primary : colors.border }]}
-          onPress={sendMessage}
-          disabled={!input.trim() || isTyping}
-        >
-          <Ionicons name="send" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
-      </View>
+        {/* Input */}
+        <View style={[styles.inputContainer, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
+          <TextInput
+            style={[styles.input, { backgroundColor: colors.inputBackground, color: colors.text }]}
+            placeholder="Pregunta lo que quieras sobre esta acción..."
+            placeholderTextColor={colors.textSecondary}
+            value={input}
+            onChangeText={setInput}
+            multiline
+            maxLength={500}
+            editable={!isTyping}
+          />
+          <TouchableOpacity
+            style={[
+              styles.sendButton, 
+              { backgroundColor: input.trim() && !isTyping ? '#AF52DE' : colors.border }
+            ]}
+            onPress={sendMessage}
+            disabled={!input.trim() || isTyping}
+          >
+            <Ionicons name="send" size={20} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -249,6 +372,29 @@ const styles = StyleSheet.create({
   },
   keyboardView: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  loadingIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  loadingTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  loadingSubtitle: {
+    fontSize: 14,
+    textAlign: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -262,14 +408,14 @@ const styles = StyleSheet.create({
   closeButtonLarge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 20,
-    gap: 6,
+    gap: 4,
     minHeight: 44,
   },
   closeButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
   headerCenter: {
@@ -278,14 +424,6 @@ const styles = StyleSheet.create({
     gap: 10,
     flex: 1,
     justifyContent: 'center',
-  },
-  headerSpacer: {
-    width: 80,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
   },
   aiIcon: {
     width: 40,
@@ -301,8 +439,24 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 12,
   },
-  closeButton: {
-    padding: 8,
+  aiStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  aiStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#34C759',
+  },
+  aiStatusText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#34C759',
   },
   messagesContainer: {
     flex: 1,
@@ -349,42 +503,37 @@ const styles = StyleSheet.create({
   typingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 8,
+    gap: 8,
+    paddingVertical: 4,
     paddingHorizontal: 4,
   },
-  typingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    opacity: 0.4,
-  },
-  typingDotDelay1: {
-    opacity: 0.6,
-  },
-  typingDotDelay2: {
-    opacity: 0.8,
+  typingText: {
+    fontSize: 13,
+    fontStyle: 'italic',
   },
   quickQuestionsContainer: {
-    maxHeight: 50,
+    maxHeight: 54,
     borderTopWidth: 1,
     borderTopColor: '#E0E0E0',
   },
   quickQuestionsContent: {
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
     gap: 8,
     flexDirection: 'row',
+    alignItems: 'center',
   },
   quickQuestionButton: {
-    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
     marginRight: 8,
   },
   quickQuestionText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
   },
   inputContainer: {

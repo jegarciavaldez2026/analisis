@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import numpy as np
 import pandas as pd
+import asyncio
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2475,39 +2477,47 @@ class TechnicalAnalysisResponse(BaseModel):
     key_levels: Dict[str, float]  # Important support/resistance levels
 
 
-def calculate_fibonacci_levels(high: float, low: float, trend: str) -> List[FibonacciLevel]:
-    """Calculate Fibonacci retracement levels"""
+def calculate_fibonacci_levels(high: float, low: float, current_price: float) -> List[FibonacciLevel]:
+    """Calculate Fibonacci retracement levels
+    
+    En Fibonacci los retrocesos se calculan desde el máximo hacia el mínimo:
+    - 0% = Máximo (Swing High) - Resistencia principal
+    - 23.6%, 38.2%, 50%, 61.8%, 78.6% = Niveles de retroceso
+    - 100% = Mínimo (Swing Low) - Soporte principal
+    
+    Un nivel es SOPORTE si el precio está POR ENCIMA de él
+    Un nivel es RESISTENCIA si el precio está POR DEBAJO de él
+    """
     diff = high - low
     
-    # Standard Fibonacci levels
+    # Standard Fibonacci levels (siempre calculados desde high hacia low)
     fib_ratios = {
-        "0%": 0.0,
+        "0%": 0.0,        # High - Resistencia máxima
         "23.6%": 0.236,
-        "38.2%": 0.382,
-        "50%": 0.5,
-        "61.8%": 0.618,
+        "38.2%": 0.382,   # Nivel clave de retroceso
+        "50%": 0.5,       # Nivel psicológico importante
+        "61.8%": 0.618,   # Nivel dorado - muy importante
         "78.6%": 0.786,
-        "100%": 1.0,
-        "127.2%": 1.272,  # Extension
-        "161.8%": 1.618,  # Extension
+        "100%": 1.0,      # Low - Soporte máximo
+        "127.2%": 1.272,  # Extensión
+        "161.8%": 1.618,  # Extensión dorada
     }
     
     levels = []
     for name, ratio in fib_ratios.items():
-        if trend == "ALCISTA":
-            # In uptrend, retracements are from high going down
-            price = high - (diff * ratio)
-            is_support = ratio <= 1.0
-        else:
-            # In downtrend, retracements are from low going up
-            price = low + (diff * ratio)
-            is_support = ratio > 0.5
+        # Los retrocesos siempre van desde el máximo hacia el mínimo
+        price = high - (diff * ratio)
+        
+        # Determinar si es soporte o resistencia basado en la posición del precio actual
+        # Si el precio está POR ENCIMA del nivel = Es SOPORTE (el nivel soporta el precio)
+        # Si el precio está POR DEBAJO del nivel = Es RESISTENCIA (el nivel resiste la subida)
+        is_support = current_price > price
         
         levels.append(FibonacciLevel(
             level=name,
             price=round(price, 2),
             is_support=is_support,
-            distance_percent=0  # Will be calculated later
+            distance_percent=0  # Will be calculated later with current price
         ))
     
     return levels
@@ -2731,8 +2741,8 @@ async def get_technical_analysis(ticker: str):
         else:
             trend_direction = "LATERAL"
         
-        # Calculate Fibonacci levels
-        fibonacci_levels = calculate_fibonacci_levels(swing_high, swing_low, trend_direction)
+        # Calculate Fibonacci levels (passing current_price for support/resistance determination)
+        fibonacci_levels = calculate_fibonacci_levels(swing_high, swing_low, current_price)
         
         # Update Fibonacci distances
         for level in fibonacci_levels:
@@ -2872,6 +2882,414 @@ async def get_technical_analysis(ticker: str):
     except Exception as e:
         logging.error(f"Error in technical analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al calcular análisis técnico: {str(e)}")
+
+
+# ==================== NEWS ENDPOINTS ====================
+
+class NewsArticle(BaseModel):
+    title: str
+    publisher: str
+    link: str
+    published_date: str
+    thumbnail: Optional[str] = None
+    summary: Optional[str] = None
+
+class StockNewsResponse(BaseModel):
+    ticker: str
+    company_name: str
+    news: List[NewsArticle]
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+class MarketNewsResponse(BaseModel):
+    news: List[NewsArticle]
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+
+@api_router.get("/news/{ticker}", response_model=StockNewsResponse)
+async def get_stock_news(ticker: str, limit: int = 10):
+    """Get latest news for a specific stock"""
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        if not info or 'symbol' not in info:
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos para el ticker '{ticker}'")
+        
+        # Get news from yfinance
+        raw_news = stock.news or []
+        
+        articles = []
+        for article in raw_news[:limit]:
+            try:
+                # New yfinance structure has nested 'content' object
+                content = article.get('content', article)
+                
+                # Get title
+                title = content.get('title', article.get('title', 'Sin título'))
+                
+                # Get publisher
+                provider = content.get('provider', {})
+                publisher = provider.get('displayName', article.get('publisher', 'Desconocido'))
+                
+                # Get link
+                canonical_url = content.get('canonicalUrl', {})
+                link = canonical_url.get('url', article.get('link', ''))
+                
+                # Get published date
+                pub_date_str = content.get('pubDate', article.get('pubDate', ''))
+                if pub_date_str:
+                    try:
+                        pub_date = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M')
+                    except:
+                        pub_timestamp = article.get('providerPublishTime', 0)
+                        pub_date = datetime.fromtimestamp(pub_timestamp).strftime('%Y-%m-%d %H:%M') if pub_timestamp else 'N/A'
+                else:
+                    pub_timestamp = article.get('providerPublishTime', 0)
+                    pub_date = datetime.fromtimestamp(pub_timestamp).strftime('%Y-%m-%d %H:%M') if pub_timestamp else 'N/A'
+                
+                # Get thumbnail
+                thumbnail = None
+                thumb_data = content.get('thumbnail', article.get('thumbnail', {}))
+                if thumb_data and 'resolutions' in thumb_data and thumb_data['resolutions']:
+                    # Try to get a medium-sized image
+                    for res in thumb_data['resolutions']:
+                        if res.get('tag') == '170x128' or res.get('width', 0) > 100:
+                            thumbnail = res.get('url')
+                            break
+                    if not thumbnail:
+                        thumbnail = thumb_data['resolutions'][0].get('url')
+                
+                # Get summary
+                summary = content.get('summary', article.get('summary', None))
+                
+                articles.append(NewsArticle(
+                    title=title,
+                    publisher=publisher,
+                    link=link,
+                    published_date=pub_date,
+                    thumbnail=thumbnail,
+                    summary=summary
+                ))
+            except Exception as e:
+                logging.warning(f"Error parsing news article: {str(e)}")
+                continue
+        
+        return StockNewsResponse(
+            ticker=ticker,
+            company_name=info.get('longName', info.get('shortName', ticker)),
+            news=articles
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching stock news: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener noticias: {str(e)}")
+
+
+@api_router.get("/market-news", response_model=MarketNewsResponse)
+async def get_market_news(limit: int = 15):
+    """Get global market news from major indices and market tickers"""
+    try:
+        # Use multiple market symbols to aggregate diverse news
+        market_symbols = ['^GSPC', '^DJI', '^IXIC', 'SPY', 'QQQ', '^VIX']  # S&P 500, Dow Jones, NASDAQ, SPY ETF, QQQ ETF, VIX
+        
+        all_news = []
+        seen_titles = set()  # To avoid duplicates
+        
+        for symbol in market_symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                raw_news = ticker.news or []
+                
+                for article in raw_news:
+                    # New yfinance structure has nested 'content' object
+                    content = article.get('content', article)
+                    title = content.get('title', article.get('title', ''))
+                    
+                    # Skip duplicates
+                    if title in seen_titles or not title:
+                        continue
+                    seen_titles.add(title)
+                    
+                    try:
+                        # Get publisher
+                        provider = content.get('provider', {})
+                        publisher = provider.get('displayName', article.get('publisher', 'Desconocido'))
+                        
+                        # Get link
+                        canonical_url = content.get('canonicalUrl', {})
+                        link = canonical_url.get('url', article.get('link', ''))
+                        
+                        # Get published date
+                        pub_date_str = content.get('pubDate', article.get('pubDate', ''))
+                        pub_timestamp = 0
+                        if pub_date_str:
+                            try:
+                                pub_dt = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
+                                pub_date = pub_dt.strftime('%Y-%m-%d %H:%M')
+                                pub_timestamp = pub_dt.timestamp()
+                            except:
+                                pub_timestamp = article.get('providerPublishTime', 0)
+                                pub_date = datetime.fromtimestamp(pub_timestamp).strftime('%Y-%m-%d %H:%M') if pub_timestamp else 'N/A'
+                        else:
+                            pub_timestamp = article.get('providerPublishTime', 0)
+                            pub_date = datetime.fromtimestamp(pub_timestamp).strftime('%Y-%m-%d %H:%M') if pub_timestamp else 'N/A'
+                        
+                        # Get thumbnail
+                        thumbnail = None
+                        thumb_data = content.get('thumbnail', article.get('thumbnail', {}))
+                        if thumb_data and 'resolutions' in thumb_data and thumb_data['resolutions']:
+                            for res in thumb_data['resolutions']:
+                                if res.get('tag') == '170x128' or res.get('width', 0) > 100:
+                                    thumbnail = res.get('url')
+                                    break
+                            if not thumbnail:
+                                thumbnail = thumb_data['resolutions'][0].get('url')
+                        
+                        # Get summary
+                        summary = content.get('summary', article.get('summary', None))
+                        
+                        all_news.append({
+                            'article': NewsArticle(
+                                title=title,
+                                publisher=publisher,
+                                link=link,
+                                published_date=pub_date,
+                                thumbnail=thumbnail,
+                                summary=summary
+                            ),
+                            'timestamp': pub_timestamp
+                        })
+                    except Exception as e:
+                        continue
+                        
+            except Exception as e:
+                logging.warning(f"Error fetching news for {symbol}: {str(e)}")
+                continue
+        
+        # Sort by timestamp (most recent first) and limit
+        all_news.sort(key=lambda x: x['timestamp'], reverse=True)
+        articles = [item['article'] for item in all_news[:limit]]
+        
+        return MarketNewsResponse(news=articles)
+        
+    except Exception as e:
+        logging.error(f"Error fetching market news: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener noticias del mercado: {str(e)}")
+
+
+# ==================== AI ASSISTANT ENDPOINTS ====================
+
+# Store active chat sessions in memory (for production, use Redis or database)
+ai_chat_sessions: Dict[str, LlmChat] = {}
+
+class AIAssistantRequest(BaseModel):
+    session_id: str
+    message: str
+    stock_data: Optional[Dict[str, Any]] = None  # Financial data for context
+
+class AIAssistantResponse(BaseModel):
+    response: str
+    session_id: str
+    suggested_questions: List[str]
+
+class AIInitRequest(BaseModel):
+    session_id: str
+    ticker: str
+    stock_data: Dict[str, Any]
+
+class AIInitResponse(BaseModel):
+    session_id: str
+    initial_analysis: str
+    suggested_questions: List[str]
+
+
+def get_financial_system_prompt(ticker: str, stock_data: Dict[str, Any]) -> str:
+    """Generate a detailed system prompt for financial analysis"""
+    return f"""Eres un analista financiero experto y amigable especializado en análisis de acciones. Tu nombre es "FinBot". 
+Estás analizando la acción {ticker} ({stock_data.get('company_name', ticker)}).
+
+DATOS FINANCIEROS ACTUALES:
+- Precio actual: ${stock_data.get('current_price', 'N/A')}
+- Recomendación del sistema: {stock_data.get('recommendation', 'N/A')}
+- Porcentaje favorable: {stock_data.get('favorable_percentage', 'N/A')}%
+
+RATIOS FINANCIEROS:
+{format_ratios_for_prompt(stock_data.get('ratios', {}))}
+
+INSTRUCCIONES:
+1. Responde SIEMPRE en español de forma clara y concisa
+2. Sé conversacional y amigable, pero profesional
+3. Usa emojis ocasionalmente para hacer la conversación más amena (📈 📉 💰 ⚠️ ✅ 💡)
+4. Cuando des recomendaciones, siempre menciona que no es asesoría financiera profesional
+5. Si el usuario pregunta algo fuera del contexto financiero, redirige amablemente la conversación
+6. Ofrece perspectivas tanto alcistas como bajistas cuando sea relevante
+7. Explica términos técnicos de forma simple cuando los uses
+8. Al final de respuestas largas, sugiere una pregunta de seguimiento
+
+IMPORTANTE: Mantén respuestas concisas (máximo 200 palabras) a menos que el usuario pida más detalle."""
+
+
+def format_ratios_for_prompt(ratios: Dict[str, Any]) -> str:
+    """Format ratios dictionary into readable string for the prompt"""
+    if not ratios:
+        return "No hay datos de ratios disponibles"
+    
+    lines = []
+    for key, value in ratios.items():
+        if isinstance(value, dict):
+            status = "✅ Favorable" if value.get('is_favorable', False) else "⚠️ No favorable"
+            lines.append(f"- {key}: {value.get('value', 'N/A')} ({status})")
+        else:
+            lines.append(f"- {key}: {value}")
+    
+    return "\n".join(lines) if lines else "Sin datos de ratios"
+
+
+def get_suggested_questions(context: str = "general") -> List[str]:
+    """Get contextual suggested questions"""
+    questions = {
+        "general": [
+            "¿Cuáles son los principales riesgos de esta acción?",
+            "¿Cómo se compara con sus competidores?",
+            "¿Es buen momento para comprar?",
+            "Explícame el ratio P/E en términos simples",
+            "¿Qué factores podrían hacer subir el precio?"
+        ],
+        "bullish": [
+            "¿Hasta dónde podría subir el precio?",
+            "¿Cuáles son los catalizadores positivos?",
+            "¿Debería aumentar mi posición?",
+            "¿Qué métricas indican fortaleza?"
+        ],
+        "bearish": [
+            "¿Cuáles son las señales de alerta?",
+            "¿Debería vender o esperar?",
+            "¿Qué podría hacer que la situación mejore?",
+            "¿Hay oportunidad de compra en la caída?"
+        ]
+    }
+    return questions.get(context, questions["general"])
+
+
+@api_router.post("/ai-assistant/init", response_model=AIInitResponse)
+async def init_ai_assistant(request: AIInitRequest):
+    """Initialize a new AI assistant session with stock analysis"""
+    try:
+        api_key = os.environ.get('EMERGENT_LLM_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail="LLM API key not configured")
+        
+        session_id = request.session_id or str(uuid.uuid4())
+        
+        # Create new chat instance with financial system prompt
+        system_prompt = get_financial_system_prompt(request.ticker, request.stock_data)
+        
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=session_id,
+            system_message=system_prompt
+        ).with_model("openai", "gpt-4o-mini")
+        
+        # Store the session
+        ai_chat_sessions[session_id] = chat
+        
+        # Generate initial analysis
+        init_message = UserMessage(
+            text=f"""Proporciona un análisis inicial breve y conversacional de {request.ticker}. 
+            
+Incluye:
+1. Tu primera impresión general (1-2 oraciones)
+2. Un punto fuerte destacado
+3. Una posible preocupación
+4. Una invitación a que el usuario haga preguntas
+
+Mantén el tono amigable y accesible. Usa 2-3 emojis apropiados."""
+        )
+        
+        initial_analysis = await chat.send_message(init_message)
+        
+        # Determine context for suggested questions
+        favorable_pct = request.stock_data.get('favorable_percentage', 50)
+        if favorable_pct >= 70:
+            context = "bullish"
+        elif favorable_pct <= 40:
+            context = "bearish"
+        else:
+            context = "general"
+        
+        return AIInitResponse(
+            session_id=session_id,
+            initial_analysis=initial_analysis,
+            suggested_questions=get_suggested_questions(context)[:4]
+        )
+        
+    except Exception as e:
+        logging.error(f"Error initializing AI assistant: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al inicializar asistente AI: {str(e)}")
+
+
+@api_router.post("/ai-assistant/chat", response_model=AIAssistantResponse)
+async def chat_with_ai_assistant(request: AIAssistantRequest):
+    """Send a message to the AI assistant and get a response"""
+    try:
+        session_id = request.session_id
+        
+        # Check if session exists
+        if session_id not in ai_chat_sessions:
+            # If no session, create a new one with basic context
+            api_key = os.environ.get('EMERGENT_LLM_KEY')
+            if not api_key:
+                raise HTTPException(status_code=500, detail="LLM API key not configured")
+            
+            basic_prompt = """Eres FinBot, un analista financiero experto y amigable. 
+Responde siempre en español de forma clara y concisa.
+Si no tienes contexto de una acción específica, ofrece información general sobre inversiones y análisis financiero.
+Usa emojis ocasionalmente para hacer la conversación más amena.
+Recuerda mencionar que no proporcionas asesoría financiera profesional."""
+            
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=session_id,
+                system_message=basic_prompt
+            ).with_model("openai", "gpt-4o-mini")
+            
+            ai_chat_sessions[session_id] = chat
+        
+        chat = ai_chat_sessions[session_id]
+        
+        # Send user message
+        user_message = UserMessage(text=request.message)
+        response = await chat.send_message(user_message)
+        
+        # Generate contextual suggested questions based on the conversation
+        suggestions = [
+            "¿Puedes explicar eso con más detalle?",
+            "¿Qué otros factores debo considerar?",
+            "¿Cómo afecta esto mi decisión de inversión?",
+            "Dame un resumen de los puntos clave"
+        ]
+        
+        return AIAssistantResponse(
+            response=response,
+            session_id=session_id,
+            suggested_questions=suggestions[:3]
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in AI chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en chat con AI: {str(e)}")
+
+
+@api_router.delete("/ai-assistant/session/{session_id}")
+async def end_ai_session(session_id: str):
+    """End an AI assistant session"""
+    if session_id in ai_chat_sessions:
+        del ai_chat_sessions[session_id]
+        return {"message": "Sesión terminada exitosamente"}
+    return {"message": "Sesión no encontrada"}
 
 
 # Include the router in the main app

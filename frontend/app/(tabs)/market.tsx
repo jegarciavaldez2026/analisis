@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Image,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -31,9 +33,20 @@ interface MarketData {
   market_sentiment: string;
 }
 
+interface NewsArticle {
+  title: string;
+  publisher: string;
+  link: string;
+  published_date: string;
+  thumbnail: string | null;
+  summary: string | null;
+}
+
 export default function MarketScreen() {
   const [data, setData] = useState<MarketData | null>(null);
+  const [news, setNews] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
+  const [newsLoading, setNewsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,13 +64,33 @@ export default function MarketScreen() {
     }
   };
 
+  const fetchNews = async () => {
+    try {
+      setNewsLoading(true);
+      const response = await axios.get(`${BACKEND_URL}/api/market-news?limit=10`);
+      setNews(response.data.news || []);
+    } catch (err: any) {
+      console.error('Error fetching market news:', err);
+    } finally {
+      setNewsLoading(false);
+    }
+  };
+
+  const openNewsLink = (url: string) => {
+    if (url) {
+      Linking.openURL(url).catch(err => console.error('Error opening link:', err));
+    }
+  };
+
   useEffect(() => {
     fetchData();
+    fetchNews();
   }, []);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     fetchData();
+    fetchNews();
   }, []);
 
   const getVixColor = (value: number) => {
@@ -303,13 +336,67 @@ export default function MarketScreen() {
           <View style={styles.infoContent}>
             <Text style={styles.infoTitle}>¿Cómo usar estos indicadores?</Text>
             <Text style={styles.infoText}>
-              • VIX alto (>25): Considera reducir riesgo{'\n'}
+              • VIX alto (&gt;25): Considera reducir riesgo{'\n'}
               • VIX bajo (&lt;15): Puede ser momento de invertir{'\n'}
               • Treasury alto: Bonos más atractivos vs acciones{'\n'}
               • Treasury bajo: Acciones pueden ser más atractivas
             </Text>
           </View>
         </View>
+      </View>
+
+      {/* Market News Section */}
+      <View style={styles.newsSection}>
+        <View style={styles.newsSectionHeader}>
+          <Ionicons name="newspaper" size={24} color="#007AFF" />
+          <Text style={styles.newsSectionTitle}>Noticias del Mercado</Text>
+        </View>
+        
+        {newsLoading ? (
+          <View style={styles.newsLoadingContainer}>
+            <ActivityIndicator size="small" color="#007AFF" />
+            <Text style={styles.newsLoadingText}>Cargando noticias...</Text>
+          </View>
+        ) : news.length === 0 ? (
+          <View style={styles.noNewsContainer}>
+            <Ionicons name="newspaper-outline" size={40} color="#8E8E93" />
+            <Text style={styles.noNewsText}>No hay noticias disponibles</Text>
+          </View>
+        ) : (
+          news.map((article, index) => (
+            <TouchableOpacity
+              key={index}
+              style={styles.newsCard}
+              onPress={() => openNewsLink(article.link)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.newsCardContent}>
+                {article.thumbnail && (
+                  <Image
+                    source={{ uri: article.thumbnail }}
+                    style={styles.newsThumbnail}
+                    resizeMode="cover"
+                  />
+                )}
+                <View style={[styles.newsTextContainer, !article.thumbnail && styles.newsTextContainerFull]}>
+                  <Text style={styles.newsTitle} numberOfLines={2}>
+                    {article.title}
+                  </Text>
+                  {article.summary && (
+                    <Text style={styles.newsSummary} numberOfLines={2}>
+                      {article.summary}
+                    </Text>
+                  )}
+                  <View style={styles.newsMetaContainer}>
+                    <Text style={styles.newsPublisher}>{article.publisher}</Text>
+                    <Text style={styles.newsDate}>{article.published_date}</Text>
+                  </View>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#C7C7CC" style={styles.newsChevron} />
+            </TouchableOpacity>
+          ))
+        )}
       </View>
     </ScrollView>
   );
@@ -574,5 +661,105 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#6E6E73',
     lineHeight: 20,
+  },
+  // News Section Styles
+  newsSection: {
+    marginTop: 16,
+  },
+  newsSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  newsSectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1D1D1F',
+    marginLeft: 10,
+  },
+  newsLoadingContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 30,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  newsLoadingText: {
+    marginLeft: 10,
+    fontSize: 14,
+    color: '#6E6E73',
+  },
+  noNewsContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 40,
+    alignItems: 'center',
+  },
+  noNewsText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: '#8E8E93',
+  },
+  newsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginBottom: 10,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  newsCardContent: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  newsThumbnail: {
+    width: 70,
+    height: 70,
+    borderRadius: 8,
+    marginRight: 12,
+    backgroundColor: '#F5F5F7',
+  },
+  newsTextContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  newsTextContainerFull: {
+    paddingRight: 8,
+  },
+  newsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  newsSummary: {
+    fontSize: 12,
+    color: '#6E6E73',
+    lineHeight: 16,
+    marginBottom: 6,
+  },
+  newsMetaContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  newsPublisher: {
+    fontSize: 11,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  newsDate: {
+    fontSize: 10,
+    color: '#8E8E93',
+  },
+  newsChevron: {
+    marginLeft: 8,
   },
 });

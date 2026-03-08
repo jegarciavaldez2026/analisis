@@ -8,6 +8,8 @@ import {
   ActivityIndicator,
   Dimensions,
   Modal,
+  Image,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
@@ -95,6 +97,15 @@ interface TechnicalAnalysisData {
   key_levels: any;
 }
 
+interface NewsArticle {
+  title: string;
+  publisher: string;
+  link: string;
+  published_date: string;
+  thumbnail: string | null;
+  summary: string | null;
+}
+
 export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   const { colors } = useTheme();
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([data.ratios[0]?.category]));
@@ -107,6 +118,10 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   const [technicalData, setTechnicalData] = useState<TechnicalAnalysisData | null>(null);
   const [loadingTechnical, setLoadingTechnical] = useState(true);
   const [expandedTechnical, setExpandedTechnical] = useState<Set<string>>(new Set(['fibonacci']));
+  
+  // Stock News State
+  const [stockNews, setStockNews] = useState<NewsArticle[]>([]);
+  const [loadingNews, setLoadingNews] = useState(true);
 
   // Prepare analysis data for AI
   const aiAnalysisData = {
@@ -130,6 +145,7 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
   useEffect(() => {
     fetchChartData(selectedPeriod);
     fetchTechnicalAnalysis();
+    fetchStockNews();
   }, [selectedPeriod]);
 
   const fetchTechnicalAnalysis = async () => {
@@ -141,6 +157,24 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
       console.error('Error fetching technical analysis:', error);
     } finally {
       setLoadingTechnical(false);
+    }
+  };
+
+  const fetchStockNews = async () => {
+    setLoadingNews(true);
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/news/${data.ticker}?limit=5`);
+      setStockNews(response.data.news || []);
+    } catch (error) {
+      console.error('Error fetching stock news:', error);
+    } finally {
+      setLoadingNews(false);
+    }
+  };
+
+  const openNewsLink = (url: string) => {
+    if (url) {
+      Linking.openURL(url).catch(err => console.error('Error opening link:', err));
     }
   };
 
@@ -440,6 +474,60 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
             </View>
           </View>
         )}
+
+        {/* Stock News Section */}
+        <View style={styles.newsSection}>
+          <View style={styles.newsSectionHeader}>
+            <Ionicons name="newspaper" size={22} color="#007AFF" />
+            <Text style={styles.sectionTitle}>Noticias de {data.ticker}</Text>
+          </View>
+          
+          {loadingNews ? (
+            <View style={styles.newsLoadingContainer}>
+              <ActivityIndicator size="small" color="#007AFF" />
+              <Text style={styles.newsLoadingText}>Cargando noticias...</Text>
+            </View>
+          ) : stockNews.length === 0 ? (
+            <View style={styles.noNewsContainer}>
+              <Ionicons name="newspaper-outline" size={36} color="#8E8E93" />
+              <Text style={styles.noNewsText}>No hay noticias disponibles</Text>
+            </View>
+          ) : (
+            stockNews.map((article, index) => (
+              <TouchableOpacity
+                key={index}
+                style={styles.newsCard}
+                onPress={() => openNewsLink(article.link)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.newsCardContent}>
+                  {article.thumbnail && (
+                    <Image
+                      source={{ uri: article.thumbnail }}
+                      style={styles.newsThumbnail}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <View style={[styles.newsTextContainer, !article.thumbnail && styles.newsTextContainerFull]}>
+                    <Text style={styles.newsTitle} numberOfLines={2}>
+                      {article.title}
+                    </Text>
+                    {article.summary && (
+                      <Text style={styles.newsSummary} numberOfLines={2}>
+                        {article.summary}
+                      </Text>
+                    )}
+                    <View style={styles.newsMetaContainer}>
+                      <Text style={styles.newsPublisher}>{article.publisher}</Text>
+                      <Text style={styles.newsDate}>{article.published_date}</Text>
+                    </View>
+                  </View>
+                </View>
+                <Ionicons name="open-outline" size={18} color="#C7C7CC" style={styles.newsChevron} />
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
 
         {/* Technical Analysis Section */}
         <View style={styles.technicalSection}>
@@ -1620,5 +1708,95 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     color: '#007AFF',
+  },
+  // Stock News Styles
+  newsSection: {
+    margin: 16,
+  },
+  newsSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 8,
+  },
+  newsLoadingContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 30,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  newsLoadingText: {
+    marginLeft: 10,
+    fontSize: 14,
+    color: '#6E6E73',
+  },
+  noNewsContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 30,
+    alignItems: 'center',
+  },
+  noNewsText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#8E8E93',
+  },
+  newsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginBottom: 10,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  newsCardContent: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  newsThumbnail: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginRight: 10,
+    backgroundColor: '#F5F5F7',
+  },
+  newsTextContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  newsTextContainerFull: {
+    paddingRight: 8,
+  },
+  newsTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    lineHeight: 17,
+    marginBottom: 4,
+  },
+  newsSummary: {
+    fontSize: 11,
+    color: '#6E6E73',
+    lineHeight: 14,
+    marginBottom: 4,
+  },
+  newsMetaContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  newsPublisher: {
+    fontSize: 10,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  newsDate: {
+    fontSize: 10,
+    color: '#8E8E93',
+  },
+  newsChevron: {
+    marginLeft: 8,
   },
 });
