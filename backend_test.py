@@ -390,7 +390,7 @@ class BackendTester:
 
 def main():
     # Use the backend URL from the environment
-    BASE_URL = "https://market-data-central.preview.emergentagent.com/api"
+    BASE_URL = "https://wealth-hub-69.preview.emergentagent.com/api"
     
     tester = BackendTester(BASE_URL)
     tester.run_all_tests()

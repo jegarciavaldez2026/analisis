@@ -35,9 +35,9 @@
 
 #### 4. Configuration Files
 - ✅ **frontend/.env**: Presente y configurado
-  - EXPO_TUNNEL_SUBDOMAIN=market-data-central
-  - EXPO_PACKAGER_HOSTNAME=https://market-data-central.preview.emergentagent.com
-  - EXPO_PUBLIC_BACKEND_URL=https://market-data-central.preview.emergentagent.com
+  - EXPO_TUNNEL_SUBDOMAIN=wealth-hub-69
+  - EXPO_PACKAGER_HOSTNAME=https://wealth-hub-69.preview.emergentagent.com
+  - EXPO_PUBLIC_BACKEND_URL=https://wealth-hub-69.preview.emergentagent.com
   - EXPO_USE_FAST_RESOLVER="1"
   - METRO_CACHE_ROOT=/app/frontend/.metro-cache
 
@@ -128,7 +128,7 @@
 - **SDK Version**: 54.0.32
 - **Router**: File-based routing (expo-router 5.1.4)
 - **Platform Support**: iOS, Android, Web
-- **Preview**: Tunnel activo en https://market-data-central.preview.emergentagent.com
+- **Preview**: Tunnel activo en https://wealth-hub-69.preview.emergentagent.com
 - **QR Code**: Disponible para testing en Expo Go app
 
 ### Production Readiness
