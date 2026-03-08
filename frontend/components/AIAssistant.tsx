@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import localAI from '../utils/localAI';
@@ -146,27 +147,34 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={[styles.container, { backgroundColor: colors.background }]}
-    >
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
-        <View style={styles.headerLeft}>
-          <View style={[styles.aiIcon, { backgroundColor: colors.primary + '20' }]}>
-            <Ionicons name="sparkles" size={20} color={colors.primary} />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
+      >
+        {/* Header with large close button */}
+        <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
+          <TouchableOpacity 
+            onPress={onClose} 
+            style={[styles.closeButtonLarge, { backgroundColor: colors.danger + '15' }]}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="close" size={24} color={colors.danger} />
+            <Text style={[styles.closeButtonText, { color: colors.danger }]}>Cerrar</Text>
+          </TouchableOpacity>
+          <View style={styles.headerCenter}>
+            <View style={[styles.aiIcon, { backgroundColor: colors.primary + '20' }]}>
+              <Ionicons name="sparkles" size={20} color={colors.primary} />
+            </View>
+            <View>
+              <Text style={[styles.headerTitle, { color: colors.text }]}>Asistente IA</Text>
+              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+                {analysisData?.ticker || 'acción'}
+              </Text>
+            </View>
           </View>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.text }]}>Asistente IA</Text>
-            <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-              Análisis de {analysisData?.ticker || 'acción'}
-            </Text>
-          </View>
+          <View style={styles.headerSpacer} />
         </View>
-        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Ionicons name="close" size={24} color={colors.text} />
-        </TouchableOpacity>
-      </View>
 
       {/* Messages */}
       <ScrollView
@@ -230,7 +238,8 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
           <Ionicons name="send" size={20} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -238,13 +247,40 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  keyboardView: {
+    flex: 1,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 16,
+    paddingTop: 20,
     borderBottomWidth: 1,
+  },
+  closeButtonLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 6,
+    minHeight: 44,
+  },
+  closeButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  headerCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    justifyContent: 'center',
+  },
+  headerSpacer: {
+    width: 80,
   },
   headerLeft: {
     flexDirection: 'row',

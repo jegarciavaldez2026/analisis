@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface ThemeColors {
   background: string;
@@ -48,8 +47,32 @@ const darkColors: ThemeColors = {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+// Simple storage that works on both web and native
+const storage = {
+  getItem: async (key: string): Promise<string | null> => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+  setItem: async (key: string, value: string): Promise<void> => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
+      }
+    } catch {
+      // Silently fail
+    }
+  },
+};
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [isDark, setIsDark] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
     loadTheme();
@@ -57,12 +80,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const loadTheme = async () => {
     try {
-      const savedTheme = await AsyncStorage.getItem('theme');
+      const savedTheme = await storage.getItem('app_theme');
       if (savedTheme === 'dark') {
         setIsDark(true);
       }
     } catch (error) {
-      console.error('Error loading theme:', error);
+      console.log('Theme loaded with default');
+    } finally {
+      setIsLoaded(true);
     }
   };
 
@@ -70,9 +95,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     try {
       const newTheme = !isDark;
       setIsDark(newTheme);
-      await AsyncStorage.setItem('theme', newTheme ? 'dark' : 'light');
+      await storage.setItem('app_theme', newTheme ? 'dark' : 'light');
     } catch (error) {
-      console.error('Error saving theme:', error);
+      console.log('Could not save theme preference');
     }
   };
 
