@@ -2170,6 +2170,8 @@ class PortfolioTransactionCreate(BaseModel):
 class PortfolioHolding(BaseModel):
     ticker: str
     company_name: str
+    sector: str = "N/A"
+    industry: str = "N/A"
     total_shares: float
     average_cost: float
     total_invested: float
@@ -2177,7 +2179,14 @@ class PortfolioHolding(BaseModel):
     current_value: float
     profit_loss: float
     profit_loss_percent: float
+    weight_percent: float = 0.0  # Percentage of portfolio
     transactions: List[PortfolioTransaction]
+
+class SectorAllocation(BaseModel):
+    sector: str
+    value: float
+    percentage: float
+    holdings_count: int
 
 class PortfolioMetrics(BaseModel):
     portfolio_beta: float = 0.0
@@ -2186,6 +2195,12 @@ class PortfolioMetrics(BaseModel):
     average_return: float = 0.0
     volatility: float = 0.0
     risk_free_rate: float = 4.0  # Assumed 4%
+    # New metrics
+    gain_loss_ratio: float = 0.0  # Ratio of gains to losses
+    calmar_ratio: float = 0.0  # Return / Max Drawdown
+    treynor_ratio: float = 0.0  # (Return - Risk Free) / Beta
+    information_ratio: float = 0.0  # (Return - Benchmark) / Tracking Error
+    max_drawdown: float = 0.0
 
 class PortfolioSummary(BaseModel):
     total_invested: float
@@ -2194,10 +2209,11 @@ class PortfolioSummary(BaseModel):
     total_profit_loss_percent: float
     holdings: List[PortfolioHolding]
     metrics: Optional[PortfolioMetrics] = None
+    sector_allocation: List[SectorAllocation] = []
 
 @api_router.get("/portfolio", response_model=PortfolioSummary)
 async def get_portfolio():
-    """Get portfolio summary with current values and metrics"""
+    """Get portfolio summary with current values, metrics, and sector allocation"""
     try:
         transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
         
@@ -2232,27 +2248,45 @@ async def get_portfolio():
         weights = []
         betas = []
         returns_data = []
+        gains = []
+        losses = []
+        
+        # For sector allocation
+        sector_values = {}
         
         for ticker, data in holdings_map.items():
             if data["total_shares"] <= 0:
                 continue  # Skip if sold all shares
             
-            # Get current price and beta
+            # Get current price, beta, sector, and industry
+            sector = "Otros"
+            industry = "N/A"
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
                 curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
                 stock_beta = info.get('beta', 1.0) or 1.0
+                sector = info.get('sector', 'Otros') or 'Otros'
+                industry = info.get('industry', 'N/A') or 'N/A'
                 
-                # Get historical returns for Sharpe calculation
+                # Get historical returns for calculations
                 hist = stock.history(period="1y")
                 if not hist.empty and len(hist) > 20:
                     daily_returns = hist['Close'].pct_change().dropna()
+                    
+                    # Calculate max drawdown
+                    cumulative = (1 + daily_returns).cumprod()
+                    running_max = cumulative.cummax()
+                    drawdown = (cumulative - running_max) / running_max
+                    max_dd = drawdown.min() * 100  # As percentage
+                    
                     returns_data.append({
                         'ticker': ticker,
                         'returns': daily_returns,
                         'mean_return': daily_returns.mean() * 252,  # Annualized
-                        'volatility': daily_returns.std() * np.sqrt(252)
+                        'volatility': daily_returns.std() * np.sqrt(252),
+                        'max_drawdown': max_dd,
+                        'beta': stock_beta
                     })
             except:
                 curr_price = 0
@@ -2263,9 +2297,17 @@ async def get_portfolio():
             profit_loss = curr_value_stock - data["total_cost"]
             profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
             
+            # Track gains and losses for Gain-Loss Ratio
+            if profit_loss >= 0:
+                gains.append(profit_loss)
+            else:
+                losses.append(abs(profit_loss))
+            
             holding = PortfolioHolding(
                 ticker=ticker,
                 company_name=data["company_name"],
+                sector=sector,
+                industry=industry,
                 total_shares=data["total_shares"],
                 average_cost=avg_cost,
                 total_invested=data["total_cost"],
@@ -2273,6 +2315,7 @@ async def get_portfolio():
                 current_value=curr_value_stock,
                 profit_loss=profit_loss,
                 profit_loss_percent=profit_loss_pct,
+                weight_percent=0,  # Will calculate after we have total
                 transactions=data["transactions"]
             )
             holdings.append(holding)
@@ -2282,9 +2325,33 @@ async def get_portfolio():
             # Store for metrics
             weights.append(curr_value_stock)
             betas.append(stock_beta)
+            
+            # Aggregate by sector
+            if sector not in sector_values:
+                sector_values[sector] = {'value': 0, 'count': 0}
+            sector_values[sector]['value'] += curr_value_stock
+            sector_values[sector]['count'] += 1
+        
+        # Update weight percentages in holdings
+        if current_value > 0:
+            for holding in holdings:
+                holding.weight_percent = round((holding.current_value / current_value) * 100, 2)
         
         total_pl = current_value - total_invested
         total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+        
+        # Create sector allocation list
+        sector_allocation = []
+        for sector_name, sector_data in sector_values.items():
+            pct = (sector_data['value'] / current_value * 100) if current_value > 0 else 0
+            sector_allocation.append(SectorAllocation(
+                sector=sector_name,
+                value=round(sector_data['value'], 2),
+                percentage=round(pct, 2),
+                holdings_count=sector_data['count']
+            ))
+        # Sort by percentage descending
+        sector_allocation.sort(key=lambda x: x.percentage, reverse=True)
         
         # Calculate portfolio metrics
         metrics = PortfolioMetrics()
@@ -2297,21 +2364,31 @@ async def get_portfolio():
             portfolio_beta = sum(w * b for w, b in zip(weights, betas))
             metrics.portfolio_beta = round(portfolio_beta, 2)
             
+            # Gain-Loss Ratio
+            total_gains = sum(gains) if gains else 0
+            total_losses = sum(losses) if losses else 1  # Avoid division by zero
+            metrics.gain_loss_ratio = round(total_gains / total_losses, 2) if total_losses > 0 else 0
+            
             # Calculate portfolio returns and volatility
             if returns_data:
                 # Weighted average return
                 weighted_returns = []
                 weighted_volatility = []
+                portfolio_max_dd = 0
+                
                 for i, rd in enumerate(returns_data):
                     if i < len(weights):
                         weighted_returns.append(weights[i] * rd['mean_return'])
                         weighted_volatility.append(weights[i] * rd['volatility'])
+                        # Weighted max drawdown
+                        portfolio_max_dd += weights[i] * rd['max_drawdown']
                 
                 portfolio_return = sum(weighted_returns) * 100
                 portfolio_volatility = sum(weighted_volatility) * 100
                 
                 metrics.average_return = round(portfolio_return, 2)
                 metrics.volatility = round(portfolio_volatility, 2)
+                metrics.max_drawdown = round(portfolio_max_dd, 2)
                 
                 # Sharpe Ratio = (Portfolio Return - Risk Free Rate) / Volatility
                 risk_free_rate = 4.0  # 4% annual
@@ -2320,11 +2397,28 @@ async def get_portfolio():
                     metrics.sharpe_ratio = round(sharpe, 2)
                 
                 # Alpha = Portfolio Return - (Risk Free + Beta * (Market Return - Risk Free))
-                # Assuming market return of 10%
-                market_return = 10.0
+                market_return = 10.0  # Assumed 10%
                 expected_return = risk_free_rate + portfolio_beta * (market_return - risk_free_rate)
                 alpha = portfolio_return - expected_return
                 metrics.portfolio_alpha = round(alpha, 2)
+                
+                # Treynor Ratio = (Portfolio Return - Risk Free) / Beta
+                if portfolio_beta != 0:
+                    treynor = (portfolio_return - risk_free_rate) / portfolio_beta
+                    metrics.treynor_ratio = round(treynor, 2)
+                
+                # Calmar Ratio = Return / |Max Drawdown|
+                if portfolio_max_dd != 0:
+                    calmar = portfolio_return / abs(portfolio_max_dd)
+                    metrics.calmar_ratio = round(calmar, 2)
+                
+                # Information Ratio = (Portfolio Return - Benchmark Return) / Tracking Error
+                # Using S&P 500 as benchmark (~10% return)
+                benchmark_return = 10.0
+                tracking_error = portfolio_volatility  # Simplified
+                if tracking_error > 0:
+                    info_ratio = (portfolio_return - benchmark_return) / tracking_error
+                    metrics.information_ratio = round(info_ratio, 2)
         
         return PortfolioSummary(
             total_invested=total_invested,
@@ -2332,7 +2426,8 @@ async def get_portfolio():
             total_profit_loss=total_pl,
             total_profit_loss_percent=total_pl_pct,
             holdings=holdings,
-            metrics=metrics
+            metrics=metrics,
+            sector_allocation=sector_allocation
         )
         
     except Exception as e:
@@ -3108,28 +3203,74 @@ class AIInitResponse(BaseModel):
 
 def get_financial_system_prompt(ticker: str, stock_data: Dict[str, Any]) -> str:
     """Generate a detailed system prompt for financial analysis"""
+    
+    # Extract metadata
+    metadata = stock_data.get('metadata', {})
+    summary_flags = stock_data.get('summary_flags', {})
+    
+    # Format summary flags
+    flags_text = ""
+    if summary_flags:
+        flags_list = []
+        flag_labels = {
+            'profitable': ('Rentable', '✅' if summary_flags.get('profitable') else '❌'),
+            'positive_fcf': ('Flujo de Caja Positivo', '✅' if summary_flags.get('positive_fcf') else '❌'),
+            'low_debt': ('Deuda Baja', '✅' if summary_flags.get('low_debt') else '❌'),
+            'good_margins': ('Buenos Márgenes', '✅' if summary_flags.get('good_margins') else '❌'),
+            'healthy_liquidity': ('Liquidez Sana', '✅' if summary_flags.get('healthy_liquidity') else '❌'),
+            'strong_roe': ('ROE Fuerte', '✅' if summary_flags.get('strong_roe') else '❌'),
+        }
+        for key, (label, icon) in flag_labels.items():
+            if key in summary_flags:
+                flags_list.append(f"{icon} {label}")
+        flags_text = " | ".join(flags_list)
+    
     return f"""Eres un analista financiero experto y amigable especializado en análisis de acciones. Tu nombre es "FinBot". 
 Estás analizando la acción {ticker} ({stock_data.get('company_name', ticker)}).
 
-DATOS FINANCIEROS ACTUALES:
-- Precio actual: ${stock_data.get('current_price', 'N/A')}
-- Recomendación del sistema: {stock_data.get('recommendation', 'N/A')}
-- Porcentaje favorable: {stock_data.get('favorable_percentage', 'N/A')}%
+═══════════════════════════════════════════════════
+📊 DATOS DE LA EMPRESA
+═══════════════════════════════════════════════════
+- Ticker: {ticker}
+- Nombre: {stock_data.get('company_name', 'N/A')}
+- Sector: {metadata.get('sector', 'N/A')}
+- Industria: {metadata.get('industry', 'N/A')}
+- Precio Actual: ${stock_data.get('current_price', metadata.get('current_price', 'N/A'))}
+- Market Cap: ${metadata.get('market_cap', 'N/A'):,.0f} (si es número)
+- P/E Ratio: {metadata.get('pe_ratio', 'N/A')}
+- Dividend Yield: {metadata.get('dividend_yield', 'N/A')}%
+- 52 Week High: ${metadata.get('fifty_two_week_high', 'N/A')}
+- 52 Week Low: ${metadata.get('fifty_two_week_low', 'N/A')}
 
-RATIOS FINANCIEROS:
+═══════════════════════════════════════════════════
+🎯 RESULTADO DEL ANÁLISIS
+═══════════════════════════════════════════════════
+- Recomendación: {stock_data.get('recommendation', 'N/A')}
+- Nivel de Riesgo: {stock_data.get('risk_level', 'N/A')}
+- Métricas Favorables: {stock_data.get('favorable_metrics', 'N/A')} de {stock_data.get('total_metrics', 'N/A')} ({stock_data.get('favorable_percentage', 'N/A'):.1f}%)
+
+INDICADORES CLAVE:
+{flags_text if flags_text else 'No disponibles'}
+
+═══════════════════════════════════════════════════
+📈 RATIOS FINANCIEROS DETALLADOS
+═══════════════════════════════════════════════════
 {format_ratios_for_prompt(stock_data.get('ratios', {}))}
 
-INSTRUCCIONES:
-1. Responde SIEMPRE en español de forma clara y concisa
-2. Sé conversacional y amigable, pero profesional
-3. Usa emojis ocasionalmente para hacer la conversación más amena (📈 📉 💰 ⚠️ ✅ 💡)
-4. Cuando des recomendaciones, siempre menciona que no es asesoría financiera profesional
-5. Si el usuario pregunta algo fuera del contexto financiero, redirige amablemente la conversación
-6. Ofrece perspectivas tanto alcistas como bajistas cuando sea relevante
-7. Explica términos técnicos de forma simple cuando los uses
-8. Al final de respuestas largas, sugiere una pregunta de seguimiento
+═══════════════════════════════════════════════════
+💡 INSTRUCCIONES PARA TI (FinBot)
+═══════════════════════════════════════════════════
+1. SIEMPRE responde en español de forma clara y concisa
+2. Tienes TODOS los datos del análisis arriba - ¡úsalos para dar respuestas informativas!
+3. Sé conversacional y amigable, pero profesional
+4. Usa emojis apropiados (📈 📉 💰 ⚠️ ✅ 💡 🎯 📊)
+5. Cuando des recomendaciones, menciona que no es asesoría financiera profesional
+6. Ofrece perspectivas tanto alcistas como bajistas
+7. Explica términos técnicos de forma simple
+8. Cuando el usuario pregunte sobre métricas específicas, cita los valores exactos que tienes arriba
+9. Si el usuario pregunta "¿qué datos tienes?" - enumérale los ratios que tienes disponibles
 
-IMPORTANTE: Mantén respuestas concisas (máximo 200 palabras) a menos que el usuario pida más detalle."""
+IMPORTANTE: Mantén respuestas concisas (máximo 250 palabras) a menos que el usuario pida más detalle."""
 
 
 def format_ratios_for_prompt(ratios: Dict[str, Any]) -> str:

@@ -56,27 +56,63 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
       setIsInitializing(true);
       const newSessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       
-      // Prepare stock data for the AI
+      // Safely prepare stock data for the AI with all analysis details
+      let ratiosData = {};
+      try {
+        if (analysisData.ratios && Array.isArray(analysisData.ratios)) {
+          ratiosData = analysisData.ratios.reduce((acc: any, category: any) => {
+            if (category && category.metrics && Array.isArray(category.metrics)) {
+              category.metrics.forEach((m: any) => {
+                if (m && m.name) {
+                  acc[m.name] = {
+                    value: m.value,
+                    display_value: m.display_value || String(m.value),
+                    is_favorable: m.passed || false,
+                    threshold: m.threshold || '',
+                    interpretation: m.interpretation || '',
+                  };
+                }
+              });
+            }
+            return acc;
+          }, {});
+        }
+      } catch (e) {
+        console.log('Error parsing ratios:', e);
+        ratiosData = {};
+      }
+
       const stockData = {
-        company_name: analysisData.company_name || analysisData.ticker,
-        current_price: analysisData.metadata?.current_price || 0,
+        ticker: analysisData.ticker || 'N/A',
+        company_name: analysisData.company_name || analysisData.ticker || 'N/A',
+        current_price: analysisData.metadata?.current_price || analysisData.current_price || 0,
         recommendation: analysisData.recommendation || 'N/A',
+        risk_level: analysisData.risk_level || 'N/A',
         favorable_percentage: analysisData.favorable_percentage || 50,
-        ratios: analysisData.ratios?.reduce((acc: any, category: any) => {
-          category.metrics?.forEach((m: any) => {
-            acc[m.name] = {
-              value: m.value,
-              is_favorable: m.passed,
-              threshold: m.threshold,
-            };
-          });
-          return acc;
-        }, {}) || {},
+        total_metrics: analysisData.total_metrics || 0,
+        favorable_metrics: analysisData.favorable_metrics || 0,
+        unfavorable_metrics: analysisData.unfavorable_metrics || 0,
+        ratios: ratiosData,
+        // Include summary flags if available
+        summary_flags: analysisData.summary_flags || {},
+        // Include metadata
+        metadata: {
+          current_price: analysisData.metadata?.current_price || 0,
+          market_cap: analysisData.metadata?.market_cap || 0,
+          pe_ratio: analysisData.metadata?.pe_ratio || 0,
+          dividend_yield: analysisData.metadata?.dividend_yield || 0,
+          fifty_two_week_high: analysisData.metadata?.fifty_two_week_high || 0,
+          fifty_two_week_low: analysisData.metadata?.fifty_two_week_low || 0,
+          sector: analysisData.metadata?.sector || 'N/A',
+          industry: analysisData.metadata?.industry || 'N/A',
+        }
       };
+
+      console.log('Initializing AI with stock data:', JSON.stringify(stockData, null, 2));
 
       const response = await axios.post(`${BACKEND_URL}/api/ai-assistant/init`, {
         session_id: newSessionId,
-        ticker: analysisData.ticker,
+        ticker: analysisData.ticker || 'UNKNOWN',
         stock_data: stockData,
       });
 

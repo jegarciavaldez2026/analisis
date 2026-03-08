@@ -51,6 +51,8 @@ interface PortfolioTransaction {
 interface PortfolioHolding {
   ticker: string;
   company_name: string;
+  sector: string;
+  industry: string;
   total_shares: number;
   average_cost: number;
   total_invested: number;
@@ -58,7 +60,15 @@ interface PortfolioHolding {
   current_value: number;
   profit_loss: number;
   profit_loss_percent: number;
+  weight_percent: number;
   transactions: PortfolioTransaction[];
+}
+
+interface SectorAllocation {
+  sector: string;
+  value: number;
+  percentage: number;
+  holdings_count: number;
 }
 
 interface PortfolioMetrics {
@@ -67,6 +77,11 @@ interface PortfolioMetrics {
   sharpe_ratio: number;
   average_return: number;
   volatility: number;
+  gain_loss_ratio: number;
+  calmar_ratio: number;
+  treynor_ratio: number;
+  information_ratio: number;
+  max_drawdown: number;
 }
 
 interface PortfolioSummary {
@@ -76,6 +91,7 @@ interface PortfolioSummary {
   total_profit_loss_percent: number;
   holdings: PortfolioHolding[];
   metrics: PortfolioMetrics | null;
+  sector_allocation: SectorAllocation[];
 }
 
 interface AlertInfo {
@@ -350,7 +366,14 @@ export default function AccountScreen() {
     >
       <View style={styles.cardHeader}>
         <View style={styles.tickerContainer}>
-          <Text style={styles.ticker}>{holding.ticker}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={styles.ticker}>{holding.ticker}</Text>
+            <View style={[styles.sectorBadge, { backgroundColor: colors.primary + '15' }]}>
+              <Text style={[styles.sectorText, { color: colors.primary }]}>
+                {holding.sector.length > 12 ? holding.sector.substring(0, 12) + '...' : holding.sector}
+              </Text>
+            </View>
+          </View>
           <Text style={styles.companyName} numberOfLines={1}>{holding.company_name}</Text>
         </View>
         <View style={styles.priceContainer}>
@@ -388,6 +411,12 @@ export default function AccountScreen() {
           <Text style={styles.detailValue}>${holding.current_price.toFixed(2)}</Text>
         </View>
         <View style={styles.detailRow}>
+          <Text style={styles.detailLabel}>Peso en cartera:</Text>
+          <Text style={[styles.detailValue, { color: colors.primary }]}>
+            {holding.weight_percent.toFixed(1)}%
+          </Text>
+        </View>
+        <View style={styles.detailRow}>
           <Text style={styles.detailLabel}>G/P:</Text>
           <Text style={[
             styles.detailValue,
@@ -414,6 +443,8 @@ export default function AccountScreen() {
     return (
       <View style={[styles.metricsCard, { backgroundColor: colors.card }]}>
         <Text style={[styles.metricsTitle, { color: colors.text }]}>Métricas del Portafolio</Text>
+        
+        {/* Primary Metrics Row */}
         <View style={styles.metricsGrid}>
           <View style={styles.metricItem}>
             <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Beta</Text>
@@ -442,7 +473,7 @@ export default function AccountScreen() {
           </View>
           
           <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Sharpe Ratio</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Sharpe</Text>
             <Text style={[
               styles.metricValue,
               { color: m.sharpe_ratio >= 1 ? colors.success : m.sharpe_ratio >= 0 ? colors.warning : colors.danger }
@@ -455,15 +486,143 @@ export default function AccountScreen() {
           </View>
           
           <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Retorno Anual</Text>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Retorno</Text>
             <Text style={[
               styles.metricValue,
               { color: m.average_return >= 0 ? colors.success : colors.danger }
             ]}>
-              {m.average_return >= 0 ? '+' : ''}{m.average_return.toFixed(2)}%
+              {m.average_return >= 0 ? '+' : ''}{m.average_return.toFixed(1)}%
             </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Promedio esperado</Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Anual</Text>
           </View>
+        </View>
+        
+        {/* Secondary Metrics Row */}
+        <View style={[styles.metricsGrid, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
+          <View style={styles.metricItem}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Gain/Loss</Text>
+            <Text style={[
+              styles.metricValue,
+              { color: m.gain_loss_ratio >= 1 ? colors.success : colors.danger }
+            ]}>
+              {m.gain_loss_ratio.toFixed(2)}
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
+              {m.gain_loss_ratio >= 1.5 ? 'Muy bueno' : m.gain_loss_ratio >= 1 ? 'Positivo' : 'Negativo'}
+            </Text>
+          </View>
+          
+          <View style={styles.metricItem}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Calmar</Text>
+            <Text style={[
+              styles.metricValue,
+              { color: m.calmar_ratio >= 1 ? colors.success : m.calmar_ratio >= 0.5 ? colors.warning : colors.danger }
+            ]}>
+              {m.calmar_ratio.toFixed(2)}
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
+              {m.calmar_ratio >= 3 ? 'Excelente' : m.calmar_ratio >= 1 ? 'Bueno' : 'Bajo'}
+            </Text>
+          </View>
+          
+          <View style={styles.metricItem}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Treynor</Text>
+            <Text style={[
+              styles.metricValue,
+              { color: m.treynor_ratio >= 0 ? colors.success : colors.danger }
+            ]}>
+              {m.treynor_ratio.toFixed(2)}
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
+              {m.treynor_ratio > 10 ? 'Superior' : m.treynor_ratio > 0 ? 'Aceptable' : 'Bajo'}
+            </Text>
+          </View>
+          
+          <View style={styles.metricItem}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Info Ratio</Text>
+            <Text style={[
+              styles.metricValue,
+              { color: m.information_ratio >= 0.5 ? colors.success : m.information_ratio >= 0 ? colors.warning : colors.danger }
+            ]}>
+              {m.information_ratio.toFixed(2)}
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
+              {m.information_ratio >= 1 ? 'Excelente' : m.information_ratio >= 0.5 ? 'Bueno' : 'Normal'}
+            </Text>
+          </View>
+        </View>
+        
+        {/* Max Drawdown and Volatility */}
+        <View style={[styles.metricsGrid, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
+          <View style={[styles.metricItem, { flex: 1 }]}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Max Drawdown</Text>
+            <Text style={[styles.metricValue, { color: colors.danger }]}>
+              {m.max_drawdown.toFixed(1)}%
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Caída máxima</Text>
+          </View>
+          
+          <View style={[styles.metricItem, { flex: 1 }]}>
+            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Volatilidad</Text>
+            <Text style={[
+              styles.metricValue,
+              { color: m.volatility <= 15 ? colors.success : m.volatility <= 25 ? colors.warning : colors.danger }
+            ]}>
+              {m.volatility.toFixed(1)}%
+            </Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
+              {m.volatility <= 10 ? 'Baja' : m.volatility <= 20 ? 'Media' : 'Alta'}
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderSectorChart = () => {
+    if (!portfolio || !portfolio.sector_allocation || portfolio.sector_allocation.length === 0) return null;
+    
+    const sectorData = portfolio.sector_allocation.map((sector, index) => ({
+      value: sector.percentage,
+      color: CHART_COLORS[index % CHART_COLORS.length],
+      text: `${sector.percentage.toFixed(0)}%`,
+      label: sector.sector,
+    }));
+    
+    return (
+      <View style={[styles.pieChartCard, { backgroundColor: colors.card }]}>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribución por Sector</Text>
+        <View style={styles.pieChartContainer}>
+          <PieChart
+            data={sectorData}
+            donut
+            radius={80}
+            innerRadius={50}
+            innerCircleColor={colors.card}
+            centerLabelComponent={() => (
+              <View style={styles.pieChartCenter}>
+                <Text style={[styles.pieChartCenterText, { color: colors.text }]}>
+                  {portfolio.sector_allocation.length}
+                </Text>
+                <Text style={[styles.pieChartCenterLabel, { color: colors.textSecondary }]}>
+                  Sectores
+                </Text>
+              </View>
+            )}
+          />
+        </View>
+        <View style={styles.pieLegend}>
+          {portfolio.sector_allocation.map((sector, index) => (
+            <View key={sector.sector} style={styles.pieLegendItem}>
+              <View style={[styles.pieLegendDot, { backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }]} />
+              <Text style={[styles.pieLegendText, { color: colors.text }]} numberOfLines={1}>
+                {sector.sector.length > 15 ? sector.sector.substring(0, 15) + '...' : sector.sector}
+              </Text>
+              <Text style={[styles.pieLegendValue, { color: colors.textSecondary }]}>
+                {sector.percentage.toFixed(1)}%
+              </Text>
+            </View>
+          ))}
         </View>
       </View>
     );
@@ -641,6 +800,9 @@ export default function AccountScreen() {
                   
                   {/* Pie Chart */}
                   {renderPieChart()}
+                  
+                  {/* Sector Chart */}
+                  {renderSectorChart()}
                   
                   {/* Portfolio Metrics */}
                   {renderMetricsCard()}
@@ -1224,6 +1386,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#007AFF',
     fontWeight: '500',
+  },
+  sectorBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  sectorText: {
+    fontSize: 10,
+    fontWeight: '600',
   },
   summaryCard: {
     backgroundColor: '#FFFFFF',
