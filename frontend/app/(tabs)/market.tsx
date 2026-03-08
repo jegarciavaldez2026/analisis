@@ -74,6 +74,8 @@ interface MarketData {
   ibex35: MarketIndicator | null;
   eurostoxx50: MarketIndicator | null;
   dax: MarketIndicator | null;
+  nasdaq: MarketIndicator | null;
+  msci_world: MarketIndicator | null;
   gold: CommodityIndicator;
   oil: CommodityIndicator;
   eur_usd: CurrencyPair;
@@ -501,6 +503,88 @@ export default function MarketScreen() {
           
           <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.dax.description}</Text>
           <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.dax.updated}</Text>
+        </View>
+      )}
+
+      {/* NASDAQ Card */}
+      {data.nasdaq && (
+        <View style={[styles.indicatorCard, { borderLeftColor: '#00BFFF', backgroundColor: colors.card }]}>
+          <View style={styles.indicatorHeader}>
+            <View>
+              <Text style={[styles.indicatorName, { color: colors.text }]}>🇺🇸 {data.nasdaq.name}</Text>
+              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.nasdaq.ticker}</Text>
+            </View>
+            <View style={[
+              styles.changeContainer,
+              { backgroundColor: data.nasdaq.change >= 0 ? '#34C75915' : '#FF3B3015' }
+            ]}>
+              <Ionicons 
+                name={data.nasdaq.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={18} 
+                color={data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.changeText,
+                { color: data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.nasdaq.change >= 0 ? '+' : ''}{data.nasdaq.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.valueRow}>
+            <Text style={[styles.currentValue, { color: colors.text }]}>{data.nasdaq.current_value.toFixed(2)}</Text>
+            <Text style={[
+              styles.changeAmount,
+              { color: data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {data.nasdaq.change >= 0 ? '+' : ''}{data.nasdaq.change.toFixed(2)} pts
+            </Text>
+          </View>
+          
+          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.nasdaq.description}</Text>
+          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.nasdaq.updated}</Text>
+        </View>
+      )}
+
+      {/* MSCI World Card */}
+      {data.msci_world && (
+        <View style={[styles.indicatorCard, { borderLeftColor: '#9B59B6', backgroundColor: colors.card }]}>
+          <View style={styles.indicatorHeader}>
+            <View>
+              <Text style={[styles.indicatorName, { color: colors.text }]}>🌍 {data.msci_world.name}</Text>
+              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.msci_world.ticker}</Text>
+            </View>
+            <View style={[
+              styles.changeContainer,
+              { backgroundColor: data.msci_world.change >= 0 ? '#34C75915' : '#FF3B3015' }
+            ]}>
+              <Ionicons 
+                name={data.msci_world.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={18} 
+                color={data.msci_world.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.changeText,
+                { color: data.msci_world.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.msci_world.change >= 0 ? '+' : ''}{data.msci_world.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.valueRow}>
+            <Text style={[styles.currentValue, { color: colors.text }]}>{data.msci_world.current_value.toFixed(2)}</Text>
+            <Text style={[
+              styles.changeAmount,
+              { color: data.msci_world.change >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {data.msci_world.change >= 0 ? '+' : ''}{data.msci_world.change.toFixed(2)} pts
+            </Text>
+          </View>
+          
+          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.msci_world.description}</Text>
+          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.msci_world.updated}</Text>
         </View>
       )}
 

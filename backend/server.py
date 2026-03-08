@@ -2018,6 +2018,10 @@ class MarketIndicatorsResponse(BaseModel):
     # European Indices
     eurostoxx50: Optional[MarketIndicator] = None
     dax: Optional[MarketIndicator] = None
+    # US Indices
+    nasdaq: Optional[MarketIndicator] = None
+    # Global Indices
+    msci_world: Optional[MarketIndicator] = None
     # Market Hours
     market_hours: List[MarketHours]
 
@@ -2359,6 +2363,52 @@ async def get_market_indicators():
         except Exception as e:
             logging.warning(f"Could not fetch DAX: {str(e)}")
         
+        # NASDAQ Composite
+        nasdaq_indicator = None
+        try:
+            nasdaq = yf.Ticker("^IXIC")
+            nasdaq_data = nasdaq.history(period="5d")
+            if not nasdaq_data.empty:
+                nasdaq_current = float(nasdaq_data['Close'].iloc[-1])
+                nasdaq_prev = float(nasdaq_data['Close'].iloc[-2]) if len(nasdaq_data) > 1 else nasdaq_current
+                nasdaq_change = nasdaq_current - nasdaq_prev
+                nasdaq_change_pct = (nasdaq_change / nasdaq_prev) * 100 if nasdaq_prev > 0 else 0
+                nasdaq_date = nasdaq_data.index[-1].strftime('%Y-%m-%d')
+                nasdaq_indicator = MarketIndicator(
+                    name="NASDAQ Composite",
+                    ticker="^IXIC",
+                    current_value=nasdaq_current,
+                    change=nasdaq_change,
+                    change_percent=nasdaq_change_pct,
+                    updated=nasdaq_date,
+                    description="Índice de las principales empresas tecnológicas de EE.UU."
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch NASDAQ: {str(e)}")
+        
+        # MSCI World Index (using iShares ETF as proxy)
+        msci_world_indicator = None
+        try:
+            msci = yf.Ticker("URTH")  # iShares MSCI World ETF
+            msci_data = msci.history(period="5d")
+            if not msci_data.empty:
+                msci_current = float(msci_data['Close'].iloc[-1])
+                msci_prev = float(msci_data['Close'].iloc[-2]) if len(msci_data) > 1 else msci_current
+                msci_change = msci_current - msci_prev
+                msci_change_pct = (msci_change / msci_prev) * 100 if msci_prev > 0 else 0
+                msci_date = msci_data.index[-1].strftime('%Y-%m-%d')
+                msci_world_indicator = MarketIndicator(
+                    name="MSCI World",
+                    ticker="URTH",
+                    current_value=msci_current,
+                    change=msci_change,
+                    change_percent=msci_change_pct,
+                    updated=msci_date,
+                    description="Índice global de mercados desarrollados (ETF proxy)"
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch MSCI World: {str(e)}")
+        
         # Determine Fear & Greed level based on VIX
         if vix_current < 12:
             fear_greed = "Extrema Codicia"
@@ -2435,6 +2485,8 @@ async def get_market_indicators():
             ethereum=ethereum_indicator,
             eurostoxx50=eurostoxx50_indicator,
             dax=dax_indicator,
+            nasdaq=nasdaq_indicator,
+            msci_world=msci_world_indicator,
             market_hours=market_hours,
             fear_greed_level=fear_greed,
             market_sentiment=sentiment
@@ -2793,36 +2845,42 @@ async def get_portfolio():
             # Get current price, beta, sector, and industry
             sector = "Otros"
             industry = "N/A"
+            curr_price = 0
+            stock_beta = 1.0
+            
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
-                curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
                 stock_beta = info.get('beta', 1.0) or 1.0
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
                 
-                # Get historical returns for calculations
-                hist = stock.history(period="1y")
-                if not hist.empty and len(hist) > 20:
-                    daily_returns = hist['Close'].pct_change().dropna()
-                    
-                    # Calculate max drawdown
-                    cumulative = (1 + daily_returns).cumprod()
-                    running_max = cumulative.cummax()
-                    drawdown = (cumulative - running_max) / running_max
-                    max_dd = drawdown.min() * 100  # As percentage
-                    
-                    returns_data.append({
-                        'ticker': ticker,
-                        'returns': daily_returns,
-                        'mean_return': daily_returns.mean() * 252,  # Annualized
-                        'volatility': daily_returns.std() * np.sqrt(252),
-                        'max_drawdown': max_dd,
-                        'beta': stock_beta
-                    })
-            except:
-                curr_price = 0
-                stock_beta = 1.0
+                # Only fetch historical data if we have more than 3 holdings (skip for performance)
+                if len(holdings_map) <= 3:
+                    hist = stock.history(period="6mo")  # Reduced from 1y
+                    if not hist.empty and len(hist) > 20:
+                        daily_returns = hist['Close'].pct_change().dropna()
+                        
+                        # Calculate max drawdown
+                        cumulative = (1 + daily_returns).cumprod()
+                        running_max = cumulative.cummax()
+                        drawdown = (cumulative - running_max) / running_max
+                        max_dd = drawdown.min() * 100
+                        
+                        returns_data.append({
+                            'ticker': ticker,
+                            'returns': daily_returns,
+                            'mean_return': daily_returns.mean() * 252,
+                            'volatility': daily_returns.std() * np.sqrt(252),
+                            'max_drawdown': max_dd,
+                            'beta': stock_beta
+                        })
+            except Exception as e:
+                logging.warning(f"Error fetching data for {ticker}: {str(e)}")
+                # Use last known cost as fallback
+                if data["total_shares"] > 0 and data["total_cost"] > 0:
+                    curr_price = data["total_cost"] / data["total_shares"]
             
             curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0

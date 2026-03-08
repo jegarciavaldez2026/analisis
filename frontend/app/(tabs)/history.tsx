@@ -33,7 +33,7 @@ export default function HistoryScreen() {
 
   const fetchHistory = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/history`);
+      const response = await axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000 });
       setHistory(response.data);
     } catch (error) {
       console.error('Error fetching history:', error);

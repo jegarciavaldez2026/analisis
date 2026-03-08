@@ -93,6 +93,26 @@ export default function InfoScreen() {
         </Text>
       </View>
 
+      {/* Support/Credits Section */}
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>📞 Soporte</Text>
+        <View style={[styles.supportCard, { backgroundColor: colors.card }]}>
+          <View style={styles.supportHeader}>
+            <Ionicons name="business" size={28} color={colors.primary} />
+            <Text style={[styles.supportCompany, { color: colors.text }]}>Alianzas RG Techlab</Text>
+          </View>
+          <View style={styles.supportContact}>
+            <View style={styles.contactRow}>
+              <Ionicons name="call" size={18} color={colors.primary} />
+              <Text style={[styles.contactText, { color: colors.text }]}>+34 697 766 049</Text>
+            </View>
+          </View>
+          <Text style={[styles.creditsText, { color: colors.textSecondary }]}>
+            Desarrollo y soporte técnico
+          </Text>
+        </View>
+      </View>
+
       <View style={[styles.footer, { borderTopColor: colors.border }]}>
         <Text style={[styles.footerText, { color: colors.textSecondary }]}>Powered by Yahoo Finance</Text>
         <Text style={[styles.versionText, { color: colors.textSecondary }]}>Versión 2.0.0</Text>
@@ -282,6 +302,40 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderLeftWidth: 4,
     borderLeftColor: '#FF9500',
+  },
+  supportCard: {
+    padding: 20,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  supportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  supportCompany: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  supportContact: {
+    marginBottom: 12,
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  contactText: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  creditsText: {
+    fontSize: 12,
+    marginTop: 8,
   },
   footer: {
     alignItems: 'center',

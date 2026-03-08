@@ -182,25 +182,36 @@ export default function AccountScreen() {
 
   const fetchData = async () => {
     try {
+      const timeout = 15000; // 15 seconds timeout
+      
       if (activeTab === 'watchlist') {
-        const response = await axios.get(`${BACKEND_URL}/api/watchlist`);
-        setWatchlist(response.data);
-        // Check alerts
-        const alertsResponse = await axios.get(`${BACKEND_URL}/api/watchlist/alerts`);
-        if (alertsResponse.data.alerts && alertsResponse.data.alerts.length > 0) {
-          setAlerts(alertsResponse.data.alerts);
+        const [watchlistRes, alertsRes] = await Promise.all([
+          axios.get(`${BACKEND_URL}/api/watchlist`, { timeout }),
+          axios.get(`${BACKEND_URL}/api/watchlist/alerts`, { timeout })
+        ]);
+        setWatchlist(watchlistRes.data);
+        if (alertsRes.data.alerts && alertsRes.data.alerts.length > 0) {
+          setAlerts(alertsRes.data.alerts);
         }
       } else {
-        const [portfolioRes, transactionsRes, cashRes, evolutionRes] = await Promise.all([
-          axios.get(`${BACKEND_URL}/api/portfolio`),
-          axios.get(`${BACKEND_URL}/api/portfolio/transactions`),
-          axios.get(`${BACKEND_URL}/api/portfolio/cash`),
-          axios.get(`${BACKEND_URL}/api/portfolio/evolution`)
+        // Fetch in parallel with timeout
+        const [portfolioRes, transactionsRes, cashRes] = await Promise.all([
+          axios.get(`${BACKEND_URL}/api/portfolio`, { timeout }),
+          axios.get(`${BACKEND_URL}/api/portfolio/transactions`, { timeout }),
+          axios.get(`${BACKEND_URL}/api/portfolio/cash`, { timeout })
         ]);
+        
         setPortfolio(portfolioRes.data);
         setAllTransactions(transactionsRes.data);
         setCashMovements(cashRes.data);
-        setPortfolioEvolution(evolutionRes.data);
+        
+        // Fetch evolution separately (can be slow)
+        try {
+          const evolutionRes = await axios.get(`${BACKEND_URL}/api/portfolio/evolution`, { timeout: 30000 });
+          setPortfolioEvolution(evolutionRes.data);
+        } catch (e) {
+          console.log('Evolution fetch failed, skipping');
+        }
       }
     } catch (error) {
       console.error('Error fetching data:', error);
