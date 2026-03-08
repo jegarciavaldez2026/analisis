@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -71,12 +72,13 @@ interface MarketData {
   treasury_10y: MarketIndicator;
   sp500: MarketIndicator;
   ibex35: MarketIndicator | null;
+  eurostoxx50: MarketIndicator | null;
+  dax: MarketIndicator | null;
   gold: CommodityIndicator;
   oil: CommodityIndicator;
   eur_usd: CurrencyPair;
   bitcoin: CryptoIndicator | null;
   ethereum: CryptoIndicator | null;
-  solana: CryptoIndicator | null;
   market_hours: MarketHours[];
   fear_greed_level: string;
   market_sentiment: string;
@@ -92,6 +94,7 @@ interface NewsArticle {
 }
 
 export default function MarketScreen() {
+  const { colors, isDark } = useTheme();
   const [data, setData] = useState<MarketData | null>(null);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
@@ -185,19 +188,19 @@ export default function MarketScreen() {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.loadingText}>Cargando indicadores...</Text>
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Cargando indicadores...</Text>
       </View>
     );
   }
 
   if (error || !data) {
     return (
-      <View style={styles.errorContainer}>
-        <Ionicons name="cloud-offline" size={60} color="#FF3B30" />
-        <Text style={styles.errorText}>{error || 'Error desconocido'}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={fetchData}>
+      <View style={[styles.errorContainer, { backgroundColor: colors.background }]}>
+        <Ionicons name="cloud-offline" size={60} color={colors.danger} />
+        <Text style={[styles.errorText, { color: colors.text }]}>{error || 'Error desconocido'}</Text>
+        <TouchableOpacity style={[styles.retryButton, { backgroundColor: colors.primary }]} onPress={fetchData}>
           <Text style={styles.retryButtonText}>Reintentar</Text>
         </TouchableOpacity>
       </View>
@@ -206,28 +209,28 @@ export default function MarketScreen() {
 
   return (
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.scrollContent}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#007AFF" />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
       }
     >
       {/* Market Sentiment Summary */}
-      <View style={styles.sentimentCard}>
+      <View style={[styles.sentimentCard, { backgroundColor: colors.card }]}>
         <View style={styles.sentimentHeader}>
-          <Ionicons name="pulse" size={28} color="#007AFF" />
-          <Text style={styles.sentimentTitle}>Estado del Mercado</Text>
+          <Ionicons name="pulse" size={28} color={colors.primary} />
+          <Text style={[styles.sentimentTitle, { color: colors.text }]}>Estado del Mercado</Text>
         </View>
         <View style={styles.sentimentContent}>
           <View style={styles.sentimentItem}>
-            <Text style={styles.sentimentLabel}>Sentimiento</Text>
+            <Text style={[styles.sentimentLabel, { color: colors.textSecondary }]}>Sentimiento</Text>
             <Text style={[styles.sentimentValue, { color: getSentimentColor(data.market_sentiment) }]}>
               {data.market_sentiment}
             </Text>
           </View>
-          <View style={styles.sentimentDivider} />
+          <View style={[styles.sentimentDivider, { backgroundColor: colors.border }]} />
           <View style={styles.sentimentItem}>
-            <Text style={styles.sentimentLabel}>Nivel Fear & Greed</Text>
+            <Text style={[styles.sentimentLabel, { color: colors.textSecondary }]}>Nivel Fear & Greed</Text>
             <Text style={[styles.sentimentValue, { color: getFearGreedColor(data.fear_greed_level) }]}>
               {data.fear_greed_level}
             </Text>
@@ -236,19 +239,19 @@ export default function MarketScreen() {
       </View>
 
       {/* VIX Card */}
-      <View style={styles.indicatorCard}>
+      <View style={[styles.indicatorCard, { backgroundColor: colors.card }]}>
         <View style={styles.indicatorHeader}>
           <View style={styles.indicatorTitleContainer}>
             <View style={[styles.indicatorIcon, { backgroundColor: getVixColor(data.vix.current_value) + '20' }]}>
               <Ionicons name="pulse" size={24} color={getVixColor(data.vix.current_value)} />
             </View>
             <View>
-              <Text style={styles.indicatorName}>{data.vix.name}</Text>
-              <Text style={styles.indicatorTicker}>{data.vix.ticker}</Text>
+              <Text style={[styles.indicatorName, { color: colors.text }]}>{data.vix.name}</Text>
+              <Text style={[styles.indicatorTicker, { color: colors.textSecondary }]}>{data.vix.ticker}</Text>
             </View>
           </View>
           <View style={styles.indicatorValueContainer}>
-            <Text style={styles.indicatorValue}>{data.vix.current_value.toFixed(2)}</Text>
+            <Text style={[styles.indicatorValue, { color: colors.text }]}>{data.vix.current_value.toFixed(2)}</Text>
             <View style={[styles.changeContainer, { backgroundColor: getChangeColor(data.vix.change) + '15' }]}>
               <Ionicons
                 name={data.vix.change >= 0 ? 'arrow-up' : 'arrow-down'}
@@ -419,6 +422,88 @@ export default function MarketScreen() {
         </View>
       )}
 
+      {/* Euro Stoxx 50 Card */}
+      {data.eurostoxx50 && (
+        <View style={[styles.indicatorCard, { borderLeftColor: '#003399', backgroundColor: colors.card }]}>
+          <View style={styles.indicatorHeader}>
+            <View>
+              <Text style={[styles.indicatorName, { color: colors.text }]}>🇪🇺 {data.eurostoxx50.name}</Text>
+              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.eurostoxx50.ticker}</Text>
+            </View>
+            <View style={[
+              styles.changeContainer,
+              { backgroundColor: data.eurostoxx50.change >= 0 ? '#34C75915' : '#FF3B3015' }
+            ]}>
+              <Ionicons 
+                name={data.eurostoxx50.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={18} 
+                color={data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.changeText,
+                { color: data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.eurostoxx50.change >= 0 ? '+' : ''}{data.eurostoxx50.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.valueRow}>
+            <Text style={[styles.currentValue, { color: colors.text }]}>{data.eurostoxx50.current_value.toFixed(2)}</Text>
+            <Text style={[
+              styles.changeAmount,
+              { color: data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {data.eurostoxx50.change >= 0 ? '+' : ''}{data.eurostoxx50.change.toFixed(2)} pts
+            </Text>
+          </View>
+          
+          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.eurostoxx50.description}</Text>
+          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.eurostoxx50.updated}</Text>
+        </View>
+      )}
+
+      {/* DAX Card */}
+      {data.dax && (
+        <View style={[styles.indicatorCard, { borderLeftColor: '#FFCC00', backgroundColor: colors.card }]}>
+          <View style={styles.indicatorHeader}>
+            <View>
+              <Text style={[styles.indicatorName, { color: colors.text }]}>🇩🇪 {data.dax.name}</Text>
+              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.dax.ticker}</Text>
+            </View>
+            <View style={[
+              styles.changeContainer,
+              { backgroundColor: data.dax.change >= 0 ? '#34C75915' : '#FF3B3015' }
+            ]}>
+              <Ionicons 
+                name={data.dax.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={18} 
+                color={data.dax.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.changeText,
+                { color: data.dax.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.dax.change >= 0 ? '+' : ''}{data.dax.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.valueRow}>
+            <Text style={[styles.currentValue, { color: colors.text }]}>{data.dax.current_value.toFixed(2)}</Text>
+            <Text style={[
+              styles.changeAmount,
+              { color: data.dax.change >= 0 ? '#34C759' : '#FF3B30' }
+            ]}>
+              {data.dax.change >= 0 ? '+' : ''}{data.dax.change.toFixed(2)} pts
+            </Text>
+          </View>
+          
+          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.dax.description}</Text>
+          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.dax.updated}</Text>
+        </View>
+      )}
+
       {/* Crypto Section */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionHeaderEmoji}>₿</Text>
@@ -485,36 +570,6 @@ export default function MarketScreen() {
                 { color: data.ethereum.change >= 0 ? '#34C759' : '#FF3B30' }
               ]}>
                 {data.ethereum.change >= 0 ? '+' : ''}{data.ethereum.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-        
-        {/* Solana */}
-        {data.solana && (
-          <View style={[styles.cryptoCard, { borderColor: '#00D18C' }]}>
-            <View style={styles.cryptoHeader}>
-              <Text style={styles.cryptoEmoji}>◎</Text>
-              <View>
-                <Text style={styles.cryptoName}>{data.solana.name}</Text>
-                <Text style={styles.cryptoSymbol}>{data.solana.symbol}</Text>
-              </View>
-            </View>
-            <Text style={styles.cryptoPrice}>${data.solana.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
-            <View style={[
-              styles.cryptoChange,
-              { backgroundColor: data.solana.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.solana.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.solana.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.cryptoChangeText,
-                { color: data.solana.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.solana.change >= 0 ? '+' : ''}{data.solana.change_percent.toFixed(2)}%
               </Text>
             </View>
           </View>

@@ -2015,7 +2015,9 @@ class MarketIndicatorsResponse(BaseModel):
     # Crypto
     bitcoin: Optional[CryptoIndicator] = None
     ethereum: Optional[CryptoIndicator] = None
-    solana: Optional[CryptoIndicator] = None
+    # European Indices
+    eurostoxx50: Optional[MarketIndicator] = None
+    dax: Optional[MarketIndicator] = None
     # Market Hours
     market_hours: List[MarketHours]
 
@@ -2309,31 +2311,53 @@ async def get_market_indicators():
         except Exception as e:
             logging.warning(f"Could not fetch Ethereum: {str(e)}")
         
-        # Solana
-        solana_indicator = None
+        # Solana - REMOVED per user request
+        
+        # Eurostoxx 50 (European Index)
+        eurostoxx50_indicator = None
         try:
-            sol = yf.Ticker("SOL-USD")
-            sol_data = sol.history(period="5d")
-            if not sol_data.empty:
-                sol_current = float(sol_data['Close'].iloc[-1])
-                sol_prev = float(sol_data['Close'].iloc[-2]) if len(sol_data) > 1 else sol_current
-                sol_change = sol_current - sol_prev
-                sol_change_pct = (sol_change / sol_prev) * 100 if sol_prev > 0 else 0
-                sol_date = sol_data.index[-1].strftime('%Y-%m-%d')
-                sol_info = sol.info
-                solana_indicator = CryptoIndicator(
-                    name="Solana",
-                    symbol="SOL",
-                    ticker="SOL-USD",
-                    current_value=sol_current,
-                    change=sol_change,
-                    change_percent=sol_change_pct,
-                    market_cap=sol_info.get('marketCap'),
-                    volume_24h=sol_info.get('volume24Hr'),
-                    updated=sol_date
+            stoxx = yf.Ticker("^STOXX50E")
+            stoxx_data = stoxx.history(period="5d")
+            if not stoxx_data.empty:
+                stoxx_current = float(stoxx_data['Close'].iloc[-1])
+                stoxx_prev = float(stoxx_data['Close'].iloc[-2]) if len(stoxx_data) > 1 else stoxx_current
+                stoxx_change = stoxx_current - stoxx_prev
+                stoxx_change_pct = (stoxx_change / stoxx_prev) * 100 if stoxx_prev > 0 else 0
+                stoxx_date = stoxx_data.index[-1].strftime('%Y-%m-%d')
+                eurostoxx50_indicator = MarketIndicator(
+                    name="Euro Stoxx 50",
+                    ticker="^STOXX50E",
+                    current_value=stoxx_current,
+                    change=stoxx_change,
+                    change_percent=stoxx_change_pct,
+                    updated=stoxx_date,
+                    description="Índice de las 50 principales empresas de la zona euro"
                 )
         except Exception as e:
-            logging.warning(f"Could not fetch Solana: {str(e)}")
+            logging.warning(f"Could not fetch Euro Stoxx 50: {str(e)}")
+        
+        # DAX (German Index)
+        dax_indicator = None
+        try:
+            dax = yf.Ticker("^GDAXI")
+            dax_data = dax.history(period="5d")
+            if not dax_data.empty:
+                dax_current = float(dax_data['Close'].iloc[-1])
+                dax_prev = float(dax_data['Close'].iloc[-2]) if len(dax_data) > 1 else dax_current
+                dax_change = dax_current - dax_prev
+                dax_change_pct = (dax_change / dax_prev) * 100 if dax_prev > 0 else 0
+                dax_date = dax_data.index[-1].strftime('%Y-%m-%d')
+                dax_indicator = MarketIndicator(
+                    name="DAX 40",
+                    ticker="^GDAXI",
+                    current_value=dax_current,
+                    change=dax_change,
+                    change_percent=dax_change_pct,
+                    updated=dax_date,
+                    description="Índice de las 40 principales empresas de la bolsa de Frankfurt"
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch DAX: {str(e)}")
         
         # Determine Fear & Greed level based on VIX
         if vix_current < 12:
@@ -2409,7 +2433,8 @@ async def get_market_indicators():
             ibex35=ibex35_indicator,
             bitcoin=bitcoin_indicator,
             ethereum=ethereum_indicator,
-            solana=solana_indicator,
+            eurostoxx50=eurostoxx50_indicator,
+            dax=dax_indicator,
             market_hours=market_hours,
             fear_greed_level=fear_greed,
             market_sentiment=sentiment

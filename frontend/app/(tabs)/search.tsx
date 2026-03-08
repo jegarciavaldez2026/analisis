@@ -14,10 +14,12 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import ResultsScreen from '../screens/ResultsScreen';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function SearchScreen() {
+  const { colors, isDark } = useTheme();
   const [ticker, setTicker] = useState('');
   const [loading, setLoading] = useState(false);
   const [analysisData, setAnalysisData] = useState<any>(null);
@@ -56,7 +58,7 @@ export default function SearchScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
@@ -64,19 +66,20 @@ export default function SearchScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.headerSection}>
-          <Ionicons name="bar-chart" size={80} color="#007AFF" />
-          <Text style={styles.title}>Análisis Financiero</Text>
-          <Text style={styles.subtitle}>
+          <Ionicons name="bar-chart" size={80} color={colors.primary} />
+          <Text style={[styles.title, { color: colors.text }]}>Análisis Financiero</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Ingresa el ticker o código ISIN de una acción para analizar sus ratios financieros
           </Text>
         </View>
 
         <View style={styles.inputSection}>
-          <View style={styles.inputContainer}>
-            <Ionicons name="search" size={24} color="#999" style={styles.inputIcon} />
+          <View style={[styles.inputContainer, { backgroundColor: colors.card }]}>
+            <Ionicons name="search" size={24} color={colors.textSecondary} style={styles.inputIcon} />
             <TextInput
-              style={styles.input}
+              style={[styles.input, { color: colors.text }]}
               placeholder="Ej: AAPL, GOOGL, MSFT"
+              placeholderTextColor={colors.textSecondary}
               value={ticker}
               onChangeText={setTicker}
               autoCapitalize="characters"
@@ -85,13 +88,13 @@ export default function SearchScreen() {
             />
             {ticker.length > 0 && !loading && (
               <TouchableOpacity onPress={() => setTicker('')} style={styles.clearButton}>
-                <Ionicons name="close-circle" size={24} color="#999" />
+                <Ionicons name="close-circle" size={24} color={colors.textSecondary} />
               </TouchableOpacity>
             )}
           </View>
 
           <TouchableOpacity
-            style={[styles.analyzeButton, loading && styles.analyzeButtonDisabled]}
+            style={[styles.analyzeButton, { backgroundColor: colors.primary }, loading && styles.analyzeButtonDisabled]}
             onPress={handleAnalyze}
             disabled={loading}
           >
@@ -107,25 +110,25 @@ export default function SearchScreen() {
         </View>
 
         <View style={styles.examplesSection}>
-          <Text style={styles.examplesTitle}>Ejemplos populares:</Text>
+          <Text style={[styles.examplesTitle, { color: colors.text }]}>Ejemplos populares:</Text>
           <View style={styles.examplesGrid}>
             {['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META'].map((example) => (
               <TouchableOpacity
                 key={example}
-                style={styles.exampleChip}
+                style={[styles.exampleChip, { backgroundColor: colors.card, borderColor: colors.border }]}
                 onPress={() => setTicker(example)}
                 disabled={loading}
               >
-                <Text style={styles.exampleChipText}>{example}</Text>
+                <Text style={[styles.exampleChipText, { color: colors.primary }]}>{example}</Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
 
         <View style={styles.infoSection}>
-          <View style={styles.infoCard}>
-            <Ionicons name="information-circle" size={24} color="#007AFF" />
-            <Text style={styles.infoText}>
+          <View style={[styles.infoCard, { backgroundColor: isDark ? colors.primary + '20' : '#E8F4FF' }]}>
+            <Ionicons name="information-circle" size={24} color={colors.primary} />
+            <Text style={[styles.infoText, { color: colors.text }]}>
               Esta app analiza más de 25 ratios financieros y proporciona una recomendación basada en métricas clave
             </Text>
           </View>
@@ -138,7 +141,6 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   scrollContent: {
     padding: 20,
@@ -152,13 +154,11 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#1D1D1F',
     marginTop: 16,
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
-    color: '#6E6E73',
     textAlign: 'center',
     marginTop: 8,
     paddingHorizontal: 20,
@@ -170,7 +170,6 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     paddingHorizontal: 16,
     marginBottom: 16,
@@ -187,13 +186,11 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 56,
     fontSize: 18,
-    color: '#1D1D1F',
   },
   clearButton: {
     padding: 4,
   },
   analyzeButton: {
-    backgroundColor: '#007AFF',
     borderRadius: 12,
     paddingVertical: 16,
     flexDirection: 'row',
@@ -222,7 +219,6 @@ const styles = StyleSheet.create({
   examplesTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1D1D1F',
     marginBottom: 12,
   },
   examplesGrid: {
@@ -231,15 +227,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   exampleChip: {
-    backgroundColor: '#FFFFFF',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#E0E0E0',
   },
   exampleChipText: {
-    color: '#007AFF',
     fontSize: 14,
     fontWeight: '500',
   },
@@ -248,7 +241,6 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     flexDirection: 'row',
-    backgroundColor: '#E8F4FF',
     padding: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -257,7 +249,6 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 12,
     fontSize: 14,
-    color: '#1D1D1F',
     lineHeight: 20,
   },
 });

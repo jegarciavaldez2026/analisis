@@ -11,6 +11,7 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -24,6 +25,7 @@ interface HistoryItem {
 }
 
 export default function HistoryScreen() {
+  const { colors } = useTheme();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -126,11 +128,11 @@ export default function HistoryScreen() {
   };
 
   const renderItem = ({ item }: { item: HistoryItem }) => (
-    <View style={styles.historyCard}>
+    <View style={[styles.historyCard, { backgroundColor: colors.card }]}>
       <View style={styles.cardHeader}>
         <View style={styles.tickerInfo}>
-          <Text style={styles.ticker}>{item.ticker}</Text>
-          <Text style={styles.companyName} numberOfLines={1}>
+          <Text style={[styles.ticker, { color: colors.primary }]}>{item.ticker}</Text>
+          <Text style={[styles.companyName, { color: colors.textSecondary }]} numberOfLines={1}>
             {item.company_name}
           </Text>
         </View>
@@ -144,29 +146,29 @@ export default function HistoryScreen() {
             <Text style={styles.recommendationText}>{item.recommendation}</Text>
           </View>
           <TouchableOpacity
-            style={styles.deleteButton}
+            style={[styles.deleteButton, { backgroundColor: colors.danger + '15' }]}
             onPress={() => deleteAnalysis(item.id, item.ticker)}
             disabled={deleting === item.id}
           >
             {deleting === item.id ? (
-              <ActivityIndicator size="small" color="#FF3B30" />
+              <ActivityIndicator size="small" color={colors.danger} />
             ) : (
-              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+              <Ionicons name="trash-outline" size={20} color={colors.danger} />
             )}
           </TouchableOpacity>
         </View>
       </View>
 
-      <View style={styles.cardFooter}>
+      <View style={[styles.cardFooter, { borderTopColor: colors.border }]}>
         <View style={styles.percentageContainer}>
-          <Ionicons name="analytics" size={16} color="#007AFF" />
-          <Text style={styles.percentageText}>
+          <Ionicons name="analytics" size={16} color={colors.primary} />
+          <Text style={[styles.percentageText, { color: colors.primary }]}>
             {item.favorable_percentage.toFixed(1)}% favorable
           </Text>
         </View>
         <View style={styles.dateContainer}>
-          <Ionicons name="time-outline" size={14} color="#8E8E93" />
-          <Text style={styles.dateText}>{formatDate(item.analysis_date)}</Text>
+          <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+          <Text style={[styles.dateText, { color: colors.textSecondary }]}>{formatDate(item.analysis_date)}</Text>
         </View>
       </View>
     </View>
@@ -174,18 +176,18 @@ export default function HistoryScreen() {
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
+      <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
 
   if (history.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
-        <Ionicons name="folder-open-outline" size={80} color="#C7C7CC" />
-        <Text style={styles.emptyTitle}>No hay historial</Text>
-        <Text style={styles.emptySubtitle}>
+      <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+        <Ionicons name="folder-open-outline" size={80} color={colors.textSecondary} />
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>No hay historial</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
           Los análisis que realices aparecerán aquí
         </Text>
       </View>
@@ -193,16 +195,16 @@ export default function HistoryScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header with Delete All Button */}
-      <View style={styles.headerBar}>
-        <Text style={styles.headerTitle}>{history.length} análisis</Text>
+      <View style={[styles.headerBar, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.textSecondary }]}>{history.length} análisis</Text>
         <TouchableOpacity
-          style={styles.deleteAllButton}
+          style={[styles.deleteAllButton, { backgroundColor: colors.danger + '15' }]}
           onPress={deleteAllHistory}
         >
-          <Ionicons name="trash-outline" size={18} color="#FF3B30" />
-          <Text style={styles.deleteAllText}>Borrar todo</Text>
+          <Ionicons name="trash-outline" size={18} color={colors.danger} />
+          <Text style={[styles.deleteAllText, { color: colors.danger }]}>Borrar todo</Text>
         </TouchableOpacity>
       </View>
 
@@ -215,7 +217,7 @@ export default function HistoryScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor="#007AFF"
+            tintColor={colors.primary}
           />
         }
       />
@@ -226,31 +228,26 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F5F5F7',
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F5F5F7',
     paddingHorizontal: 40,
   },
   emptyTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#1D1D1F',
     marginTop: 16,
     marginBottom: 8,
   },
   emptySubtitle: {
     fontSize: 16,
-    color: '#6E6E73',
     textAlign: 'center',
   },
   headerBar: {
@@ -259,19 +256,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
   },
   headerTitle: {
     fontSize: 14,
-    color: '#6E6E73',
     fontWeight: '500',
   },
   deleteAllButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FF3B3010',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
@@ -279,14 +272,12 @@ const styles = StyleSheet.create({
   },
   deleteAllText: {
     fontSize: 14,
-    color: '#FF3B30',
     fontWeight: '600',
   },
   listContent: {
     padding: 16,
   },
   historyCard: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
@@ -308,12 +299,10 @@ const styles = StyleSheet.create({
   ticker: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#007AFF',
     marginBottom: 2,
   },
   companyName: {
     fontSize: 14,
-    color: '#6E6E73',
     maxWidth: 180,
   },
   cardActions: {
@@ -334,7 +323,6 @@ const styles = StyleSheet.create({
   deleteButton: {
     padding: 8,
     borderRadius: 8,
-    backgroundColor: '#FF3B3010',
   },
   cardFooter: {
     flexDirection: 'row',
@@ -342,7 +330,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#F5F5F7',
   },
   percentageContainer: {
     flexDirection: 'row',
@@ -351,7 +338,6 @@ const styles = StyleSheet.create({
   },
   percentageText: {
     fontSize: 13,
-    color: '#007AFF',
     fontWeight: '500',
   },
   dateContainer: {
@@ -361,6 +347,5 @@ const styles = StyleSheet.create({
   },
   dateText: {
     fontSize: 12,
-    color: '#8E8E93',
   },
 });
