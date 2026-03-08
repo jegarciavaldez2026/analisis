@@ -2177,16 +2177,25 @@ class PortfolioHolding(BaseModel):
     profit_loss_percent: float
     transactions: List[PortfolioTransaction]
 
+class PortfolioMetrics(BaseModel):
+    portfolio_beta: float = 0.0
+    portfolio_alpha: float = 0.0
+    sharpe_ratio: float = 0.0
+    average_return: float = 0.0
+    volatility: float = 0.0
+    risk_free_rate: float = 4.0  # Assumed 4%
+
 class PortfolioSummary(BaseModel):
     total_invested: float
     current_value: float
     total_profit_loss: float
     total_profit_loss_percent: float
     holdings: List[PortfolioHolding]
+    metrics: Optional[PortfolioMetrics] = None
 
 @api_router.get("/portfolio", response_model=PortfolioSummary)
 async def get_portfolio():
-    """Get portfolio summary with current values"""
+    """Get portfolio summary with current values and metrics"""
     try:
         transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
         
@@ -2217,21 +2226,39 @@ async def get_portfolio():
         total_invested = 0
         current_value = 0
         
+        # For portfolio metrics calculation
+        weights = []
+        betas = []
+        returns_data = []
+        
         for ticker, data in holdings_map.items():
             if data["total_shares"] <= 0:
                 continue  # Skip if sold all shares
             
-            # Get current price
+            # Get current price and beta
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
                 curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+                stock_beta = info.get('beta', 1.0) or 1.0
+                
+                # Get historical returns for Sharpe calculation
+                hist = stock.history(period="1y")
+                if not hist.empty and len(hist) > 20:
+                    daily_returns = hist['Close'].pct_change().dropna()
+                    returns_data.append({
+                        'ticker': ticker,
+                        'returns': daily_returns,
+                        'mean_return': daily_returns.mean() * 252,  # Annualized
+                        'volatility': daily_returns.std() * np.sqrt(252)
+                    })
             except:
                 curr_price = 0
+                stock_beta = 1.0
             
-            curr_value = data["total_shares"] * curr_price
+            curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
-            profit_loss = curr_value - data["total_cost"]
+            profit_loss = curr_value_stock - data["total_cost"]
             profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
             
             holding = PortfolioHolding(
@@ -2241,24 +2268,69 @@ async def get_portfolio():
                 average_cost=avg_cost,
                 total_invested=data["total_cost"],
                 current_price=curr_price,
-                current_value=curr_value,
+                current_value=curr_value_stock,
                 profit_loss=profit_loss,
                 profit_loss_percent=profit_loss_pct,
                 transactions=data["transactions"]
             )
             holdings.append(holding)
             total_invested += data["total_cost"]
-            current_value += curr_value
+            current_value += curr_value_stock
+            
+            # Store for metrics
+            weights.append(curr_value_stock)
+            betas.append(stock_beta)
         
         total_pl = current_value - total_invested
         total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+        
+        # Calculate portfolio metrics
+        metrics = PortfolioMetrics()
+        
+        if weights and current_value > 0:
+            # Normalize weights
+            weights = [w / current_value for w in weights]
+            
+            # Portfolio Beta (weighted average)
+            portfolio_beta = sum(w * b for w, b in zip(weights, betas))
+            metrics.portfolio_beta = round(portfolio_beta, 2)
+            
+            # Calculate portfolio returns and volatility
+            if returns_data:
+                # Weighted average return
+                weighted_returns = []
+                weighted_volatility = []
+                for i, rd in enumerate(returns_data):
+                    if i < len(weights):
+                        weighted_returns.append(weights[i] * rd['mean_return'])
+                        weighted_volatility.append(weights[i] * rd['volatility'])
+                
+                portfolio_return = sum(weighted_returns) * 100
+                portfolio_volatility = sum(weighted_volatility) * 100
+                
+                metrics.average_return = round(portfolio_return, 2)
+                metrics.volatility = round(portfolio_volatility, 2)
+                
+                # Sharpe Ratio = (Portfolio Return - Risk Free Rate) / Volatility
+                risk_free_rate = 4.0  # 4% annual
+                if portfolio_volatility > 0:
+                    sharpe = (portfolio_return - risk_free_rate) / portfolio_volatility
+                    metrics.sharpe_ratio = round(sharpe, 2)
+                
+                # Alpha = Portfolio Return - (Risk Free + Beta * (Market Return - Risk Free))
+                # Assuming market return of 10%
+                market_return = 10.0
+                expected_return = risk_free_rate + portfolio_beta * (market_return - risk_free_rate)
+                alpha = portfolio_return - expected_return
+                metrics.portfolio_alpha = round(alpha, 2)
         
         return PortfolioSummary(
             total_invested=total_invested,
             current_value=current_value,
             total_profit_loss=total_pl,
             total_profit_loss_percent=total_pl_pct,
-            holdings=holdings
+            holdings=holdings,
+            metrics=metrics
         )
         
     except Exception as e:
