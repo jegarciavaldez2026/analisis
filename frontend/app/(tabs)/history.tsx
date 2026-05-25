@@ -77,16 +77,25 @@ interface FundamentalsInfo {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getPctColor(pct: number): string {
-  if (pct >= 3)    return '#0d7a3e';
-  if (pct >= 2)    return '#1a9e52';
-  if (pct >= 1)    return '#27ae60';
-  if (pct >= 0.2)  return '#52c476';
-  if (pct >= 0)    return '#6dcf8a';
-  if (pct > -0.2)  return '#e07070';
-  if (pct > -1)    return '#d04040';
-  if (pct > -2)    return '#b52828';
-  if (pct > -3)    return '#8f1a1a';
-  return '#701010';
+  if (pct >= 5)    return '#00c853';
+  if (pct >= 4)    return '#00b848';
+  if (pct >= 3)    return '#00a83d';
+  if (pct >= 2.5)  return '#009632';
+  if (pct >= 2)    return '#008428';
+  if (pct >= 1.5)  return '#00721e';
+  if (pct >= 1)    return '#006014';
+  if (pct >= 0.5)  return '#004e0a';
+  if (pct >= 0.1)  return '#003d05';
+  if (pct > -0.1)  return '#2d2d2d';
+  if (pct > -0.5)  return '#3d0505';
+  if (pct > -1)    return '#4e0a0a';
+  if (pct > -1.5)  return '#601414';
+  if (pct > -2)    return '#721e1e';
+  if (pct > -2.5)  return '#842828';
+  if (pct > -3)    return '#963232';
+  if (pct > -4)    return '#a83d3d';
+  if (pct > -5)    return '#b84848';
+  return '#c85353';
 }
 
 function getRecColor(r: string): string {
@@ -275,7 +284,8 @@ function CompactHeatmap({ stocks, colors, isDark }: HeatmapProps) {
 
       {/* Legend */}
       <View style={heatStyles.legend}>
-        {[-3, -1, 0, 1, 3].map((v) => (
+        <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>-</Text>
+        {[-5, -3, -1, 0, 1, 3, 5].map((v) => (
           <View key={v} style={heatStyles.legendItem}>
             <View style={[heatStyles.legendSwatch, { backgroundColor: getPctColor(v) }]} />
             <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>
@@ -283,6 +293,7 @@ function CompactHeatmap({ stocks, colors, isDark }: HeatmapProps) {
             </Text>
           </View>
         ))}
+        <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>+</Text>
       </View>
 
       {/* Grid */}
