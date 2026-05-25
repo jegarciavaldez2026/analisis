@@ -20,6 +20,7 @@ import axios from 'axios';
 import { PieChart, LineChart } from 'react-native-gifted-charts';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const CHART_COLORS = ['#007AFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6', '#FF2D55', '#00C7BE'];
@@ -149,6 +150,7 @@ interface BenchmarkComparison {
 
 export default function AccountScreen() {
   const { colors, isDark } = useTheme();
+  const { logout } = useAuth();
   const { token, user } = useAuth();
   const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -1467,6 +1469,15 @@ export default function AccountScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Logout Button */}
+      <TouchableOpacity
+        style={[styles.logoutButton, { borderColor: colors.border }]}
+        onPress={handleLogout}
+      >
+        <Ionicons name="log-out-outline" size={18} color={colors.danger} />
+        <Text style={[styles.logoutButtonText, { color: colors.danger }]}>Cerrar sesión</Text>
+      </TouchableOpacity>
+
       {/* Alerts Button */}
       {activeTab === 'watchlist' && alerts.length > 0 && (
         <TouchableOpacity
@@ -2068,6 +2079,21 @@ const styles = StyleSheet.create({
     margin: 16,
     marginBottom: 8,
     borderRadius: 12,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 8,
+  },
+  logoutButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   tab: {
     flex: 1,
