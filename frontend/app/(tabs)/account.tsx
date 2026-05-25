@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { PieChart, LineChart } from 'react-native-gifted-charts';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const CHART_COLORS = ['#007AFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6', '#FF2D55', '#00C7BE'];
@@ -148,6 +149,7 @@ interface BenchmarkComparison {
 
 export default function AccountScreen() {
   const { colors, isDark } = useTheme();
+  const { token, user } = useAuth();
   const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -178,6 +180,16 @@ export default function AccountScreen() {
   
   // Form states
   const [newTicker, setNewTicker] = useState('');
+  const [newTickerCurrentPrice, setNewTickerCurrentPrice] = useState<number | null>(null);
+  const [watchlistSuggestions, setWatchlistSuggestions] = useState<any[]>([]);
+  const [showWatchlistSuggestions, setShowWatchlistSuggestions] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState<any[]>([]);
+  const [editingWatchlistItem, setEditingWatchlistItem] = useState<WatchlistItem | null>(null);
+  const [showEditWatchlistModal, setShowEditWatchlistModal] = useState(false);
+  const [editBuyPrice, setEditBuyPrice] = useState('');
+  const [editSellPrice, setEditSellPrice] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [editThreshold, setEditThreshold] = useState('5');
   const [targetBuyPrice, setTargetBuyPrice] = useState('');
   const [targetSellPrice, setTargetSellPrice] = useState('');
   const [notifyOnChange, setNotifyOnChange] = useState(false);
@@ -186,6 +198,17 @@ export default function AccountScreen() {
   
   // Transaction form
   const [txTicker, setTxTicker] = useState('');
+  const [editingTx, setEditingTx] = useState<any>(null);
+  const [showEditTxModal, setShowEditTxModal] = useState(false);
+  const [editTxShares, setEditTxShares] = useState('');
+  const [editTxPrice, setEditTxPrice] = useState('');
+  const [editTxDate, setEditTxDate] = useState('');
+  const [editTxCommission, setEditTxCommission] = useState('0');
+  const [editTxNotes, setEditTxNotes] = useState('');
+  const [editTxType, setEditTxType] = useState<'buy' | 'sell'>('buy');
+  const [txSuggestions, setTxSuggestions] = useState<any[]>([]);
+  const [showTxSuggestions, setShowTxSuggestions] = useState(false);
+  const [txCurrentPrice, setTxCurrentPrice] = useState<number | null>(null);
   const [txType, setTxType] = useState<'buy' | 'sell'>('buy');
   const [txShares, setTxShares] = useState('');
   const [txPrice, setTxPrice] = useState('');
@@ -193,6 +216,19 @@ export default function AccountScreen() {
   const [txNotes, setTxNotes] = useState('');
   const [txDate, setTxDate] = useState(new Date().toISOString().split('T')[0]);
   const [submitting, setSubmitting] = useState(false);
+
+  const fetchAnalysisHistory = async () => {
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000 });
+      const seen = new Set();
+      const unique = res.data.filter((item: any) => {
+        if (seen.has(item.ticker)) return false;
+        seen.add(item.ticker);
+        return true;
+      });
+      setAnalysisHistory(unique);
+    } catch (e) {}
+  };
 
   const fetchData = async () => {
     try {
@@ -244,18 +280,86 @@ export default function AccountScreen() {
   };
 
   useEffect(() => {
+    if (!token) return;
     setLoading(true);
     fetchData();
-  }, [activeTab]);
+    fetchAnalysisHistory();
+  }, [activeTab, token]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     fetchData();
   }, [activeTab]);
 
+  const handleWatchlistTickerChange = (text: string) => {
+    setNewTicker(text);
+    if (text.trim().length > 0) {
+      const seen = new Set();
+      const filtered = analysisHistory.filter((item: any) => {
+        if (seen.has(item.ticker)) return false;
+        seen.add(item.ticker);
+        return item.ticker.toLowerCase().includes(text.toLowerCase()) ||
+               item.company_name?.toLowerCase().includes(text.toLowerCase());
+      });
+      setWatchlistSuggestions(filtered.slice(0, 5));
+      setShowWatchlistSuggestions(filtered.length > 0);
+    } else {
+      setWatchlistSuggestions([]);
+      setShowWatchlistSuggestions(false);
+    }
+  };
+
+  const openEditWatchlist = (item: WatchlistItem) => {
+    setEditingWatchlistItem(item);
+    setEditBuyPrice(item.target_buy_price?.toFixed(2) || '');
+    setEditSellPrice(item.target_sell_price?.toFixed(2) || '');
+    setEditNotes(item.notes || '');
+    setEditThreshold(item.price_change_threshold?.toString() || '5');
+    setShowEditWatchlistModal(true);
+  };
+
+  const saveEditWatchlist = async () => {
+    if (!editingWatchlistItem) return;
+    try {
+      await axios.put(`${BACKEND_URL}/api/watchlist/${editingWatchlistItem.id}`, {
+        target_buy_price: editBuyPrice ? parseFloat(editBuyPrice) : null,
+        target_sell_price: editSellPrice ? parseFloat(editSellPrice) : null,
+        notes: editNotes || null,
+        price_change_threshold: parseFloat(editThreshold) || 5,
+      });
+      setShowEditWatchlistModal(false);
+      setEditingWatchlistItem(null);
+      fetchData();
+      Platform.OS === 'web' ? window.alert('✅ Watchlist actualizada') : Alert.alert('Éxito', 'Watchlist actualizada');
+    } catch (error: any) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
+    }
+  };
+
+  const handleSelectWatchlistTicker = async (item: any) => {
+    setNewTicker(item.ticker);
+    setShowWatchlistSuggestions(false);
+    setNewTickerCurrentPrice(null);
+    // Obtener precio del análisis completo
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/analysis/${item.id}`);
+      const data = res.data;
+      const price = data.metadata?.current_price || data.current_price;
+      const buyTarget = data.valuation_summary?.target_price_conservative;
+      const sellTarget = data.valuation_summary?.target_price_moderate;
+      if (price) {
+        setNewTickerCurrentPrice(price);
+        setTargetBuyPrice(buyTarget ? buyTarget.toFixed(2) : price.toFixed(2));
+      }
+      if (sellTarget) setTargetSellPrice(sellTarget.toFixed(2));
+    } catch (e) {
+      console.log('No se pudo obtener precio del análisis');
+    }
+  };
+
   const addToWatchlist = async () => {
     if (!newTicker.trim()) {
-      Alert.alert('Error', 'Ingresa un ticker válido');
+      Platform.OS === 'web' ? window.alert('Error: Ingresa un ticker válido') : Alert.alert('Error', 'Ingresa un ticker válido');
       return;
     }
     
@@ -273,39 +377,96 @@ export default function AccountScreen() {
       setShowAddWatchlist(false);
       resetWatchlistForm();
       fetchData();
-      Alert.alert('Éxito', 'Acción agregada a watchlist');
+      Platform.OS === 'web' ? window.alert('✅ Acción agregada a watchlist') : Alert.alert('Éxito', 'Acción agregada a watchlist');
     } catch (error: any) {
-      Alert.alert('Error', error.response?.data?.detail || 'No se pudo agregar a watchlist');
+      Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo agregar a watchlist')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo agregar a watchlist');
     } finally {
       setSubmitting(false);
     }
   };
 
   const removeFromWatchlist = async (id: string, ticker: string) => {
-    Alert.alert(
-      'Eliminar de Watchlist',
-      `¿Eliminar ${ticker} de tu watchlist?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await axios.delete(`${BACKEND_URL}/api/watchlist/${id}`);
-              fetchData();
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo eliminar');
-            }
-          },
-        },
-      ]
-    );
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm(`¿Eliminar ${ticker} de tu watchlist?`)
+      : await new Promise(resolve => Alert.alert('Eliminar de Watchlist', `¿Eliminar ${ticker} de tu watchlist?`,
+          [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
+    if (!confirmed) return;
+    try {
+      await axios.delete(`${BACKEND_URL}/api/watchlist/${id}`);
+      fetchData();
+    } catch (error) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar') : Alert.alert('Error', 'No se pudo eliminar');
+    }
+  };
+
+  const openEditTx = (tx: any) => {
+    setEditingTx(tx);
+    setEditTxShares(tx.shares.toString());
+    setEditTxPrice(tx.price_per_share.toFixed(2));
+    setEditTxDate(tx.transaction_date?.split('T')[0] || '');
+    setEditTxCommission(tx.commission?.toString() || '0');
+    setEditTxNotes(tx.notes || '');
+    setEditTxType(tx.transaction_type);
+    setShowEditTxModal(true);
+  };
+
+  const saveEditTx = async () => {
+    if (!editingTx) return;
+    try {
+      await axios.put(`${BACKEND_URL}/api/portfolio/${editingTx.id}`, {
+        transaction_type: editTxType,
+        shares: parseFloat(editTxShares),
+        price_per_share: parseFloat(editTxPrice),
+        transaction_date: editTxDate,
+        commission: parseFloat(editTxCommission) || 0,
+        notes: editTxNotes || null,
+      });
+      setShowEditTxModal(false);
+      setEditingTx(null);
+      fetchData();
+      Platform.OS === 'web' ? window.alert('✅ Transacción actualizada') : Alert.alert('Éxito', 'Transacción actualizada');
+    } catch (error: any) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
+    }
+  };
+
+  const handleTxTickerChange = (text: string) => {
+    setTxTicker(text);
+    setTxCurrentPrice(null);
+    if (text.trim().length > 0) {
+      const seen = new Set();
+      const filtered = analysisHistory.filter((item: any) => {
+        if (seen.has(item.ticker)) return false;
+        seen.add(item.ticker);
+        return item.ticker.toLowerCase().includes(text.toLowerCase()) ||
+               item.company_name?.toLowerCase().includes(text.toLowerCase());
+      });
+      setTxSuggestions(filtered.slice(0, 5));
+      setShowTxSuggestions(filtered.length > 0);
+    } else {
+      setTxSuggestions([]);
+      setShowTxSuggestions(false);
+    }
+  };
+
+  const handleSelectTxTicker = async (item: any) => {
+    setTxTicker(item.ticker);
+    setShowTxSuggestions(false);
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/analysis/${item.id}`);
+      const data = res.data;
+      const price = data.metadata?.current_price || data.current_price;
+      if (price) {
+        setTxCurrentPrice(price);
+        setTxPrice(price.toFixed(2));
+      }
+    } catch (e) {}
   };
 
   const addTransaction = async () => {
     if (!txTicker.trim() || !txShares || !txPrice) {
-      Alert.alert('Error', 'Completa todos los campos requeridos');
+      Platform.OS === 'web' ? window.alert('Error: Completa todos los campos requeridos') : Alert.alert('Error', 'Completa todos los campos requeridos');
       return;
     }
     
@@ -324,39 +485,33 @@ export default function AccountScreen() {
       setShowAddTransaction(false);
       resetTransactionForm();
       fetchData();
-      Alert.alert('Éxito', 'Transacción registrada');
+      Platform.OS === 'web' ? window.alert('✅ Transacción registrada') : Alert.alert('Éxito', 'Transacción registrada');
     } catch (error: any) {
-      Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar la transacción');
+      Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar la transacción')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar la transacción');
     } finally {
       setSubmitting(false);
     }
   };
 
   const deleteTransaction = async (id: string) => {
-    Alert.alert(
-      'Eliminar Transacción',
-      '¿Eliminar esta transacción?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await axios.delete(`${BACKEND_URL}/api/portfolio/${id}`);
-              fetchData();
-              setShowTransactionHistory(false);
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo eliminar');
-            }
-          },
-        },
-      ]
-    );
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('¿Eliminar esta transacción?')
+      : await new Promise(resolve => Alert.alert('Eliminar Transacción', '¿Eliminar esta transacción?',
+          [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
+    if (!confirmed) return;
+    try {
+      await axios.delete(`${BACKEND_URL}/api/portfolio/${id}`);
+      fetchData();
+      setShowTransactionHistory(false);
+    } catch (error) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar') : Alert.alert('Error', 'No se pudo eliminar');
+    }
   };
 
   const resetWatchlistForm = () => {
     setNewTicker('');
+    setNewTickerCurrentPrice(null);
     setTargetBuyPrice('');
     setTargetSellPrice('');
     setNotifyOnChange(false);
@@ -383,7 +538,7 @@ export default function AccountScreen() {
 
   const addCashMovement = async () => {
     if (!cashAmount || parseFloat(cashAmount) <= 0) {
-      Alert.alert('Error', 'Ingresa un monto válido');
+      Platform.OS === 'web' ? window.alert('Error: Ingresa un monto válido') : Alert.alert('Error', 'Ingresa un monto válido');
       return;
     }
     
@@ -399,34 +554,27 @@ export default function AccountScreen() {
       setShowCashModal(false);
       resetCashForm();
       fetchData();
-      Alert.alert('Éxito', cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado');
+      Platform.OS === 'web' ? window.alert('✅ ' + (cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado')) : Alert.alert('Éxito', cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado');
     } catch (error: any) {
-      Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar el movimiento');
+      Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar el movimiento')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar el movimiento');
     } finally {
       setSubmitting(false);
     }
   };
 
   const deleteCashMovement = async (id: string) => {
-    Alert.alert(
-      'Eliminar Movimiento',
-      '¿Eliminar este movimiento de efectivo?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await axios.delete(`${BACKEND_URL}/api/portfolio/cash/${id}`);
-              fetchData();
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo eliminar');
-            }
-          },
-        },
-      ]
-    );
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('¿Eliminar este movimiento de efectivo?')
+      : await new Promise(resolve => Alert.alert('Eliminar Movimiento', '¿Eliminar este movimiento?',
+          [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
+    if (!confirmed) return;
+    try {
+      await axios.delete(`${BACKEND_URL}/api/portfolio/cash/${id}`);
+      fetchData();
+    } catch (error) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar') : Alert.alert('Error', 'No se pudo eliminar');
+    }
   };
 
   const formatCurrency = (value: number) => {
@@ -454,6 +602,12 @@ export default function AccountScreen() {
           <Text style={styles.currentPrice}>
             ${item.current_price?.toFixed(2) || '---'}
           </Text>
+          <TouchableOpacity
+            style={[styles.deleteButtonSmall, { backgroundColor: '#007AFF15', marginRight: 6 }]}
+            onPress={() => openEditWatchlist(item)}
+          >
+            <Ionicons name="create-outline" size={18} color="#007AFF" />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.deleteButtonSmall}
             onPress={() => removeFromWatchlist(item.id, item.ticker)}
@@ -1052,6 +1206,125 @@ export default function AccountScreen() {
     );
   };
 
+  const renderEditWatchlistModal = () => (
+    <Modal visible={showEditWatchlistModal} animationType="slide" transparent={true}>
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalContainer, { backgroundColor: colors.card }]}>
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              ✏️ Editar {editingWatchlistItem?.ticker}
+            </Text>
+            <TouchableOpacity onPress={() => setShowEditWatchlistModal(false)}>
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.modalScroll}>
+            {/* Precio actual informativo */}
+            {editingWatchlistItem?.current_price && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16, padding: 12, backgroundColor: colors.primary + '15', borderRadius: 10 }}>
+                <Ionicons name="pricetag" size={18} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>
+                  Precio actual: ${editingWatchlistItem.current_price.toFixed(2)}
+                </Text>
+              </View>
+            )}
+            <Text style={styles.inputLabel}>Precio objetivo de compra</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: 150.00"
+              value={editBuyPrice}
+              onChangeText={setEditBuyPrice}
+              keyboardType="decimal-pad"
+            />
+            <Text style={styles.inputLabel}>Precio objetivo de venta</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: 200.00"
+              value={editSellPrice}
+              onChangeText={setEditSellPrice}
+              keyboardType="decimal-pad"
+            />
+            <Text style={styles.inputLabel}>Umbral de alerta (%)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: 5"
+              value={editThreshold}
+              onChangeText={setEditThreshold}
+              keyboardType="decimal-pad"
+            />
+            <Text style={styles.inputLabel}>Notas</Text>
+            <TextInput
+              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
+              placeholder="Notas sobre esta acción..."
+              value={editNotes}
+              onChangeText={setEditNotes}
+              multiline
+            />
+            <TouchableOpacity
+              style={[styles.submitButton, { backgroundColor: colors.primary, marginTop: 8 }]}
+              onPress={saveEditWatchlist}
+            >
+              <Text style={styles.submitButtonText}>Guardar cambios</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const renderEditTxModal = () => (
+    <Modal visible={showEditTxModal} animationType="slide" transparent={true}>
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalContainer, { backgroundColor: colors.card }]}>
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              ✏️ Editar Transacción — {editingTx?.ticker}
+            </Text>
+            <TouchableOpacity onPress={() => setShowEditTxModal(false)}>
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.modalScroll}>
+            <Text style={styles.inputLabel}>Tipo</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+              {(['buy', 'sell'] as const).map(type => (
+                <TouchableOpacity
+                  key={type}
+                  style={{
+                    flex: 1, padding: 12, borderRadius: 10, alignItems: 'center',
+                    backgroundColor: editTxType === type ? (type === 'buy' ? '#34C759' : '#FF3B30') : colors.background,
+                    borderWidth: 1, borderColor: type === 'buy' ? '#34C759' : '#FF3B30',
+                  }}
+                  onPress={() => setEditTxType(type)}
+                >
+                  <Text style={{ fontWeight: '700', color: editTxType === type ? '#fff' : (type === 'buy' ? '#34C759' : '#FF3B30') }}>
+                    {type === 'buy' ? '📈 Compra' : '📉 Venta'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.inputLabel}>Fecha *</Text>
+            <TextInput style={styles.input} placeholder="YYYY-MM-DD" value={editTxDate} onChangeText={setEditTxDate} />
+            <Text style={styles.inputLabel}>Acciones *</Text>
+            <TextInput style={styles.input} placeholder="Ej: 10" value={editTxShares} onChangeText={setEditTxShares} keyboardType="decimal-pad" />
+            <Text style={styles.inputLabel}>Precio por acción *</Text>
+            <TextInput style={styles.input} placeholder="Ej: 150.00" value={editTxPrice} onChangeText={setEditTxPrice} keyboardType="decimal-pad" />
+            <Text style={styles.inputLabel}>Comisión</Text>
+            <TextInput style={styles.input} placeholder="Ej: 0.00" value={editTxCommission} onChangeText={setEditTxCommission} keyboardType="decimal-pad" />
+            <Text style={styles.inputLabel}>Notas</Text>
+            <TextInput style={[styles.input, { height: 70, textAlignVertical: 'top' }]} placeholder="Notas..." value={editTxNotes} onChangeText={setEditTxNotes} multiline />
+            <TouchableOpacity
+              style={[styles.submitButton, { backgroundColor: colors.primary, marginTop: 8 }]}
+              onPress={saveEditTx}
+            >
+              <Text style={styles.submitButtonText}>Guardar cambios</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderCashModal = () => (
     <Modal
       visible={showCashModal}
@@ -1360,14 +1633,59 @@ export default function AccountScreen() {
             
             <ScrollView style={styles.modalScroll}>
               <Text style={styles.inputLabel}>Ticker *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Ej: AAPL, GOOGL"
-                value={newTicker}
-                onChangeText={setNewTicker}
-                autoCapitalize="characters"
-              />
+              <View style={{ position: 'relative', zIndex: 999 }}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej: AAPL, GOOGL o nombre empresa"
+                  value={newTicker}
+                  onChangeText={handleWatchlistTickerChange}
+                  autoCapitalize="characters"
+                />
+                {showWatchlistSuggestions && watchlistSuggestions.length > 0 && (
+                  <View style={{
+                    position: 'absolute', top: 48, left: 0, right: 0,
+                    backgroundColor: '#fff', borderRadius: 10, borderWidth: 1,
+                    borderColor: '#E0E0E0', zIndex: 9999, elevation: 10,
+                    shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8,
+                  }}>
+                    {watchlistSuggestions.map((item: any, index: number) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={{
+                          flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10,
+                          borderBottomWidth: index < watchlistSuggestions.length - 1 ? 1 : 0,
+                          borderBottomColor: '#F0F0F0',
+                        }}
+                        onPress={() => handleSelectWatchlistTicker(item)}
+                      >
+                        <View style={{
+                          paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+                          backgroundColor: item.recommendation === 'COMPRAR' ? '#34C75922' : item.recommendation === 'VENDER' ? '#FF3B3022' : '#FF950022',
+                        }}>
+                          <Text style={{
+                            fontWeight: '700', fontSize: 12,
+                            color: item.recommendation === 'COMPRAR' ? '#34C759' : item.recommendation === 'VENDER' ? '#FF3B30' : '#FF9500',
+                          }}>{item.ticker}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '500', color: '#1D1D1F' }} numberOfLines={1}>{item.company_name}</Text>
+                          <Text style={{ fontSize: 11, color: '#8E8E93' }}>{item.recommendation} · {item.favorable_percentage?.toFixed(1)}%</Text>
+                        </View>
+                        <Text style={{ fontSize: 12, color: '#007AFF' }}>→</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
               
+              {newTickerCurrentPrice && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16, padding: 12, backgroundColor: colors.primary + '15', borderRadius: 10 }}>
+                  <Ionicons name="pricetag" size={18} color={colors.primary} />
+                  <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>
+                    Precio actual: ${newTickerCurrentPrice.toFixed(2)}
+                  </Text>
+                </View>
+              )}
               <Text style={styles.inputLabel}>Precio objetivo de compra</Text>
               <TextInput
                 style={styles.input}
@@ -1467,13 +1785,58 @@ export default function AccountScreen() {
               </View>
               
               <Text style={styles.inputLabel}>Ticker *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Ej: AAPL"
-                value={txTicker}
-                onChangeText={setTxTicker}
-                autoCapitalize="characters"
-              />
+              <View style={{ position: 'relative', zIndex: 999 }}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ej: AAPL o nombre empresa"
+                  value={txTicker}
+                  onChangeText={handleTxTickerChange}
+                  autoCapitalize="characters"
+                />
+                {showTxSuggestions && txSuggestions.length > 0 && (
+                  <View style={{
+                    position: 'absolute', top: 48, left: 0, right: 0,
+                    backgroundColor: colors.card, borderRadius: 10, borderWidth: 1,
+                    borderColor: colors.border, zIndex: 9999, elevation: 10,
+                    shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8,
+                  }}>
+                    {txSuggestions.map((item: any, index: number) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={{
+                          flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10,
+                          borderBottomWidth: index < txSuggestions.length - 1 ? 1 : 0,
+                          borderBottomColor: colors.border,
+                        }}
+                        onPress={() => handleSelectTxTicker(item)}
+                      >
+                        <View style={{
+                          paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+                          backgroundColor: item.recommendation === 'COMPRAR' ? '#34C75922' : item.recommendation === 'VENDER' ? '#FF3B3022' : '#FF950022',
+                        }}>
+                          <Text style={{
+                            fontWeight: '700', fontSize: 12,
+                            color: item.recommendation === 'COMPRAR' ? '#34C759' : item.recommendation === 'VENDER' ? '#FF3B30' : '#FF9500',
+                          }}>{item.ticker}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '500', color: colors.text }} numberOfLines={1}>{item.company_name}</Text>
+                          <Text style={{ fontSize: 11, color: colors.textSecondary }}>{item.recommendation} · {item.favorable_percentage?.toFixed(1)}%</Text>
+                        </View>
+                        <Text style={{ fontSize: 12, color: colors.primary }}>→</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+              {txCurrentPrice && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 8, padding: 12, backgroundColor: colors.primary + '15', borderRadius: 10 }}>
+                  <Ionicons name="pricetag" size={18} color={colors.primary} />
+                  <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>
+                    Precio actual: ${txCurrentPrice.toFixed(2)}
+                  </Text>
+                </View>
+              )}
               
               <Text style={styles.inputLabel}>Fecha de transacción *</Text>
               <TextInput
@@ -1589,12 +1952,20 @@ export default function AccountScreen() {
                         <Text style={styles.transactionTicker}>{tx.ticker}</Text>
                       )}
                     </View>
-                    <TouchableOpacity
-                      style={styles.deleteTransactionBtn}
-                      onPress={() => deleteTransaction(tx.id)}
-                    >
-                      <Ionicons name="trash-outline" size={18} color="#FF3B30" />
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={[styles.deleteTransactionBtn, { backgroundColor: '#007AFF15' }]}
+                        onPress={() => openEditTx(tx)}
+                      >
+                        <Ionicons name="create-outline" size={18} color="#007AFF" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.deleteTransactionBtn}
+                        onPress={() => deleteTransaction(tx.id)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   
                   <View style={styles.transactionDetails}>
@@ -1678,6 +2049,8 @@ export default function AccountScreen() {
       </Modal>
 
       {/* Cash Movement Modal */}
+      {renderEditWatchlistModal()}
+      {renderEditTxModal()}
       {renderCashModal()}
     </View>
   );

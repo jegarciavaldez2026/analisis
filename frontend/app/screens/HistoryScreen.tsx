@@ -6,12 +6,16 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  ScrollView,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+//const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001';
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? 'http://TU_IP_LOCAL:8001';
+
+type FilterType = 'TODOS' | 'COMPRAR' | 'MANTENER' | 'VENDER';
 
 interface HistoryItem {
   id: string;
@@ -20,17 +24,84 @@ interface HistoryItem {
   analysis_date: string;
   recommendation: string;
   favorable_percentage: number;
+  current_price: number;
+  price_change: number;
+  price_change_percent: number;
+}
+
+const FILTERS: { label: string; value: FilterType }[] = [
+  { label: 'Todos', value: 'TODOS' },
+  { label: 'COMPRAR', value: 'COMPRAR' },
+  { label: 'MANTENER', value: 'MANTENER' },
+  { label: 'VENDER', value: 'VENDER' },
+];
+
+// FUNCIÓN UTILITARIA - MOVIDA ARRIBA
+const getRecommendationColor = (r: string) => {
+  switch (r) {
+    case 'COMPRAR': return '#34C759';
+    case 'MANTENER': return '#FF9500';
+    case 'VENDER': return '#FF3B30';
+    default: return '#8E8E93';
+  }
+};
+
+// COMPONENTE HistoryCard - MOVIDO ANTES DE HistoryScreen
+function HistoryCard({ item }: { item: HistoryItem }) {
+  const isPositive = item.price_change >= 0;
+  const color = isPositive ? '#34C759' : '#FF3B30';
+  const arrow = isPositive ? '▲' : '▼';
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.topRow}>
+        <View style={styles.left}>
+          <Text style={styles.ticker}>{item.ticker}</Text>
+          <Text style={styles.companyName}>{item.company_name}</Text>
+          <Text style={styles.date}>
+            {new Date(item.analysis_date).toLocaleDateString('es-ES')}
+          </Text>
+        </View>
+
+        <View style={styles.priceBlock}>
+          <Text style={styles.price}>
+            ${item.current_price.toFixed(2)}
+          </Text>
+          <Text style={[styles.change, { color }]}>
+            {arrow} {item.price_change_percent.toFixed(2)}%
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.bottomRow}>
+        <Text style={styles.favorable}>
+          {item.favorable_percentage.toFixed(1)}% favorable
+        </Text>
+        <View style={[styles.badge, { backgroundColor: getRecommendationColor(item.recommendation) }]}>
+          <Text style={styles.badgeText}>{item.recommendation}</Text>
+        </View>
+      </View>
+    </View>
+  );
 }
 
 export default function HistoryScreen() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<FilterType>('TODOS');
 
   const fetchHistory = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/history`);
-      setHistory(response.data);
+      setLoading(true);
+      let url = `${BACKEND_URL}/api/history/enhanced?limit=50`;
+      
+      if (activeFilter !== 'TODOS') {
+        url += `&recommendation=${activeFilter}`;
+      }
+
+      const { data } = await axios.get(url);
+      setHistory(data);
     } catch (error) {
       console.error('Error fetching history:', error);
     } finally {
@@ -41,206 +112,94 @@ export default function HistoryScreen() {
 
   useEffect(() => {
     fetchHistory();
-  }, []);
+  }, [activeFilter]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchHistory();
   };
 
-  const getRecommendationColor = (recommendation: string) => {
-    switch (recommendation) {
-      case 'COMPRAR':
-        return '#34C759';
-      case 'MANTENER':
-        return '#FF9500';
-      case 'VENDER':
-        return '#FF3B30';
-      default:
-        return '#8E8E93';
-    }
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('es-ES', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-  const renderItem = ({ item }: { item: HistoryItem }) => (
-    <View style={styles.historyCard}>
-      <View style={styles.cardHeader}>
-        <View>
-          <Text style={styles.ticker}>{item.ticker}</Text>
-          <Text style={styles.companyName} numberOfLines={1}>
-            {item.company_name}
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.recommendationBadge,
-            { backgroundColor: getRecommendationColor(item.recommendation) },
-          ]}
-        >
-          <Text style={styles.recommendationText}>{item.recommendation}</Text>
-        </View>
-      </View>
-
-      <View style={styles.cardFooter}>
-        <View style={styles.percentageContainer}>
-          <Ionicons name="analytics" size={16} color="#007AFF" />
-          <Text style={styles.percentageText}>
-            {item.favorable_percentage.toFixed(1)}% favorable
-          </Text>
-        </View>
-        <View style={styles.dateContainer}>
-          <Ionicons name="time-outline" size={14} color="#8E8E93" />
-          <Text style={styles.dateText}>{formatDate(item.analysis_date)}</Text>
-        </View>
-      </View>
-    </View>
-  );
-
-  if (loading) {
+  if (loading && history.length === 0) {
     return (
-      <View style={styles.centerContainer}>
+      <View style={styles.center}>
         <ActivityIndicator size="large" color="#007AFF" />
-      </View>
-    );
-  }
-
-  if (history.length === 0) {
-    return (
-      <View style={styles.emptyContainer}>
-        <Ionicons name="folder-open-outline" size={80} color="#C7C7CC" />
-        <Text style={styles.emptyTitle}>No hay historial</Text>
-        <Text style={styles.emptySubtitle}>
-          Los análisis que realices aparecerán aquí
-        </Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
+      {/* Filtros */}
+      <ScrollView 
+        horizontal 
+        showsHorizontalScrollIndicator={false} 
+        style={styles.filterContainer}
+      >
+        {FILTERS.map((f) => (
+          <TouchableOpacity
+            key={f.value}
+            style={[
+              styles.filterPill,
+              activeFilter === f.value && styles.filterPillActive,
+            ]}
+            onPress={() => setActiveFilter(f.value)}
+          >
+            <Text style={activeFilter === f.value ? styles.filterTextActive : styles.filterText}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
       <FlashList
         data={history}
-        renderItem={renderItem}
-        estimatedItemSize={120}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#007AFF"
-          />
-        }
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => <HistoryCard item={item} />}
+        estimatedItemSize={160}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
+  container: { flex: 1, backgroundColor: '#F5F5F7' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  filterContainer: { maxHeight: 70, paddingVertical: 12, backgroundColor: '#fff' },
+  filterPill: {
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    marginHorizontal: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    backgroundColor: '#fff',
   },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-    paddingHorizontal: 40,
-  },
-  emptyTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    fontSize: 16,
-    color: '#6E6E73',
-    textAlign: 'center',
-  },
-  listContent: {
+  filterPillActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
+  filterText: { fontWeight: '600', color: '#555' },
+  filterTextActive: { color: '#fff', fontWeight: '600' },
+
+  card: {
+    backgroundColor: 'white',
+    margin: 12,
     padding: 16,
-  },
-  historyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  ticker: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#007AFF',
-    marginBottom: 2,
-  },
-  companyName: {
-    fontSize: 14,
-    color: '#6E6E73',
-    maxWidth: 200,
-  },
-  recommendationBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  recommendationText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  cardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F5F5F7',
-  },
-  percentageContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  percentageText: {
-    fontSize: 13,
-    color: '#007AFF',
-    fontWeight: '500',
-  },
-  dateContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  dateText: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
+  topRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  left: { flex: 1 },
+  ticker: { fontSize: 18, fontWeight: 'bold', color: '#007AFF' },
+  companyName: { fontSize: 13, color: '#666', marginTop: 2 },
+  date: { fontSize: 12, color: '#999', marginTop: 2 }, // NUEVO
+  priceBlock: { alignItems: 'flex-end' },
+  price: { fontSize: 17, fontWeight: '700' },
+  change: { fontSize: 13, fontWeight: '600', marginTop: 4 },
+  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, alignItems: 'center' },
+  favorable: { color: '#007AFF', fontWeight: '500' },
+  badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12 },
+  badgeText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
 });

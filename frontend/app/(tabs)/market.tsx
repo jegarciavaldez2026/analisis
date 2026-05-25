@@ -81,6 +81,8 @@ interface MarketData {
   eur_usd: CurrencyPair;
   bitcoin: CryptoIndicator | null;
   ethereum: CryptoIndicator | null;
+  hedera: CryptoIndicator | null;
+  solana: CryptoIndicator | null;
   market_hours: MarketHours[];
   fear_greed_level: string;
   market_sentiment: string;
@@ -209,6 +211,7 @@ export default function MarketScreen() {
     );
   }
 
+  
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
@@ -628,6 +631,38 @@ export default function MarketScreen() {
             </View>
           </View>
         )}
+
+        {/* Hedera */}
+        {data.hedera && (
+          <View style={[styles.cryptoCard, { borderColor: '#F7931A' }]}>
+            <View style={styles.cryptoHeader}>
+              <Text style={styles.cryptoEmoji}></Text>
+              <View>
+                <Text style={styles.cryptoName}>{data.hedera.name}</Text>
+                <Text style={styles.cryptoSymbol}>{data.hedera.symbol}</Text>
+              </View>
+            </View>
+            <Text style={styles.cryptoPrice}>${data.hedera.current_value.toLocaleString('en-US', { maximumFractionDigits: 6 })}</Text>
+            <View style={[
+              styles.cryptoChange,
+              { backgroundColor: data.hedera.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.hedera.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.hedera.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.cryptoChangeText,
+                { color: data.hedera.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.hedera.change >= 0 ? '+' : ''}{data.hedera.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+
+
         
         {/* Ethereum */}
         {data.ethereum && (
@@ -658,6 +693,40 @@ export default function MarketScreen() {
             </View>
           </View>
         )}
+
+        {/* Solana */}
+        {data.solana && (
+          <View style={[styles.cryptoCard, { borderColor: '#627EEA' }]}>
+            <View style={styles.cryptoHeader}>
+              <Text style={styles.cryptoEmoji}>Ξ</Text>
+              <View>
+                <Text style={styles.cryptoName}>{data.solana.name}</Text>
+                <Text style={styles.cryptoSymbol}>{data.solana.symbol}</Text>
+              </View>
+            </View>
+            <Text style={styles.cryptoPrice}>${data.solana.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
+            <View style={[
+              styles.cryptoChange,
+              { backgroundColor: data.solana.change >= 0 ? '#34C75920' : '#FF3B3020' }
+            ]}>
+              <Ionicons 
+                name={data.solana.change >= 0 ? 'trending-up' : 'trending-down'} 
+                size={14} 
+                color={data.solana.change >= 0 ? '#34C759' : '#FF3B30'} 
+              />
+              <Text style={[
+                styles.cryptoChangeText,
+                { color: data.solana.change >= 0 ? '#34C759' : '#FF3B30' }
+              ]}>
+                {data.solana.change >= 0 ? '+' : ''}{data.solana.change_percent.toFixed(2)}%
+              </Text>
+            </View>
+          </View>
+        )}
+
+
+
+
       </ScrollView>
 
       {/* Commodities Section */}

@@ -36,7 +36,7 @@ export default function InfoScreen() {
       <View style={styles.section}>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>📊 ¿Qué hace esta app?</Text>
         <Text style={[styles.sectionText, { backgroundColor: colors.card, color: colors.text }]}>
-          Esta aplicación analiza acciones que cotizan en bolsa utilizando más de 50 ratios financieros clave.
+          Esta aplicación analiza acciones que cotizan en bolsa utilizando más de 100 ratios financieros clave.
           Proporciona una recomendación clara (Comprar, Mantener o Vender) basada en métricas fundamentales.
           Incluye un asistente de IA para interpretar los resultados.
         </Text>

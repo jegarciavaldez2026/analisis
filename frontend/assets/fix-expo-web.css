@@ -1,0 +1,10 @@
+/* Fix Expo web overlay that blocks clicks */
+body > div[style*="visibility: hidden"] {
+  pointer-events: none !important;
+}
+body > div[style*="overflow: hidden"] {
+  pointer-events: none !important;
+}
+div[style*="z-index: -1"] {
+  pointer-events: none !important;
+}

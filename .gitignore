@@ -93,3 +93,7 @@ android-sdk/ -e
 # Environment files
 *.env
 *.env.*
+frontend/.metro-cache/
+*.Zone.Identifier
+node_modules/
+backend/server.py.backup

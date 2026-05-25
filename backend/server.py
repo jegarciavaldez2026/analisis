@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, APIRouter, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -6,14 +7,79 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import uuid
 from datetime import datetime, timedelta
 import yfinance as yf
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import timedelta
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
+from typing import Dict, List
+
+# ── Auth Config ───────────────────────────────────────────────────────────────
+SECRET_KEY = os.environ.get("SECRET_KEY", "finanalysis-secret-key-2026-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_DAYS = 30
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer(auto_error=False)
+import requests
+try:
+    yf.utils.requests = requests
+except Exception:
+    pass
 import numpy as np
 import pandas as pd
+import math
+
+def sanitize_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
 import asyncio
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+import httpx
+import os as _os
+OLLAMA_BASE_URL = _os.environ.get("OLLAMA_URL", "localhost:11434")
+OLLAMA_MODEL = _os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+
+class UserMessage:
+    def __init__(self, text: str):
+        self.text = text
+
+class LlmChat:
+    def __init__(self, api_key=None, session_id=None, system_message=None):
+        self.session_id = session_id
+        self.system_message = system_message
+        self.history = []
+        if system_message:
+            self.history.append({"role": "system", "content": system_message})
+
+    def with_model(self, provider=None, model=None):
+        return self
+
+    async def send_message(self, user_message) -> str:
+        self.history.append({"role": "user", "content": user_message.text})
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{OLLAMA_BASE_URL}/api/chat",
+                    json={"model": OLLAMA_MODEL, "messages": self.history, "stream": False, "options": {"num_predict": 300, "temperature": 0.1, "top_p": 0.9, "repeat_penalty": 1.1}}
+                )
+                response.raise_for_status()
+                data = response.json()
+                assistant_msg = data["message"]["content"]
+                self.history.append({"role": "assistant", "content": assistant_msg})
+                return assistant_msg
+        except Exception as e:
+            return "Lo siento, el asistente IA no está disponible en este momento."
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -22,6 +88,7 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -101,9 +168,8 @@ class HistoryItem(BaseModel):
     recommendation: str
     favorable_percentage: float
 
-# Helper Functions for Financial Calculations
+# ── Helper Functions ──────────────────────────────────────────────────────────
 def safe_divide(numerator, denominator, default=None):
-    """Safely divide two numbers, return default if division fails"""
     try:
         if denominator == 0 or denominator is None or numerator is None:
             return default
@@ -111,11 +177,10 @@ def safe_divide(numerator, denominator, default=None):
         if np.isnan(result) or np.isinf(result):
             return default
         return result
-    except:
+    except Exception:
         return default
 
 def get_cagr(start_value, end_value, periods, default=None):
-    """Calculate Compound Annual Growth Rate"""
     try:
         if start_value <= 0 or end_value <= 0 or periods <= 0:
             return default
@@ -123,526 +188,528 @@ def get_cagr(start_value, end_value, periods, default=None):
         if np.isnan(cagr) or np.isinf(cagr):
             return default
         return cagr
-    except:
+    except Exception:
         return default
 
-def calculate_ratios(ticker_data):
-    """Calculate all financial ratios"""
+def safe_float(value, default=0.0):
     try:
-        # Get financial statements
-        income_stmt = ticker_data.income_stmt
-        balance_sheet = ticker_data.balance_sheet
-        cash_flow = ticker_data.cash_flow
-        info = ticker_data.info
-        
-        # Convert to dict for easier access (most recent is first column)
-        if not income_stmt.empty:
-            income = income_stmt.iloc[:, 0].to_dict() if income_stmt.shape[1] > 0 else {}
-            income_prev = income_stmt.iloc[:, -1].to_dict() if income_stmt.shape[1] > 1 else {}
-        else:
-            income = {}
-            income_prev = {}
-            
-        if not balance_sheet.empty:
-            balance = balance_sheet.iloc[:, 0].to_dict() if balance_sheet.shape[1] > 0 else {}
-        else:
-            balance = {}
-            
-        if not cash_flow.empty:
-            cf = cash_flow.iloc[:, 0].to_dict() if cash_flow.shape[1] > 0 else {}
-        else:
-            cf = {}
-        
-        # Extract key financial data with safe fallbacks
-        total_revenue = income.get('Total Revenue', info.get('totalRevenue', 0))
-        gross_profit = income.get('Gross Profit', 0)
-        operating_income = income.get('Operating Income', 0)
-        ebit = income.get('EBIT', operating_income)
-        net_income = income.get('Net Income', info.get('netIncomeToCommon', 0))
-        
-        total_assets = balance.get('Total Assets', info.get('totalAssets', 0))
-        current_assets = balance.get('Current Assets', 0)
-        total_liabilities = balance.get('Total Liabilities Net Minority Interest', 0)
-        current_liabilities = balance.get('Current Liabilities', 0)
-        total_equity = balance.get('Total Equity Gross Minority Interest', balance.get('Stockholders Equity', info.get('totalStockholderEquity', 0)))
-        cash = balance.get('Cash And Cash Equivalents', 0)
-        retained_earnings = balance.get('Retained Earnings', 0)
-        total_debt = balance.get('Total Debt', info.get('totalDebt', 0))
-        
-        operating_cf = cf.get('Operating Cash Flow', cf.get('Total Cash From Operating Activities', 0))
-        capex = abs(cf.get('Capital Expenditure', cf.get('Capital Expenditures', 0)))
+        return default if value is None else float(value)
+    except (TypeError, ValueError):
+        return default
+
+# =============================================================================
+#  BUG FIX 1 — Acceso correcto a filas de DataFrames de yFinance
+#  El problema original: _col() usaba df.get(key) que en un DataFrame busca
+#  columnas (años) NO filas (métricas). Corrección: df.loc[key].
+# =============================================================================
+
+def _get_row(df: pd.DataFrame, *keys: str) -> list:
+    """
+    Extrae una FILA del DataFrame de yFinance por nombre de métrica.
+    En yFinance: filas = métricas, columnas = años fiscales.
+    Busca por alias en orden; devuelve lista de floats o lista de ceros.
+    """
+    if df is None or df.empty:
+        return []
+    for key in keys:
+        try:
+            if key in df.index:
+                vals = df.loc[key].values
+                return [sanitize_float(v) for v in vals]
+        except Exception:
+            pass
+    return [0.0] * (df.shape[1] if df.shape[1] > 0 else 1)
+
+
+# =============================================================================
+#  BUG FIX 2 — CAGR tolerante a negativos y turnarounds
+#  El problema original: cagr_n() devolvía 0 si start<=0 o end<=0,
+#  eliminando empresas con FCF/EPS negativo en algún año (muy común).
+# =============================================================================
+
+def cagr_signed(start: float, end: float, years: int) -> Tuple[Optional[float], str]:
+    """
+    Calcula CAGR manejando valores negativos.
+    Returns: (valor_fraccion_o_None, nota)
+    Notas: 'ok', 'turnaround', 'deterioro', 'inicio_cero', 'insuficiente', 'error'
+    """
+    if years < 1:
+        return 0.0, "insuficiente"
+    if start == 0.0:
+        return 0.0, "inicio_cero"
+    if start < 0 and end > 0:
+        return None, "turnaround"   # mejora de negativo a positivo
+    if start > 0 and end < 0:
+        return None, "deterioro"    # deterioro de positivo a negativo
+    try:
+        ratio = abs(end) / abs(start)
+        if ratio <= 0:
+            return 0.0, "error"
+        raw = (ratio ** (1.0 / years)) - 1.0
+        if end < start:
+            raw = -raw
+        if math.isnan(raw) or math.isinf(raw):
+            return 0.0, "error"
+        return round(raw, 6), "ok"
+    except Exception:
+        return 0.0, "error"
+
+# =============================================================================
+#  calculate_ratios() — VERSIÓN CORREGIDA + 15 NUEVOS RATIOS
+#
+#  BUGS CORREGIDOS:
+#    1. _get_row() con df.loc[] en lugar de df.get()
+#    2. cagr_signed() tolera FCF/EPS negativos
+#    3. PEG funciona correctamente y detecta turnarounds
+#
+#  15 NUEVOS RATIOS (criterio buy-side / fondos de inversión):
+#    Rentabilidad:  ROTE, EBITDA Margin, Incremental ROIC
+#    Eficiencia:    Gross Profit/Employee, Revenue/Employee, DSO, DIO, DPO, CCC
+#    Valoración:    EV/EBITDA, P/FCF, Graham Number, Magic Formula Score
+#    Leverage:      Net Debt/EBITDA, DSCR
+#    Valoración adv: EPV (Earnings Power Value)
+# =============================================================================
+
+def calculate_ratios(ticker_data):
+    """Calcula todos los ratios financieros — versión corregida + 15 nuevos."""
+    try:
+        def _get_stmt(primary_attr, fallback_attr=None):
+            df = getattr(ticker_data, primary_attr, None)
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                if fallback_attr:
+                    df = getattr(ticker_data, fallback_attr, None)
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                return pd.DataFrame()
+            return df
+
+        income_stmt   = _get_stmt('income_stmt', 'financials')
+        balance_sheet = _get_stmt('balance_sheet', 'balancesheet')
+        cash_flow     = _get_stmt('cash_flow', 'cashflow')
+        info          = ticker_data.info or {}
+
+        def _n(d, *keys, default=0):
+            for k in keys:
+                v = d.get(k)
+                if v is not None:
+                    try:
+                        f = float(v)
+                        if not (math.isnan(f) or math.isinf(f)):
+                            return f
+                    except (TypeError, ValueError):
+                        pass
+            return default
+
+        # ── Diccionarios columna más reciente ─────────────────────────────────
+        income      = income_stmt.iloc[:, 0].to_dict()  if not income_stmt.empty  and income_stmt.shape[1]  > 0 else {}
+        income_prev = income_stmt.iloc[:, -1].to_dict() if not income_stmt.empty  and income_stmt.shape[1]  > 1 else {}
+        balance     = balance_sheet.iloc[:, 0].to_dict() if not balance_sheet.empty and balance_sheet.shape[1] > 0 else {}
+        cf          = cash_flow.iloc[:, 0].to_dict()    if not cash_flow.empty    and cash_flow.shape[1]    > 0 else {}
+
+        # ── Income Statement ──────────────────────────────────────────────────
+        total_revenue    = _n(income, 'Total Revenue') or _n(info, 'totalRevenue')
+        gross_profit     = _n(income, 'Gross Profit')
+        operating_income = _n(income, 'Operating Income')
+        ebit             = _n(income, 'EBIT') or operating_income
+        net_income       = _n(income, 'Net Income') or _n(info, 'netIncomeToCommon')
+        interest_expense = abs(_n(income, 'Interest Expense', 'Interest Expense Non Operating'))
+        rd_expense       = _n(income, 'Research Development', 'Research And Development')
+        cogs_val         = _n(income, 'Cost Of Revenue')
+        operating_expenses = _n(income, 'Operating Expense')
+
+        # ── Balance Sheet ─────────────────────────────────────────────────────
+        total_assets        = _n(balance, 'Total Assets') or _n(info, 'totalAssets')
+        current_assets      = _n(balance, 'Current Assets')
+        total_liabilities   = _n(balance, 'Total Liabilities Net Minority Interest')
+        current_liabilities = _n(balance, 'Current Liabilities')
+        total_equity        = (_n(balance, 'Total Equity Gross Minority Interest', 'Stockholders Equity')
+                               or _n(info, 'totalStockholderEquity'))
+        cash                = _n(balance, 'Cash And Cash Equivalents')
+        retained_earnings   = _n(balance, 'Retained Earnings')
+        total_debt          = _n(balance, 'Total Debt') or _n(info, 'totalDebt')
+        inventory           = _n(balance, 'Inventory')
+        accounts_receivable = _n(balance, 'Accounts Receivable')
+        accounts_payable    = _n(balance, 'Accounts Payable')
+        goodwill            = _n(balance, 'Goodwill')
+        intangibles         = goodwill + _n(balance, 'Intangible Assets')
+        net_ppe             = _n(balance, 'Net PPE', 'Property Plant Equipment')
+        long_term_debt      = _n(balance, 'Long Term Debt') or total_debt
+        tangible_equity     = total_equity - intangibles if total_equity > 0 else 0
+
+        # ── Cash Flow ─────────────────────────────────────────────────────────
+        operating_cf   = _n(cf, 'Operating Cash Flow', 'Total Cash From Operating Activities')
+        capex          = abs(_n(cf, 'Capital Expenditure', 'Capital Expenditures'))
+        depreciation   = abs(_n(cf, 'Depreciation And Amortization', 'Depreciation'))
+        dividends_paid = abs(_n(cf, 'Cash Dividends Paid'))
         free_cash_flow = operating_cf - capex
-        
-        # Market data
-        market_cap = info.get('marketCap', 0)
-        enterprise_value = info.get('enterpriseValue', market_cap)
-        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-        shares_outstanding = info.get('sharesOutstanding', 0)
-        
-        # PE ratio and EPS
-        pe_ratio = info.get('trailingPE', safe_divide(current_price * shares_outstanding, net_income) if net_income > 0 else None)
-        eps = info.get('trailingEps', safe_divide(net_income, shares_outstanding) if shares_outstanding > 0 else 0)
-        
-        # Calculate net debt
-        net_debt = total_debt - cash
-        
-        # Calculate margins
-        gross_margin = safe_divide(gross_profit, total_revenue, 0) * 100
-        net_margin = safe_divide(net_income, total_revenue, 0) * 100
-        operating_margin = safe_divide(operating_income, total_revenue, 0) * 100
-        ebit_margin = safe_divide(ebit, total_revenue, 0) * 100
-        
-        # Calculate profitability ratios
-        roe = safe_divide(net_income, total_equity, 0) * 100 if total_equity > 0 else 0
-        roa = safe_divide(net_income, total_assets, 0) * 100
-        
-        # ROCE (Return on Capital Employed)
-        capital_employed = total_assets - current_liabilities if current_liabilities else total_assets
-        roce = safe_divide(ebit, capital_employed, 0) * 100 if capital_employed > 0 else 0
-        
-        # Calculate invested capital and ROIC
-        invested_capital = (total_equity + total_debt) if total_equity and total_debt else 0
-        nopat = ebit * 0.79  # Assuming 21% tax rate
-        roic = safe_divide(nopat, invested_capital, 0) * 100 if invested_capital > 0 else 0
-        nopat_margin = safe_divide(nopat, total_revenue, 0) * 100 if total_revenue > 0 else 0
-        
-        # CROIC (Cash Return on Invested Capital)
-        croic = safe_divide(operating_cf, invested_capital, 0) * 100 if invested_capital > 0 else 0
-        
-        # Calculate liquidity ratios
-        current_ratio = safe_divide(current_assets, current_liabilities, 0)
-        quick_assets = current_assets - balance.get('Inventory', 0)
-        quick_ratio = safe_divide(quick_assets, current_liabilities, 0)
-        cash_ratio = safe_divide(cash, current_liabilities, 0)
-        
-        # Calculate leverage ratios
-        debt_to_equity = safe_divide(total_liabilities, total_equity, 0) * 100 if total_equity > 0 else 0
-        debt_ratio = safe_divide(total_liabilities, total_assets, 0)
-        
-        # Calculate valuation ratios
-        ev_ebit = safe_divide(enterprise_value, ebit) if ebit != 0 else None
-        ev_sales = safe_divide(enterprise_value, total_revenue) if total_revenue > 0 else None
-        price_to_sales = safe_divide(market_cap, total_revenue) if total_revenue > 0 else None
-        earning_yield = safe_divide(ebit, enterprise_value, 0) * 100 if enterprise_value > 0 else 0
-        
-        # Calculate cash flow ratios
-        fcf_margin = safe_divide(free_cash_flow, total_revenue, 0) * 100
-        operating_cf_to_sales = safe_divide(operating_cf, total_revenue, 0) * 100
-        capex_to_revenue = safe_divide(capex, total_revenue, 0) * 100
-        capex_to_ocf = safe_divide(capex, operating_cf, 0) * 100 if operating_cf != 0 else 0
-        
-        # Calculate other important ratios
+
+        # ── Market Data ───────────────────────────────────────────────────────
+        market_cap          = _n(info, 'marketCap')
+        enterprise_value    = _n(info, 'enterpriseValue') or market_cap
+        current_price       = _n(info, 'currentPrice', 'regularMarketPrice')
+        shares_outstanding  = _n(info, 'sharesOutstanding')
+        beta                = _n(info, 'beta', default=1.0)
+        dividend_rate       = _n(info, 'dividendRate')
+        div_yield_val       = _n(info, 'dividendYield')
+        full_time_employees = _n(info, 'fullTimeEmployees')
+
+        fifty_two_week_high = _n(info, 'fiftyTwoWeekHigh') or current_price or 0
+        fifty_two_week_low  = _n(info, 'fiftyTwoWeekLow')  or current_price or 0
+
+        # ── PE / EPS ──────────────────────────────────────────────────────────
+        pe_ratio = _n(info, 'trailingPE') or None
+        if pe_ratio == 0:
+            pe_ratio = None
+        if pe_ratio is None and net_income and net_income > 0 and shares_outstanding > 0:
+            pe_ratio = safe_divide(current_price * shares_outstanding, net_income)
+
+        eps = _n(info, 'trailingEps')
+        if eps == 0 and shares_outstanding > 0:
+            eps = safe_divide(net_income, shares_outstanding, 0)
+
+        # ── Derivados ─────────────────────────────────────────────────────────
+        net_debt        = total_debt - cash
         working_capital = current_assets - current_liabilities
-        asset_turnover = safe_divide(total_revenue, total_assets, 0)
-        equity_multiplier = safe_divide(total_assets, total_equity, 0) if total_equity > 0 else 0
-        
-        # NEW RATIOS
-        # Beta
-        beta = info.get('beta', 0)
-        
-        # Interest Coverage Ratio
-        interest_expense = abs(income.get('Interest Expense', income.get('Interest Expense Non Operating', 0)))
-        interest_coverage = safe_divide(ebit, interest_expense) if interest_expense > 0 else 0
-        
-        # Capex / Depreciation & Amortization
-        depreciation = abs(cf.get('Depreciation And Amortization', cf.get('Depreciation', 0)))
-        capex_to_da = safe_divide(capex, depreciation) if depreciation > 0 else 0
-        
-        # Goodwill in Assets
-        goodwill = balance.get('Goodwill', 0)
-        goodwill_to_assets = safe_divide(goodwill, total_assets, 0) * 100
-        
-        # Cash Flow to Debt Ratio
-        cash_flow_to_debt = safe_divide(operating_cf, total_debt, 0) * 100 if total_debt > 0 else 0
-        
-        # WACC approximation (simplified)
-        cost_of_equity = 0.10  # Assumed 10%
-        cost_of_debt = safe_divide(interest_expense, total_debt, 0.05) if total_debt > 0 else 0.05
-        tax_rate = 0.21  # Assumed corporate tax rate
-        total_capital = total_equity + total_debt if total_equity > 0 and total_debt > 0 else 1
-        weight_equity = safe_divide(total_equity, total_capital, 0)
-        weight_debt = safe_divide(total_debt, total_capital, 0)
-        wacc = (weight_equity * cost_of_equity + weight_debt * cost_of_debt * (1 - tax_rate)) * 100
-        
-        # ROIC vs WACC spread
-        roic_wacc_spread = roic - wacc
-        
-        # EV/CI (Enterprise Value / Capital Invested)
-        ev_ci = safe_divide(enterprise_value, invested_capital) if invested_capital > 0 else None
-        
-        # FCF/EBITDA
+        quick_assets    = current_assets - inventory
+        work_cap        = working_capital
+
+        # ── EBITDA ────────────────────────────────────────────────────────────
         ebitda = ebit + depreciation if depreciation > 0 else ebit
-        fcf_to_ebitda = safe_divide(free_cash_flow, ebitda, 0) * 100 if ebitda != 0 else 0
-        
-        # KTO (Capital de Trabajo Operativo neto sobre ventas)
-        accounts_receivable = balance.get('Accounts Receivable', 0)
-        inventory = balance.get('Inventory', 0)
-        accounts_payable = balance.get('Accounts Payable', 0)
-        operating_working_capital = accounts_receivable + inventory - accounts_payable
-        kto = safe_divide(operating_working_capital, total_revenue, 0) if total_revenue > 0 else 0
-        
-        # 52-Week High/Low metrics
-        fifty_two_week_high = info.get('fiftyTwoWeekHigh', current_price)
-        fifty_two_week_low = info.get('fiftyTwoWeekLow', current_price)
-        pct_below_52w_high = ((fifty_two_week_high - current_price) / fifty_two_week_high) * 100 if fifty_two_week_high > 0 else 0
-        pct_above_52w_low = ((current_price - fifty_two_week_low) / fifty_two_week_low) * 100 if fifty_two_week_low > 0 else 0
-        
-        # Sharpe Ratio calculation
-        # Get historical price data for 1 year
+
+        # ── Márgenes ──────────────────────────────────────────────────────────
+        gross_margin     = safe_divide(gross_profit, total_revenue, 0) * 100
+        net_margin       = safe_divide(net_income, total_revenue, 0) * 100
+        operating_margin = safe_divide(operating_income, total_revenue, 0) * 100
+        ebit_margin      = safe_divide(ebit, total_revenue, 0) * 100
+        # ✦ NUEVO: EBITDA Margin — estándar de industria para comparación entre sectores
+        ebitda_margin    = safe_divide(ebitda, total_revenue, 0) * 100
+
+        # ── Rentabilidad ──────────────────────────────────────────────────────
+        roe  = safe_divide(net_income, total_equity, 0) * 100 if total_equity else 0
+        roa  = safe_divide(net_income, total_assets, 0) * 100
+
+        capital_employed = (total_assets - current_liabilities) if current_liabilities else total_assets
+        roce = safe_divide(ebit, capital_employed, 0) * 100 if capital_employed > 0 else 0
+
+        invested_capital = (total_equity + total_debt) if (total_equity and total_debt) else 0
+        nopat            = ebit * 0.79
+        roic             = safe_divide(nopat, invested_capital, 0) * 100 if invested_capital > 0 else 0
+        nopat_margin     = safe_divide(nopat, total_revenue, 0) * 100 if total_revenue > 0 else 0
+        croic            = safe_divide(operating_cf, invested_capital, 0) * 100 if invested_capital > 0 else 0
+
+        # ✦ NUEVO 1: ROTE — Return on Tangible Equity
+        # KPI estándar en bancos y análisis de calidad de capital; excluye goodwill e intangibles
+        rote = safe_divide(net_income, tangible_equity, 0) * 100 if tangible_equity > 0 else 0
+
+        # ✦ NUEVO 2: Gross Profit per Employee
+        # Eficiencia operativa por capita — usado en SaaS, tech y análisis de escalabilidad
+        gross_profit_per_employee = safe_divide(gross_profit, full_time_employees, 0) if full_time_employees > 0 else 0
+
+        # ✦ NUEVO 15: Revenue per Employee
+        # Productividad de la fuerza laboral — diferencia modelos asset-light de intensivos
+        revenue_per_employee = safe_divide(total_revenue, full_time_employees) if full_time_employees > 0 else None
+
+        # ── Liquidez ──────────────────────────────────────────────────────────
+        current_ratio = safe_divide(current_assets, current_liabilities, 0)
+        quick_ratio   = safe_divide(quick_assets, current_liabilities, 0)
+        cash_ratio    = safe_divide(cash, current_liabilities, 0)
+
+        # ── Apalancamiento ────────────────────────────────────────────────────
+        debt_to_equity    = safe_divide(total_liabilities, total_equity, 0) * 100 if total_equity else 0
+        debt_ratio        = safe_divide(total_liabilities, total_assets, 0)
+        equity_multiplier = safe_divide(total_assets, total_equity, 0) if total_equity else 0
+        de_ratio          = safe_divide(total_debt, total_equity, 0) if total_equity > 0 else 0
+        lt_debt_cap       = safe_divide(long_term_debt, (total_debt + total_equity)) \
+                            if (total_debt + total_equity) > 0 else 0
+        net_debt_to_ebit  = safe_divide(net_debt, ebit) if ebit != 0 else None
+
+        # ✦ NUEVO 3: Net Debt / EBITDA
+        # Estándar de crédito, covenants bancarios y rating agencies (Moody's, S&P)
+        net_debt_to_ebitda = safe_divide(net_debt, ebitda) if ebitda > 0 else None
+
+        # ✦ NUEVO 4: DSCR — Debt Service Coverage Ratio
+        # Capacidad de servicio de deuda = EBITDA / Intereses; KPI de crédito fundamental
+        dscr = safe_divide(ebitda, interest_expense) if interest_expense > 0 else None
+
+        # ── Valoración ────────────────────────────────────────────────────────
+        ev_ebit        = safe_divide(enterprise_value, ebit) if ebit != 0 else None
+        ev_sales       = safe_divide(enterprise_value, total_revenue) if total_revenue > 0 else None
+        price_to_sales = safe_divide(market_cap, total_revenue) if total_revenue > 0 else None
+        earning_yield  = safe_divide(ebit, enterprise_value, 0) * 100 if enterprise_value > 0 else 0
+        ev_ci          = safe_divide(enterprise_value, invested_capital) if invested_capital > 0 else None
+        ev_gp          = safe_divide(enterprise_value, gross_profit) if gross_profit > 0 else None
+        ev_cfo_val     = safe_divide(enterprise_value, operating_cf) if operating_cf > 0 else None
+        ebit_ev_r      = safe_divide(ebit, enterprise_value) if enterprise_value > 0 else 0
+        inventory_turnover = safe_divide(cogs_val, inventory, 0) if inventory > 0 else 0
+
+        book_value_per_share = safe_divide(total_equity, shares_outstanding) if shares_outstanding > 0 else 0
+        pb_ratio       = safe_divide(current_price, book_value_per_share) if book_value_per_share > 0 else None
+        dividend_yield = safe_divide(dividend_rate, current_price, 0) * 100 if current_price > 0 else 0
+        payout_ratio   = safe_divide(dividends_paid, net_income, 0) * 100 if net_income > 0 else 0
+        tobins_q       = safe_divide(market_cap + total_liabilities, total_assets, 0) if total_assets > 0 else 0
+
+        # ✦ NUEVO 5: EV/EBITDA — múltiplo más usado en M&A, LBO y análisis buy-side
+        ev_ebitda = safe_divide(enterprise_value, ebitda) if ebitda > 0 else None
+
+        # ✦ NUEVO 6: Price/FCF — valoración sobre flujo real generado, más fiable que P/E
+        price_to_fcf = safe_divide(market_cap, free_cash_flow) if free_cash_flow > 0 else None
+
+        # ✦ NUEVO 7: Graham Number — precio justo clásico de Benjamin Graham
+        # sqrt(22.5 × EPS × Book Value per Share)
+        graham_number = None
+        if eps and eps > 0 and book_value_per_share and book_value_per_share > 0:
+            graham_raw = 22.5 * eps * book_value_per_share
+            if graham_raw > 0:
+                graham_number = round(math.sqrt(graham_raw), 2)
+
+        # ✦ NUEVO 8: Magic Formula Score (Greenblatt)
+        # Combina Earnings Yield (EBIT/EV) + ROIC para ordenar el universo de acciones
+        magic_formula_score = None
+        if ebit_ev_r and roic:
+            magic_formula_score = round((ebit_ev_r * 100) + roic, 2)
+
+        # ── Flujo de Caja ─────────────────────────────────────────────────────
+        fcf_margin            = safe_divide(free_cash_flow, total_revenue, 0) * 100
+        operating_cf_to_sales = safe_divide(operating_cf, total_revenue, 0) * 100
+        capex_to_revenue      = safe_divide(capex, total_revenue, 0) * 100
+        capex_to_ocf          = safe_divide(capex, operating_cf, 0) * 100 if operating_cf != 0 else 0
+        fcf_to_ebitda         = safe_divide(free_cash_flow, ebitda, 0) * 100 if ebitda != 0 else 0
+        cash_flow_to_debt     = safe_divide(operating_cf, total_debt, 0) * 100 if total_debt > 0 else 0
+        fcf_sales             = safe_divide(free_cash_flow, total_revenue, 0)
+        ocf_margin_r          = safe_divide(operating_cf, total_revenue, 0)
+        capex_margin_r        = safe_divide(capex, total_revenue, 0)
+        ccf_val               = operating_cf - capex
+        ev_fcf_r              = safe_divide(enterprise_value, free_cash_flow) if free_cash_flow > 0 else None
+        ebit_fcf_ratio        = safe_divide(ebit, free_cash_flow) if free_cash_flow != 0 else None
+        accrual_r             = safe_divide(operating_cf, net_income) if net_income != 0 else 0
+        capex_ni              = safe_divide(capex, net_income) if net_income > 0 else 0
+        capex_ocf_r           = safe_divide(capex, operating_cf, 0) if operating_cf != 0 else 0
+
+        # ── Eficiencia ────────────────────────────────────────────────────────
+        asset_turnover    = safe_divide(total_revenue, total_assets, 0)
+        capex_to_da       = safe_divide(capex, depreciation) if depreciation > 0 else 0
+        goodwill_to_assets = safe_divide(goodwill, total_assets, 0) * 100
+        kto_wc            = accounts_receivable + inventory - accounts_payable
+        kto               = safe_divide(kto_wc, total_revenue, 0) if total_revenue > 0 else 0
+        sales_fa          = safe_divide(total_revenue, net_ppe) if net_ppe > 0 else 0
+        sales_eq          = safe_divide(total_revenue, total_equity) if total_equity > 0 else 0
+        wc_turn           = 365 * safe_divide(working_capital, cogs_val) if cogs_val > 0 else 0
+        wc_cl             = safe_divide(working_capital, current_liabilities) if current_liabilities > 0 else 0
+        wc_prod           = safe_divide(total_revenue, working_capital) if working_capital != 0 else 0
+        ncavps            = safe_divide(
+            (current_assets - 1.25 * current_liabilities - total_debt),
+            shares_outstanding
+        ) if shares_outstanding > 0 else 0
+        roe_dy            = roe * div_yield_val if div_yield_val else 0
+        rd_gp             = safe_divide(rd_expense, gross_profit) if gross_profit > 0 else 0
+        ad_fixed_ratio    = safe_divide(net_ppe, total_assets) if total_assets > 0 else 0
+        ktno_eq           = safe_divide(intangibles, total_equity) if total_equity > 0 else 0
+        operating_expense_ratio = safe_divide(operating_expenses, total_revenue, 0) if total_revenue > 0 else 0
+        sloan_ratio       = safe_divide(net_income - operating_cf, total_assets, 0) if total_assets > 0 else 0
+
+        # ✦ NUEVO 9: DSO — Days Sales Outstanding
+        # Días de cobro; <30 excelente, >60 preocupante; usado en análisis de capital circulante
+        dso = safe_divide(accounts_receivable * 365, total_revenue) if total_revenue > 0 else None
+
+        # ✦ NUEVO 10: DIO — Days Inventory Outstanding
+        # Días de inventario; bajo = alta rotación y menor riesgo de obsolescencia
+        dio = safe_divide(inventory * 365, cogs_val) if cogs_val > 0 else None
+
+        # ✦ NUEVO 11: DPO — Days Payable Outstanding
+        # Días de pago; mayor DPO = más poder negociador con proveedores
+        dpo = safe_divide(accounts_payable * 365, cogs_val) if cogs_val > 0 else None
+
+        # ✦ NUEVO 12: CCC — Cash Conversion Cycle = DSO + DIO - DPO
+        # Negativo = cobra antes de pagar (ventaja estructural como Amazon/Walmart)
+        ccc = None
+        if dso is not None and dio is not None and dpo is not None:
+            ccc = round(dso + dio - dpo, 1)
+
+        # ── WACC ──────────────────────────────────────────────────────────────
+        cost_of_equity = 0.10
+        cost_of_debt   = safe_divide(interest_expense, total_debt, 0.05) if total_debt > 0 else 0.05
+        tax_rate_w     = 0.21
+        total_capital  = total_equity + total_debt if (total_equity and total_debt) else 1
+        weight_equity  = safe_divide(total_equity, total_capital, 0)
+        weight_debt    = safe_divide(total_debt, total_capital, 0)
+        wacc           = (weight_equity * cost_of_equity +
+                          weight_debt * cost_of_debt * (1 - tax_rate_w)) * 100
+        roic_wacc_spread = roic - wacc
+
+        # ✦ NUEVO 13: Incremental ROIC (iROIC)
+        # Retorno sobre capital INCREMENTAL — KPI clave en análisis de calidad:
+        # si iROIC < WACC, el crecimiento destruye valor aunque ROIC sea alto
+        incremental_roic = None
+        try:
+            if (not income_stmt.empty and income_stmt.shape[1] >= 2 and
+                    not balance_sheet.empty and balance_sheet.shape[1] >= 2):
+                ebit_prev_dict = income_stmt.iloc[:, 1].to_dict()
+                bal_prev_dict  = balance_sheet.iloc[:, 1].to_dict()
+                def _np(d, *keys):
+                    for k in keys:
+                        v = d.get(k)
+                        if v is not None:
+                            try:
+                                f = float(v)
+                                if not (math.isnan(f) or math.isinf(f)):
+                                    return f
+                            except Exception:
+                                pass
+                    return 0
+                ebit_prev   = _np(ebit_prev_dict, 'EBIT', 'Operating Income')
+                equity_prev = _np(bal_prev_dict, 'Total Equity Gross Minority Interest', 'Stockholders Equity')
+                debt_prev   = _np(bal_prev_dict, 'Total Debt')
+                ic_prev     = equity_prev + debt_prev
+                nopat_curr  = ebit * 0.79
+                nopat_prev  = ebit_prev * 0.79
+                delta_nopat = nopat_curr - nopat_prev
+                delta_ic    = invested_capital - ic_prev
+                if abs(delta_ic) > 1000:
+                    incremental_roic = safe_divide(delta_nopat, delta_ic) * 100
+        except Exception as e:
+            logging.debug(f"iROIC calculation skipped: {e}")
+
+        interest_coverage = safe_divide(ebit, interest_expense) if interest_expense > 0 else 0
+
+        # ── Precio 52 semanas ─────────────────────────────────────────────────
+        pct_below_52w_high = (
+            ((fifty_two_week_high - current_price) / fifty_two_week_high) * 100
+            if fifty_two_week_high > 0 and current_price >= 0 else 0
+        )
+        pct_above_52w_low = (
+            ((current_price - fifty_two_week_low) / fifty_two_week_low) * 100
+            if fifty_two_week_low > 0 and current_price >= 0 else 0
+        )
+
+        # ── Sharpe Ratio ──────────────────────────────────────────────────────
         try:
             history_1y = yf.Ticker(ticker_data.ticker).history(period="1y")
             if not history_1y.empty and len(history_1y) > 20:
-                # Calculate daily returns
-                daily_returns = history_1y['Close'].pct_change().dropna()
-                
-                # Annualized return
-                mean_daily_return = daily_returns.mean()
-                annualized_return = (1 + mean_daily_return) ** 252 - 1  # 252 trading days
-                
-                # Annualized volatility (standard deviation)
-                daily_std = daily_returns.std()
+                daily_returns         = history_1y['Close'].pct_change().dropna()
+                mean_daily_return     = daily_returns.mean()
+                annualized_return     = (1 + mean_daily_return) ** 252 - 1
+                daily_std             = daily_returns.std()
                 annualized_volatility = daily_std * np.sqrt(252)
-                
-                # Risk-free rate (using 10-year treasury yield approximation)
-                risk_free_rate = 0.04  # 4% assumption
-                
-                # Sharpe Ratio = (Return - Risk Free Rate) / Volatility
-                sharpe_ratio = (annualized_return - risk_free_rate) / annualized_volatility if annualized_volatility > 0 else 0
+                risk_free_rate        = 0.04
+                sharpe_ratio = (
+                    (annualized_return - risk_free_rate) / annualized_volatility
+                    if annualized_volatility > 0 else 0
+                )
             else:
-                sharpe_ratio = 0
-                annualized_return = 0
-                annualized_volatility = 0
+                sharpe_ratio = annualized_return = annualized_volatility = 0
         except Exception as e:
             logging.warning(f"Sharpe ratio calculation error: {str(e)}")
-            sharpe_ratio = 0
-            annualized_return = 0
-            annualized_volatility = 0
-        
-        # Beneish M-Score (simplified - only some variables)
+            sharpe_ratio = annualized_return = annualized_volatility = 0
+
+        # ── Beneish M-Score ───────────────────────────────────────────────────
         try:
-            if income_prev and balance_sheet.shape[1] > 1:
-                balance_prev = balance_sheet.iloc[:, -1].to_dict()
-                
-                revenue_prev = income_prev.get('Total Revenue', 0)
-                accounts_receivable_prev = balance_prev.get('Accounts Receivable', 1)
-                total_assets_prev = balance_prev.get('Total Assets', 1)
-                
-                # DSRI (Days Sales Receivables Index)
+            if income_prev and not balance_sheet.empty and balance_sheet.shape[1] > 1:
+                balance_prev             = balance_sheet.iloc[:, -1].to_dict()
+                revenue_prev             = income_prev.get('Total Revenue') or 1
+                accounts_receivable_prev = balance_prev.get('Accounts Receivable') or 1
+                total_assets_prev        = balance_prev.get('Total Assets') or 1
+                current_assets_prev      = balance_prev.get('Current Assets') or 1
+                ppe_prev                 = balance_prev.get('Net PPE') or balance_prev.get('Property Plant Equipment') or 1
+                gross_profit_prev        = income_prev.get('Gross Profit') or 1
+
                 dsri = safe_divide(
                     safe_divide(accounts_receivable, total_revenue, 0),
-                    safe_divide(accounts_receivable_prev, revenue_prev, 1),
-                    0
+                    safe_divide(accounts_receivable_prev, revenue_prev, 1), 0
                 )
-                
-                # AQI (Asset Quality Index)
-                current_assets_prev = balance_prev.get('Current Assets', 1)
-                ppe = balance.get('Net PPE', balance.get('Property Plant Equipment', 0))
-                ppe_prev = balance_prev.get('Net PPE', balance_prev.get('Property Plant Equipment', 1))
-                
-                non_current_assets = total_assets - current_assets if current_assets else total_assets
+                non_current_assets      = total_assets - current_assets if current_assets else total_assets
                 non_current_assets_prev = total_assets_prev - current_assets_prev if current_assets_prev else total_assets_prev
-                
                 aqi = safe_divide(
-                    safe_divide(non_current_assets - ppe, total_assets, 0),
-                    safe_divide(non_current_assets_prev - ppe_prev, total_assets_prev, 1),
-                    0
+                    safe_divide(non_current_assets - net_ppe, total_assets, 0),
+                    safe_divide(non_current_assets_prev - ppe_prev, total_assets_prev, 1), 0
                 )
-                
-                # GMI (Gross Margin Index)
-                gross_profit_prev = income_prev.get('Gross Profit', 1)
                 gmi = safe_divide(
                     safe_divide(gross_profit_prev, revenue_prev, 0),
-                    safe_divide(gross_profit, total_revenue, 1),
-                    0
+                    safe_divide(gross_profit, total_revenue, 1), 0
                 )
-                
-                # Simplified Beneish M-Score (using available variables)
-                beneish_m_score = -4.84 + 0.92*dsri + 0.528*aqi + 0.404*gmi
+                beneish_m_score = -4.84 + 0.92 * dsri + 0.528 * aqi + 0.404 * gmi
             else:
                 beneish_m_score = 0
-        except:
+        except Exception:
             beneish_m_score = 0
-        
-        # Montier C-Score (simplified)
+
+        # ── Montier C-Score ───────────────────────────────────────────────────
         c_score = 0
-        # Based on accruals and cash flow quality
-        if operating_cf > net_income:
-            c_score += 1
-        if beneish_m_score < -2.22:
-            c_score += 1
-        if operating_cf > 0 and net_income > 0:
-            c_score += 1
-        
-        # Additional important ratios
-        
-        # PEG Ratio
-        earnings_growth = 0  # Would need historical EPS data
-        peg_ratio = safe_divide(pe_ratio, earnings_growth) if earnings_growth > 0 and pe_ratio else None
-        
-        # P/B Ratio (Price to Book)
-        book_value_per_share = safe_divide(total_equity, shares_outstanding) if shares_outstanding > 0 else 0
-        pb_ratio = safe_divide(current_price, book_value_per_share) if book_value_per_share > 0 else None
-        
-        # Dividend Yield
-        dividend_rate = info.get('dividendRate', 0)
-        dividend_yield = safe_divide(dividend_rate, current_price, 0) * 100 if current_price > 0 else 0
-        
-        # Payout Ratio
-        dividends_paid = abs(cf.get('Cash Dividends Paid', 0))
-        payout_ratio = safe_divide(dividends_paid, net_income, 0) * 100 if net_income > 0 else 0
-        
-        # Long-Term Debt to Capitalization
-        long_term_debt = balance.get('Long Term Debt', total_debt)
-        total_cap = long_term_debt + total_equity if total_equity > 0 else 1
-        lt_debt_to_cap = safe_divide(long_term_debt, total_cap, 0)
-        
-        # Inventory Turnover
-        inventory = balance.get('Inventory', 0)
-        cogs = income.get('Cost Of Revenue', 0)
-        inventory_turnover = safe_divide(cogs, inventory, 0) if inventory > 0 else 0
-        
-        # Operating Expense Ratio
-        operating_expenses = income.get('Operating Expense', 0)
-        operating_expense_ratio = safe_divide(operating_expenses, total_revenue, 0) if total_revenue > 0 else 0
-        
-        # Sloan Ratio (Accruals / Average Assets)
-        accruals = net_income - operating_cf
-        sloan_ratio = safe_divide(accruals, total_assets, 0) if total_assets > 0 else 0
-        
-        # Accrual Ratio
-        accrual_ratio = safe_divide(operating_cf, net_income, 0) if net_income != 0 else 0
-        
-        # Tobin's Q
-        tobins_q = safe_divide(market_cap + total_liabilities, total_assets, 0) if total_assets > 0 else 0
-        
-        # EV/CFO
-        ev_cfo = safe_divide(enterprise_value, operating_cf) if operating_cf > 0 else None
-        
-        # EV/FCF
-        ev_fcf = safe_divide(enterprise_value, free_cash_flow) if free_cash_flow > 0 else None
-        
-        # EV/Gross Profit
-        ev_gross_profit = safe_divide(enterprise_value, gross_profit) if gross_profit > 0 else None
-        
-        # EBIT/FCF
-        ebit_to_fcf = safe_divide(ebit, free_cash_flow) if free_cash_flow != 0 else None
-        
-        # Net Debt / EBIT
-        net_debt_to_ebit = safe_divide(net_debt, ebit) if ebit != 0 else None
-        
-        # Zmijewski Score (bankruptcy prediction)
+        if operating_cf > net_income: c_score += 1
+        if beneish_m_score < -2.22:   c_score += 1
+        if operating_cf > 0 and net_income > 0: c_score += 1
+
+        # ── Zmijewski Score ───────────────────────────────────────────────────
         try:
             x1_z = -4.3 - 4.5 * safe_divide(net_income, total_assets, 0)
-            x2_z = 5.7 * safe_divide(total_liabilities, total_assets, 0)
+            x2_z =  5.7 * safe_divide(total_liabilities, total_assets, 0)
             x3_z = -0.004 * safe_divide(current_assets, current_liabilities, 0)
             zmijewski_score = x1_z + x2_z + x3_z
-        except:
+        except Exception:
             zmijewski_score = 0
-        
-        # Ohlson O-Score
+
+        # ── Ohlson O-Score ────────────────────────────────────────────────────
         try:
-            size = np.log(total_assets) if total_assets > 0 else 0
-            tlta = safe_divide(total_liabilities, total_assets, 0)
-            wcta = safe_divide(working_capital, total_assets, 0)
-            clca = safe_divide(current_liabilities, current_assets, 0) if current_assets > 0 else 0
-            nita = safe_divide(net_income, total_assets, 0)
-            
+            size    = math.log(total_assets) if total_assets > 0 else 0
+            tlta    = safe_divide(total_liabilities, total_assets, 0)
+            wcta    = safe_divide(working_capital, total_assets, 0)
+            clca    = safe_divide(current_liabilities, current_assets, 0) if current_assets > 0 else 0
+            nita    = safe_divide(net_income, total_assets, 0)
             ohlson_o = -1.32 - 0.407*size + 6.03*tlta - 1.43*wcta + 0.0757*clca - 2.37*nita
-        except:
+        except Exception:
             ohlson_o = 0
-        
-        # Fulmer H-Score
+
+        # ── Fulmer H-Score ────────────────────────────────────────────────────
         try:
             v1 = safe_divide(retained_earnings, total_assets, 0)
             v2 = safe_divide(total_revenue, total_assets, 0)
-            v3 = safe_divide(net_income, total_equity, 0) if total_equity > 0 else 0
-            v4 = safe_divide(operating_cf, total_liabilities, 0) if total_liabilities > 0 else 0
+            v3 = safe_divide(net_income, total_equity, 0) if total_equity else 0
+            v4 = safe_divide(operating_cf, total_liabilities, 0) if total_liabilities else 0
             v5 = safe_divide(total_liabilities, total_assets, 0)
             v6 = safe_divide(current_liabilities, total_assets, 0)
-            
             fulmer_h = 5.528*v1 + 0.212*v2 + 0.073*v3 + 1.270*v4 - 0.120*v5 + 2.335*v6 + 0.575
-        except:
+        except Exception:
             fulmer_h = 0
-        
-        # Springate Model (S-Score)
-        # S = 1.03A + 3.07B + 0.66C + 0.4D
+
+        # ── Springate S-Score ─────────────────────────────────────────────────
         try:
-            a_spring = safe_divide(working_capital, total_assets, 0)
-            b_spring = safe_divide(ebit, total_assets, 0)
-            c_spring = safe_divide(ebit, current_liabilities, 0) if current_liabilities > 0 else 0
-            d_spring = safe_divide(total_revenue, total_assets, 0)
-            
-            springate_score = 1.03*a_spring + 3.07*b_spring + 0.66*c_spring + 0.4*d_spring
-        except:
+            a_sp = safe_divide(working_capital, total_assets, 0)
+            b_sp = safe_divide(ebit, total_assets, 0)
+            c_sp = safe_divide(ebit, current_liabilities, 0) if current_liabilities > 0 else 0
+            d_sp = safe_divide(total_revenue, total_assets, 0)
+            springate_score = 1.03*a_sp + 3.07*b_sp + 0.66*c_sp + 0.4*d_sp
+        except Exception:
             springate_score = 0
-        
-        # CA-SCORE (Credit Analysis Score - Revisión del Altman)
-        # CA = 3.107 + 6.38*X1 + 2.84*X2 + 3.05*X3 + 1.02*X4
+
+        # ── CA-Score ──────────────────────────────────────────────────────────
         try:
             x1_ca = safe_divide(current_assets - current_liabilities, total_assets, 0)
             x2_ca = safe_divide(net_income, total_assets, 0)
             x3_ca = safe_divide(retained_earnings, total_assets, 0)
-            x4_ca = safe_divide(ebit, total_liabilities, 0) if total_liabilities > 0 else 0
-            
+            x4_ca = safe_divide(ebit, total_liabilities, 0) if total_liabilities else 0
             ca_score = 3.107 + 6.38*x1_ca + 2.84*x2_ca + 3.05*x3_ca + 1.02*x4_ca
-        except:
+        except Exception:
             ca_score = 0
-        
-        # Kanitz Score (Termômetro de Insolvência)
-        # K = 0.05*X1 + 1.65*X2 + 3.55*X3 - 1.06*X4 - 0.33*X5
+
+        # ── Kanitz Score ──────────────────────────────────────────────────────
         try:
             x1_k = safe_divide(net_income, total_assets, 0)
-            x2_k = safe_divide(current_assets - cash - balance.get('Short Term Investments', 0), current_liabilities, 0) if current_liabilities > 0 else 0
+            x2_k = safe_divide(current_assets - cash - balance.get('Short Term Investments', 0),
+                               current_liabilities, 0) if current_liabilities > 0 else 0
             x3_k = safe_divide(current_assets - current_liabilities, total_debt, 0) if total_debt > 0 else 0
             x4_k = safe_divide(current_assets, current_liabilities, 0) if current_liabilities > 0 else 0
             x5_k = safe_divide(total_debt, total_assets, 0)
-            
             kanitz_score = 0.05*x1_k + 1.65*x2_k + 3.55*x3_k - 1.06*x4_k - 0.33*x5_k
-        except:
+        except Exception:
             kanitz_score = 0
-        
-        # Benjamin Graham Valuation
-        # Graham's formula: Intrinsic Value = EPS × (8.5 + 2g)
-        # Revised: IV = (EPS × (8.5 + 2g) × 4.4) / Y
-        # Where Y = current yield of AAA corporate bonds (we'll use 10-year treasury as proxy)
-        
-        try:
-            # Get EPS
-            graham_eps = eps if eps > 0 else safe_divide(net_income, shares_outstanding, 0) if shares_outstanding > 0 else 0
-            
-            # Estimate growth rate (conservative approach)
-            # Use historical EPS growth or default to conservative 5%
-            estimated_growth = 5.0  # Conservative 5% annual growth
-            
-            # AAA corporate bond yield (approximation using 10-year treasury + spread)
-            # Typical spread is 1-2%, we'll use 5% as reasonable assumption for AAA bonds
-            aaa_yield = 5.0
-            
-            # Graham's original formula (simple)
-            intrinsic_value_graham_simple = graham_eps * (8.5 + (2 * estimated_growth))
-            
-            # Graham's revised formula (with bond yield adjustment)
-            intrinsic_value_graham = (graham_eps * (8.5 + (2 * estimated_growth)) * 4.4) / aaa_yield if aaa_yield > 0 else intrinsic_value_graham_simple
-            
-            # Ensure reasonable values
-            if intrinsic_value_graham < 0 or intrinsic_value_graham > current_price * 10:
-                # If unreasonable, use the simpler formula
-                intrinsic_value_graham = intrinsic_value_graham_simple
-            
-            # Benjamin Graham's Margin of Safety
-            # Formula: (Intrinsic Value - Current Price) / Intrinsic Value × 100
-            if intrinsic_value_graham > 0 and current_price > 0:
-                margin_of_safety_graham = ((intrinsic_value_graham - current_price) / intrinsic_value_graham) * 100
-            else:
-                margin_of_safety_graham = 0
-            
-            # Target Price calculations
-            # Conservative: IV with 25% margin of safety (buy at 75% of IV)
-            target_price_conservative = intrinsic_value_graham * 0.75
-            
-            # Moderate: Full intrinsic value
-            target_price_moderate = intrinsic_value_graham
-            
-            # Aggressive: IV + 20% upside potential
-            target_price_aggressive = intrinsic_value_graham * 1.20
-            
-            # Current recommended action based on Graham's margin
-            if margin_of_safety_graham >= 25:
-                graham_recommendation = "Comprar (Fuerte)"
-            elif margin_of_safety_graham >= 15:
-                graham_recommendation = "Comprar (Moderado)"
-            elif margin_of_safety_graham >= 0:
-                graham_recommendation = "Mantener"
-            elif margin_of_safety_graham >= -15:
-                graham_recommendation = "Vender (Leve sobrevaloración)"
-            else:
-                graham_recommendation = "Vender (Sobrevalorada)"
-                
-        except Exception as e:
-            logging.warning(f"Graham valuation error: {str(e)}")
-            intrinsic_value_graham = 0
-            intrinsic_value_graham_simple = 0
-            margin_of_safety_graham = 0
-            target_price_conservative = 0
-            target_price_moderate = 0
-            target_price_aggressive = 0
-            graham_recommendation = "N/A"
-        # Simplified DCF model
-        try:
-            # Estimate growth rate (conservative: use lower of industry avg or historical)
-            growth_rate = 0.05  # Conservative 5% growth assumption
-            
-            # Terminal growth rate (long-term GDP growth)
-            terminal_growth = 0.025  # 2.5%
-            
-            # Discount rate = WACC
-            discount_rate = wacc / 100 if wacc > 0 else 0.10
-            
-            # Project 5 years of FCF
-            projected_fcf = []
-            current_fcf = free_cash_flow if free_cash_flow > 0 else operating_cf * 0.7  # Use 70% of OCF if FCF negative
-            
-            for year in range(1, 6):
-                projected_fcf.append(current_fcf * ((1 + growth_rate) ** year))
-            
-            # Calculate present value of projected FCF
-            pv_fcf = sum([fcf / ((1 + discount_rate) ** (i+1)) for i, fcf in enumerate(projected_fcf)])
-            
-            # Terminal value
-            terminal_fcf = projected_fcf[-1] * (1 + terminal_growth)
-            terminal_value = terminal_fcf / (discount_rate - terminal_growth) if discount_rate > terminal_growth else 0
-            pv_terminal_value = terminal_value / ((1 + discount_rate) ** 5)
-            
-            # Enterprise value from DCF
-            enterprise_value_dcf = pv_fcf + pv_terminal_value
-            
-            # Equity value = EV - Net Debt
-            equity_value_dcf = enterprise_value_dcf - net_debt
-            
-            # Price per share
-            intrinsic_value_per_share = safe_divide(equity_value_dcf, shares_outstanding, 0) if shares_outstanding > 0 else 0
-            
-            # Margin of safety
-            if current_price > 0 and intrinsic_value_per_share > 0:
-                margin_of_safety = ((intrinsic_value_per_share - current_price) / intrinsic_value_per_share) * 100
-            else:
-                margin_of_safety = 0
-            
-            # Upside potential
-            upside_potential = ((intrinsic_value_per_share - current_price) / current_price) * 100 if current_price > 0 else 0
-            
-        except Exception as e:
-            logging.warning(f"DCF calculation error: {str(e)}")
-            intrinsic_value_per_share = 0
-            margin_of_safety = 0
-            upside_potential = 0
-            enterprise_value_dcf = 0
-        
-        # Value Creation Analysis (ROIC vs WACC)
-        creates_value = roic > wacc
-        value_creation_spread = roic - wacc
-        
-        # Categorize value creation
-        if value_creation_spread > 10:
-            value_creation_category = "Excelente"
-        elif value_creation_spread > 5:
-            value_creation_category = "Buena"
-        elif value_creation_spread > 0:
-            value_creation_category = "Moderada"
-        elif value_creation_spread > -5:
-            value_creation_category = "Débil"
-        else:
-            value_creation_category = "Destruye Valor"
-        
-        # Altman Z-Score (simplified for public companies)
+
+        # ── Altman Z-Score ────────────────────────────────────────────────────
         x1 = safe_divide(working_capital, total_assets, 0)
         x2 = safe_divide(retained_earnings, total_assets, 0)
         x3 = safe_divide(ebit, total_assets, 0)
         x4 = safe_divide(market_cap, total_liabilities, 0) if total_liabilities > 0 else 0
         x5 = safe_divide(total_revenue, total_assets, 0)
         altman_z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
-        
-        # Piotroski F-Score (simplified)
+
+        # ── Piotroski F-Score ─────────────────────────────────────────────────
         f_score = 0
         f_score += 1 if net_income > 0 else 0
         f_score += 1 if operating_cf > 0 else 0
@@ -653,899 +720,1011 @@ def calculate_ratios(ticker_data):
         f_score += 1 if shares_outstanding > 0 else 0
         f_score += 1 if gross_margin > 40 else 0
         f_score += 1 if asset_turnover > 0.5 else 0
-        
-        # Build ratio results
+
+        # ── CAGRs HISTÓRICOS — BUG CORREGIDO ──────────────────────────────────
+        # Bug original: _col() usaba df.get() → busca columnas, no filas
+        # Corrección: _get_row() usa df.loc[] para acceder a filas por nombre
+        cagr_revenue_4y = cagr_op_margin_4y = 0.0
+        cagr_fcf_4y = cagr_eps_4y = roa_growth_4y = 0.0
+        cagr_fcf_note = "sin_datos"
+        cagr_eps_4y_note = "sin_datos"
+
+        try:
+            _ai = income_stmt
+            _ac = cash_flow
+            _ab = balance_sheet
+
+            if not _ai.empty and _ai.shape[1] >= 2:
+                n = _ai.shape[1]
+                periods = max(2, min(4, n - 1))
+
+                # ✦ BUG FIX: usar _get_row() con df.loc[] en vez de df.get()
+                rev_h  = _get_row(_ai, 'Total Revenue')
+                ebit_h = [e or o for e, o in zip(
+                    _get_row(_ai, 'EBIT'),
+                    _get_row(_ai, 'Operating Income')
+                )]
+                eps_h  = [e or d for e, d in zip(
+                    _get_row(_ai, 'Basic EPS'),
+                    _get_row(_ai, 'Diluted EPS')
+                )]
+                ni_h   = _get_row(_ai, 'Net Income')
+
+                ocf_h = [0.0] * n
+                cap_h = [0.0] * n
+                if not _ac.empty:
+                    ocf_h = _get_row(_ac, 'Operating Cash Flow', 'Total Cash From Operating Activities')
+                    cap_h = [abs(v) for v in _get_row(_ac, 'Capital Expenditure', 'Capital Expenditures')]
+                fcf_h = [o - c for o, c in zip(ocf_h, cap_h)]
+
+                ast_h = [1.0] * n
+                if not _ab.empty:
+                    ast_raw = _get_row(_ab, 'Total Assets')
+                    if ast_raw and any(v > 0 for v in ast_raw):
+                        ast_h = [v if v > 0 else 1.0 for v in ast_raw]
+
+                # CAGR Ingresos — siempre positivos
+                if len(rev_h) >= 2 and rev_h[-1] > 0 and rev_h[0] > 0:
+                    r, _ = cagr_signed(rev_h[-1], rev_h[0], periods)
+                    cagr_revenue_4y = r if r is not None else 0.0
+
+                # CAGR Margen Operativo
+                if len(rev_h) >= 2 and len(ebit_h) >= 2:
+                    om_s = ebit_h[-1] / rev_h[-1] if rev_h[-1] != 0 else 0
+                    om_e = ebit_h[0]  / rev_h[0]  if rev_h[0]  != 0 else 0
+                    if om_s != 0 and om_e != 0:
+                        r, _ = cagr_signed(om_s, om_e, periods)
+                        cagr_op_margin_4y = r if r is not None else 0.0
+
+                # ✦ BUG FIX: CAGR FCF tolera negativos con cagr_signed()
+                if len(fcf_h) >= 2 and fcf_h[-1] != 0 and fcf_h[0] != 0:
+                    r, note = cagr_signed(fcf_h[-1], fcf_h[0], periods)
+                    cagr_fcf_4y   = r if r is not None else 0.0
+                    cagr_fcf_note = note
+
+                # ✦ BUG FIX: CAGR EPS tolera negativos con cagr_signed()
+                if len(eps_h) >= 2 and eps_h[-1] != 0 and eps_h[0] != 0:
+                    r, note = cagr_signed(eps_h[-1], eps_h[0], periods)
+                    cagr_eps_4y      = r if r is not None else 0.0
+                    cagr_eps_4y_note = note
+
+                # ROA Growth
+                if len(ni_h) >= 2 and len(ast_h) >= 2:
+                    roa_s = ni_h[-1] / ast_h[-1] if ast_h[-1] != 0 else 0
+                    roa_e = ni_h[0]  / ast_h[0]  if ast_h[0]  != 0 else 0
+                    if roa_s != 0 and roa_e != 0:
+                        r, _ = cagr_signed(roa_s, roa_e, periods)
+                        roa_growth_4y = r if r is not None else 0.0
+
+        except Exception as e:
+            logging.warning(f"CAGR calculation error: {e}")
+
+        # ── BUG FIX 3: PEG Ratio corregido ────────────────────────────────────
+        # Antes: siempre None porque cagr_eps_4y llegaba como 0.0 por Bug 2
+        peg_calc = None
+        peg_note = "sin_eps_growth"
+        if cagr_eps_4y_note == "turnaround":
+            peg_note = "turnaround"   # señal positiva aunque PEG no aplica numéricamente
+        elif (cagr_eps_4y and abs(cagr_eps_4y) > 0.005
+              and pe_ratio and pe_ratio > 0
+              and cagr_eps_4y_note == "ok"):
+            eps_pct  = cagr_eps_4y * 100   # fracción → porcentaje
+            peg_calc = round(safe_divide(pe_ratio, eps_pct, None), 2) if eps_pct != 0 else None
+            peg_note = "ok"
+
+        # ── Benjamin Graham Valuation ─────────────────────────────────────────
+        try:
+            graham_eps       = eps if eps and eps > 0 else safe_divide(net_income, shares_outstanding, 0)
+            estimated_growth = 5.0
+            aaa_yield        = 5.0
+            intrinsic_value_graham_simple = graham_eps * (8.5 + (2 * estimated_growth))
+            intrinsic_value_graham = (
+                (graham_eps * (8.5 + (2 * estimated_growth)) * 4.4) / aaa_yield
+                if aaa_yield > 0 else intrinsic_value_graham_simple
+            )
+            if intrinsic_value_graham < 0 or (current_price > 0 and intrinsic_value_graham > current_price * 10):
+                intrinsic_value_graham = intrinsic_value_graham_simple
+            if intrinsic_value_graham > 0 and current_price > 0:
+                margin_of_safety_graham = ((intrinsic_value_graham - current_price) / intrinsic_value_graham) * 100
+            else:
+                margin_of_safety_graham = 0
+            target_price_conservative = intrinsic_value_graham * 0.75
+            target_price_moderate     = intrinsic_value_graham
+            target_price_aggressive   = intrinsic_value_graham * 1.20
+            if margin_of_safety_graham >= 25:
+                graham_recommendation = "Comprar (Fuerte)"
+            elif margin_of_safety_graham >= 15:
+                graham_recommendation = "Comprar (Moderado)"
+            elif margin_of_safety_graham >= 0:
+                graham_recommendation = "Mantener"
+            elif margin_of_safety_graham >= -15:
+                graham_recommendation = "Vender (Leve sobrevaloración)"
+            else:
+                graham_recommendation = "Vender (Sobrevalorada)"
+        except Exception as e:
+            logging.warning(f"Graham valuation error: {str(e)}")
+            intrinsic_value_graham = intrinsic_value_graham_simple = 0
+            margin_of_safety_graham = 0
+            target_price_conservative = target_price_moderate = target_price_aggressive = 0
+            graham_recommendation = "N/A"
+            estimated_growth = 5.0
+
+        # ── DCF Model ─────────────────────────────────────────────────────────
+        try:
+            growth_rate     = 0.05
+            terminal_growth = 0.025
+            discount_rate   = wacc / 100 if wacc > 0 else 0.10
+            current_fcf     = free_cash_flow if free_cash_flow > 0 else operating_cf * 0.7
+            projected_fcf   = [current_fcf * ((1 + growth_rate) ** yr) for yr in range(1, 6)]
+            pv_fcf          = sum(f / ((1 + discount_rate) ** (i + 1)) for i, f in enumerate(projected_fcf))
+            terminal_fcf    = projected_fcf[-1] * (1 + terminal_growth)
+            terminal_value  = terminal_fcf / (discount_rate - terminal_growth) if discount_rate > terminal_growth else 0
+            pv_terminal     = terminal_value / ((1 + discount_rate) ** 5)
+            enterprise_value_dcf   = pv_fcf + pv_terminal
+            equity_value_dcf       = enterprise_value_dcf - net_debt
+            intrinsic_value_per_share = safe_divide(equity_value_dcf, shares_outstanding, 0) if shares_outstanding > 0 else 0
+            if current_price > 0 and intrinsic_value_per_share > 0:
+                margin_of_safety = ((intrinsic_value_per_share - current_price) / intrinsic_value_per_share) * 100
+            else:
+                margin_of_safety = 0
+            upside_potential = ((intrinsic_value_per_share - current_price) / current_price) * 100 if current_price > 0 else 0
+        except Exception as e:
+            logging.warning(f"DCF calculation error: {str(e)}")
+            intrinsic_value_per_share = margin_of_safety = upside_potential = enterprise_value_dcf = 0
+
+        # ✦ NUEVO 14: Earnings Power Value (EPV) — Bruce Greenwald
+        # Valor del negocio asumiendo cero crecimiento: NOPAT / WACC - Deuda Neta
+        # Si precio < EPV, el mercado no está pagando por crecimiento futuro
+        epv_per_share = None
+        try:
+            if wacc > 0 and ebit > 0 and shares_outstanding > 0:
+                tax_rate_epv  = 0.21
+                epv_total     = (ebit * (1 - tax_rate_epv)) / (wacc / 100)
+                epv_equity    = epv_total - net_debt
+                epv_per_share = round(safe_divide(epv_equity, shares_outstanding, 0), 2)
+        except Exception:
+            epv_per_share = None
+
+        # ── Value Creation ────────────────────────────────────────────────────
+        creates_value         = roic > wacc
+        value_creation_spread = roic - wacc
+        if value_creation_spread > 10:
+            value_creation_category = "Excelente"
+        elif value_creation_spread > 5:
+            value_creation_category = "Buena"
+        elif value_creation_spread > 0:
+            value_creation_category = "Moderada"
+        elif value_creation_spread > -5:
+            value_creation_category = "Débil"
+        else:
+            value_creation_category = "Destruye Valor"
+
+        # ── Diccionario final de ratios ───────────────────────────────────────
         ratios = {
-            # Growth metrics
-            'revenue_growth_5y': 0,  # Would need historical data
-            'fcf_growth_5y': 0,
-            'eps_growth_5y': 0,
-            
-            # Profitability
-            'roe': roe,
-            'roa': roa,
-            'roic': roic,
-            'roce': roce,
-            'roc': roic,  # Using ROIC as proxy for ROC
-            'croic': croic,
-            'gross_margin': gross_margin,
-            'net_margin': net_margin,
+            # Growth
+            'cagr_revenue_4y':    cagr_revenue_4y,
+            'cagr_op_margin_4y':  cagr_op_margin_4y,
+            'cagr_fcf_4y':        cagr_fcf_4y,
+            'cagr_fcf_note':      cagr_fcf_note,
+            'cagr_eps_4y':        cagr_eps_4y,
+            'cagr_eps_4y_note':   cagr_eps_4y_note,
+            'roa_growth_4y':      roa_growth_4y,
+            'revenue_growth_5y':  0,
+            'fcf_growth_5y':      0,
+            'eps_growth_5y':      0,
+            # Profitability (existing + new)
+            'roe':              roe,
+            'roa':              roa,
+            'roic':             roic,
+            'roce':             roce,
+            'roc':              roic,
+            'croic':            croic,
+            'rote':             rote,                         # ✦ NUEVO 1
+            'gross_margin':     gross_margin,
+            'net_margin':       net_margin,
             'operating_margin': operating_margin,
-            'ebit_margin': ebit_margin,
-            'nopat_margin': nopat_margin,
-            
+            'ebit_margin':      ebit_margin,
+            'ebitda_margin':    ebitda_margin,                # ✦ NUEVO (EBITDA Margin)
+            'nopat_margin':     nopat_margin,
+            'gross_profit_per_employee': gross_profit_per_employee,  # ✦ NUEVO 2
+            'revenue_per_employee':      revenue_per_employee,       # ✦ NUEVO 15
             # Liquidity
-            'current_ratio': current_ratio,
-            'quick_ratio': quick_ratio,
-            'cash_ratio': cash_ratio,
+            'current_ratio':   current_ratio,
+            'quick_ratio':     quick_ratio,
+            'cash_ratio':      cash_ratio,
             'working_capital': working_capital,
-            
-            # Leverage
-            'debt_to_equity': debt_to_equity,
-            'debt_ratio': debt_ratio,
-            'net_debt': net_debt,
+            # Leverage (existing + new)
+            'debt_to_equity':    debt_to_equity,
+            'debt_ratio':        debt_ratio,
+            'net_debt':          net_debt,
             'equity_multiplier': equity_multiplier,
-            
-            # Valuation
-            'pe_ratio': pe_ratio,
-            'ev_ebit': ev_ebit,
-            'ev_sales': ev_sales,
-            'price_to_sales': price_to_sales,
-            'earning_yield': earning_yield,
-            'ev_ci': ev_ci,
-            
-            # Cash Flow
-            'free_cash_flow': free_cash_flow,
-            'fcf_margin': fcf_margin,
-            'operating_cf': operating_cf,
-            'operating_cf_to_sales': operating_cf_to_sales,
-            'capex_to_revenue': capex_to_revenue,
-            'capex_to_ocf': capex_to_ocf,
-            'fcf_to_ebitda': fcf_to_ebitda,
-            'cash_flow_to_debt': cash_flow_to_debt,
-            
-            # Efficiency & Operations
             'retained_earnings': retained_earnings,
-            'asset_turnover': asset_turnover,
-            'eps': eps,
-            'capex_to_da': capex_to_da,
-            'goodwill_to_assets': goodwill_to_assets,
-            'kto': kto,
-            
+            'de_ratio':          de_ratio,
+            'lt_debt_cap':       lt_debt_cap,
+            'net_debt_ebit':     net_debt_to_ebit,
+            'net_debt_ebitda':   net_debt_to_ebitda,         # ✦ NUEVO 3
+            'dscr':              dscr,                        # ✦ NUEVO 4
+            # Valuation (existing + new)
+            'pe_ratio':           pe_ratio,
+            'ev_ebit':            ev_ebit,
+            'ev_ebitda':          ev_ebitda,                  # ✦ NUEVO 5
+            'ev_sales':           ev_sales,
+            'price_to_sales':     price_to_sales,
+            'price_to_fcf':       price_to_fcf,               # ✦ NUEVO 6
+            'earning_yield':      earning_yield,
+            'ev_ci':              ev_ci,
+            'ev_fcf':             ev_fcf_r,
+            'fcf_ev':             ev_fcf_r,
+            'ebit_ev':            ebit_ev_r,
+            'ev_gp':              ev_gp,
+            'ev_cfo':             ev_cfo_val,
+            'peg_ratio':          peg_calc,
+            'peg_note':           peg_note,
+            'pb_ratio':           pb_ratio,
+            'graham_number':      graham_number,               # ✦ NUEVO 7
+            'magic_formula_score': magic_formula_score,        # ✦ NUEVO 8
+            'dividend_yield':     dividend_yield,
+            'payout_ratio':       payout_ratio,
+            'tobins_q':           tobins_q,
+            # Cash Flow
+            'free_cash_flow':        free_cash_flow,
+            'fcf_margin':            fcf_margin,
+            'operating_cf':          operating_cf,
+            'operating_cf_to_sales': operating_cf_to_sales,
+            'capex_to_revenue':      capex_to_revenue,
+            'capex_to_ocf':          capex_to_ocf,
+            'fcf_to_ebitda':         fcf_to_ebitda,
+            'cash_flow_to_debt':     cash_flow_to_debt,
+            'fcf_sales':             fcf_sales,
+            'ocf_margin':            ocf_margin_r,
+            'capex_margin':          capex_margin_r,
+            'ccf':                   ccf_val,
+            'capex_ni':              capex_ni,
+            'capex_ocf':             capex_ocf_r,
+            'ebit_fcf':              ebit_fcf_ratio,
+            'accrual_ratio':         accrual_r,
+            # Efficiency (existing + new)
+            'asset_turnover':      asset_turnover,
+            'eps':                 eps,
+            'capex_to_da':         capex_to_da,
+            'goodwill_to_assets':  goodwill_to_assets,
+            'kto':                 kto,
+            'sales_fa':            sales_fa,
+            'sales_eq':            sales_eq,
+            'wc_turn':             wc_turn,
+            'wc_cl':               wc_cl,
+            'wc_prod':             wc_prod,
+            'ncavps':              ncavps,
+            'roe_dy':              roe_dy,
+            'rd_gp':               rd_gp,
+            'ad_fixed_ratio':      ad_fixed_ratio,
+            'ktno_eq':             ktno_eq,
+            'inventory_turnover':  inventory_turnover,
+            'sloan_ratio':         sloan_ratio,
+            'dso':                 dso,                        # ✦ NUEVO 9
+            'dio':                 dio,                        # ✦ NUEVO 10
+            'dpo':                 dpo,                        # ✦ NUEVO 11
+            'ccc':                 ccc,                        # ✦ NUEVO 12
+            'incremental_roic':    incremental_roic,           # ✦ NUEVO 13
             # Risk & Capital
-            'beta': beta,
-            'wacc': wacc,
-            'roic_wacc_spread': roic_wacc_spread,
+            'beta':              beta,
+            'wacc':              wacc,
+            'roic_wacc_spread':  roic_wacc_spread,
             'interest_coverage': interest_coverage,
-            
             # Price Performance
             'fifty_two_week_high': fifty_two_week_high,
-            'fifty_two_week_low': fifty_two_week_low,
-            'pct_below_52w_high': pct_below_52w_high,
-            'pct_above_52w_low': pct_above_52w_low,
-            
+            'fifty_two_week_low':  fifty_two_week_low,
+            'pct_below_52w_high':  pct_below_52w_high,
+            'pct_above_52w_low':   pct_above_52w_low,
             # Risk-Adjusted Returns
-            'sharpe_ratio': sharpe_ratio,
-            'annualized_return': annualized_return * 100,  # Convert to percentage
+            'sharpe_ratio':          sharpe_ratio,
+            'annualized_return':     annualized_return * 100,
             'annualized_volatility': annualized_volatility * 100,
-            
-            # Scores
-            'altman_z_score': altman_z,
+            # Quality Scores
+            'altman_z_score':    altman_z,
             'piotroski_f_score': f_score,
-            'beneish_m_score': beneish_m_score,
-            'montier_c_score': c_score,
-            'zmijewski_score': zmijewski_score,
-            'ohlson_o_score': ohlson_o,
-            'fulmer_h_score': fulmer_h,
-            'springate_score': springate_score,
-            'ca_score': ca_score,
-            'kanitz_score': kanitz_score,
-            'tobins_q': tobins_q,
-            'sloan_ratio': sloan_ratio,
-            
-            # DCF Valuation
-            'intrinsic_value': intrinsic_value_per_share,
-            'margin_of_safety': margin_of_safety,
-            'upside_potential': upside_potential,
+            'beneish_m_score':   beneish_m_score,
+            'montier_c_score':   c_score,
+            'zmijewski_score':   zmijewski_score,
+            'ohlson_o_score':    ohlson_o,
+            'fulmer_h_score':    fulmer_h,
+            'springate_score':   springate_score,
+            'ca_score':          ca_score,
+            'kanitz_score':      kanitz_score,
+            # DCF / Valuation
+            'intrinsic_value':      intrinsic_value_per_share,
+            'margin_of_safety':     margin_of_safety,
+            'upside_potential':     upside_potential,
             'enterprise_value_dcf': enterprise_value_dcf,
-            
-            # Benjamin Graham Valuation
-            'intrinsic_value_graham': intrinsic_value_graham,
-            'intrinsic_value_graham_simple': intrinsic_value_graham_simple,
-            'margin_of_safety_graham': margin_of_safety_graham,
-            'target_price_conservative': target_price_conservative,
-            'target_price_moderate': target_price_moderate,
-            'target_price_aggressive': target_price_aggressive,
-            'graham_recommendation': graham_recommendation,
-            'estimated_growth_rate': estimated_growth,
-            
+            'epv_per_share':        epv_per_share,             # ✦ NUEVO 14
+            # Graham Valuation
+            'intrinsic_value_graham':         intrinsic_value_graham,
+            'intrinsic_value_graham_simple':   intrinsic_value_graham_simple,
+            'margin_of_safety_graham':         margin_of_safety_graham,
+            'target_price_conservative':       target_price_conservative,
+            'target_price_moderate':           target_price_moderate,
+            'target_price_aggressive':         target_price_aggressive,
+            'graham_recommendation':           graham_recommendation,
+            'estimated_growth_rate':           estimated_growth,
             # Value Creation
-            'creates_value': creates_value,
-            'value_creation_spread': value_creation_spread,
+            'creates_value':           creates_value,
+            'value_creation_spread':   value_creation_spread,
             'value_creation_category': value_creation_category,
         }
-        
+
         return ratios, info
-        
+
     except Exception as e:
         logging.error(f"Error calculating ratios: {str(e)}")
         raise
 
+# =============================================================================
+#  evaluate_ratios() — ACTUALIZADA con los 15 nuevos ratios en sus categorías
+# =============================================================================
+
+def _safe_cmp_lt(value, threshold):
+    return value is not None and value < threshold
+
+def _safe_cmp_gt(value, threshold):
+    return value is not None and value > threshold
+
+def _safe_cmp_between(value, lo, hi):
+    return value is not None and lo <= value <= hi
+
+def _fmt(value, fmt=".2f", suffix="", prefix="", na="N/A"):
+    if value is None:
+        return na
+    try:
+        return f"{prefix}{value:{fmt}}{suffix}"
+    except Exception:
+        return na
+
+
 def evaluate_ratios(ratios, info):
-    """Evaluate ratios against thresholds and create recommendations"""
+    """Evalúa ratios contra umbrales — versión con 15 nuevos ratios integrados."""
     categories = []
     total_metrics = 0
     favorable = 0
-    
-    # Category 1: Profitability Metrics
+
+    def _add(metrics_list, name, value, threshold, passed, interpretation, display_value):
+        nonlocal total_metrics, favorable
+        metrics_list.append(RatioMetric(
+            name=name, value=value, threshold=threshold, passed=passed,
+            interpretation=interpretation, display_value=display_value
+        ))
+        total_metrics += 1
+        if passed:
+            favorable += 1
+
+    # =========================================================================
+    # CATEGORÍA 1: RENTABILIDAD
+    # =========================================================================
     profitability_metrics = []
-    
-    # ROE
-    roe_val = ratios.get('roe', 0)
-    roe_passed = roe_val > 15
-    profitability_metrics.append(RatioMetric(
-        name="ROE (Return on Equity)",
-        value=roe_val,
-        threshold="> 15%",
-        passed=roe_passed,
-        interpretation="Mide la rentabilidad sobre el capital de los accionistas",
-        display_value=f"{roe_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if roe_passed else 0
-    
-    # ROA
-    roa_val = ratios.get('roa', 0)
-    roa_passed = roa_val > 5
-    profitability_metrics.append(RatioMetric(
-        name="ROA (Return on Assets)",
-        value=roa_val,
-        threshold="> 5%",
-        passed=roa_passed,
-        interpretation="Mide la eficiencia en el uso de activos",
-        display_value=f"{roa_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if roa_passed else 0
-    
-    # ROIC
-    roic_val = ratios.get('roic', 0)
-    roic_passed = roic_val > 15
-    profitability_metrics.append(RatioMetric(
-        name="ROIC (Return on Invested Capital)",
-        value=roic_val,
-        threshold="> 15%",
-        passed=roic_passed,
-        interpretation="Retorno sobre el capital invertido",
-        display_value=f"{roic_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if roic_passed else 0
-    
-    # Gross Margin
-    gm_val = ratios.get('gross_margin', 0)
-    gm_passed = gm_val > 40
-    profitability_metrics.append(RatioMetric(
-        name="Margen Bruto (Gross Margin)",
-        value=gm_val,
-        threshold="> 40%",
-        passed=gm_passed,
-        interpretation="Rentabilidad después de costos de producción",
-        display_value=f"{gm_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if gm_passed else 0
-    
-    # Net Margin
-    nm_val = ratios.get('net_margin', 0)
-    nm_passed = nm_val > 10
-    profitability_metrics.append(RatioMetric(
-        name="Margen Neto (Net Margin)",
-        value=nm_val,
-        threshold="> 10%",
-        passed=nm_passed,
-        interpretation="Rentabilidad final después de todos los gastos",
-        display_value=f"{nm_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if nm_passed else 0
-    
-    # Operating Margin
-    om_val = ratios.get('operating_margin', 0)
-    om_passed = om_val > 15
-    profitability_metrics.append(RatioMetric(
-        name="Margen Operativo (Operating Margin)",
-        value=om_val,
-        threshold="> 15%",
-        passed=om_passed,
-        interpretation="Rentabilidad de operaciones principales",
-        display_value=f"{om_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if om_passed else 0
-    
-    categories.append(RatioCategory(
-        category="📊 Rentabilidad",
-        metrics=profitability_metrics
-    ))
-    
-    # Category 2: Liquidity Metrics
+
+    roe_val = ratios.get('roe', 0) or 0
+    _add(profitability_metrics, "ROE (Return on Equity)", roe_val, "> 15%",
+         roe_val > 15, "Mide la rentabilidad sobre el capital de los accionistas", f"{roe_val:.2f}%")
+
+    roa_val = ratios.get('roa', 0) or 0
+    _add(profitability_metrics, "ROA (Return on Assets)", roa_val, "> 5%",
+         roa_val > 5, "Mide la eficiencia en el uso de activos", f"{roa_val:.2f}%")
+
+    roic_val = ratios.get('roic', 0) or 0
+    _add(profitability_metrics, "ROIC (Return on Invested Capital)", roic_val, "> 15%",
+         roic_val > 15, "Retorno sobre el capital invertido", f"{roic_val:.2f}%")
+
+    roce_val = ratios.get('roce', 0) or 0
+    _add(profitability_metrics, "ROCE (Return on Capital Employed)", roce_val, "> 15%",
+         roce_val > 15, "Retorno sobre capital empleado", f"{roce_val:.2f}%")
+
+    croic_val = ratios.get('croic', 0) or 0
+    _add(profitability_metrics, "CROIC (Cash ROIC)", croic_val, "> 10%",
+         croic_val > 10, "Retorno sobre capital invertido basado en flujo de caja operativo", f"{croic_val:.2f}%")
+
+    # ✦ NUEVO 1: ROTE
+    rote_val = ratios.get('rote', 0) or 0
+    _add(profitability_metrics, "ROTE (Return on Tangible Equity)", rote_val, "> 15%",
+         rote_val > 15,
+         "Rentabilidad sobre capital tangible — excluye goodwill e intangibles; KPI clave en bancos y análisis de calidad pura",
+         f"{rote_val:.2f}%")
+
+    gm_val = ratios.get('gross_margin', 0) or 0
+    _add(profitability_metrics, "Margen Bruto (Gross Margin)", gm_val, "> 40%",
+         gm_val > 40, "Rentabilidad después de costos de producción", f"{gm_val:.2f}%")
+
+    nm_val = ratios.get('net_margin', 0) or 0
+    _add(profitability_metrics, "Margen Neto (Net Margin)", nm_val, "> 10%",
+         nm_val > 10, "Rentabilidad final después de todos los gastos", f"{nm_val:.2f}%")
+
+    om_val = ratios.get('operating_margin', 0) or 0
+    _add(profitability_metrics, "Margen Operativo (Operating Margin)", om_val, "> 15%",
+         om_val > 15, "Rentabilidad de operaciones principales", f"{om_val:.2f}%")
+
+    # ✦ NUEVO: EBITDA Margin
+    ebitda_m_val = ratios.get('ebitda_margin', 0) or 0
+    _add(profitability_metrics, "EBITDA Margin", ebitda_m_val, "> 20%",
+         ebitda_m_val > 20,
+         "Margen EBITDA — estándar de industria para comparación entre sectores y análisis de M&A; elimina efectos de estructura de capital y D&A",
+         f"{ebitda_m_val:.2f}%")
+
+    ebitm = (ratios.get('ebit_margin', 0) or 0) / 100
+    _add(profitability_metrics, "EBIT Margin", ebitm, "> 15%",
+         ebitm > 0.15, "Alta rentabilidad operativa antes de intereses e impuestos", f"{ebitm*100:.1f}%")
+
+    nopat_m = ratios.get('nopat_margin', 0) or 0
+    _add(profitability_metrics, "NOPAT Margin", nopat_m, "> 12%",
+         nopat_m > 12, "Beneficio operativo neto después de impuestos sobre ventas", f"{nopat_m:.2f}%")
+
+    cagr_rev = ratios.get('cagr_revenue_4y', 0) or 0
+    _add(profitability_metrics, "CAGR Ingresos 4 años", cagr_rev, "> 10%",
+         cagr_rev > 0.10, "Crecimiento compuesto anual de ingresos.", f"{cagr_rev*100:.1f}%")
+
+    cagr_op = ratios.get('cagr_op_margin_4y', 0) or 0
+    _add(profitability_metrics, "CAGR Margen Operativo 4 años", cagr_op, "> 10%",
+         cagr_op > 0.10, "Mejora compuesta de eficiencia operativa.", f"{cagr_op*100:.1f}%")
+
+    roa_g = ratios.get('roa_growth_4y', 0) or 0
+    _add(profitability_metrics, "ROA Growth 4y", roa_g, "> 10%",
+         roa_g > 0.10, "Mejora compuesta de eficiencia de activos.", f"{roa_g*100:.1f}%")
+
+    # ✦ NUEVO 13: Incremental ROIC
+    iroic_val = ratios.get('incremental_roic')
+    iroic_passed = iroic_val is not None and iroic_val > 20
+    _add(profitability_metrics, "Incremental ROIC (iROIC)", iroic_val, "> 20%",
+         iroic_passed,
+         "Retorno sobre capital incremental — si iROIC < WACC, el crecimiento destruye valor aunque el ROIC base sea alto",
+         _fmt(iroic_val, ".1f", "%"))
+
+    categories.append(RatioCategory(category="📊 Rentabilidad", metrics=profitability_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 2: LIQUIDEZ
+    # =========================================================================
     liquidity_metrics = []
-    
-    # Current Ratio
-    cr_val = ratios.get('current_ratio', 0)
-    cr_passed = 1.2 <= cr_val <= 2.0
-    liquidity_metrics.append(RatioMetric(
-        name="Ratio Corriente (Current Ratio)",
-        value=cr_val,
-        threshold="1.2 - 2.0",
-        passed=cr_passed,
-        interpretation="Capacidad para pagar obligaciones a corto plazo",
-        display_value=f"{cr_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if cr_passed else 0
-    
-    # Quick Ratio
-    qr_val = ratios.get('quick_ratio', 0)
-    qr_passed = qr_val > 1.0
-    liquidity_metrics.append(RatioMetric(
-        name="Ratio Rápido (Quick Ratio)",
-        value=qr_val,
-        threshold="> 1.0",
-        passed=qr_passed,
-        interpretation="Liquidez inmediata sin inventarios",
-        display_value=f"{qr_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if qr_passed else 0
-    
-    # Cash Ratio
-    cash_r_val = ratios.get('cash_ratio', 0)
-    cash_r_passed = cash_r_val > 0.5
-    liquidity_metrics.append(RatioMetric(
-        name="Ratio de Efectivo (Cash Ratio)",
-        value=cash_r_val,
-        threshold="> 0.5",
-        passed=cash_r_passed,
-        interpretation="Capacidad de pago inmediata con efectivo",
-        display_value=f"{cash_r_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if cash_r_passed else 0
-    
-    categories.append(RatioCategory(
-        category="💧 Liquidez",
-        metrics=liquidity_metrics
-    ))
-    
-    # Category 3: Leverage Metrics
+
+    cr_val = ratios.get('current_ratio', 0) or 0
+    _add(liquidity_metrics, "Ratio Corriente (Current Ratio)", cr_val, "1.2 - 2.0",
+         1.2 <= cr_val <= 2.0, "Capacidad para pagar obligaciones a corto plazo", f"{cr_val:.2f}")
+
+    qr_val = ratios.get('quick_ratio', 0) or 0
+    _add(liquidity_metrics, "Ratio Rápido (Quick Ratio)", qr_val, "> 1.0",
+         qr_val > 1.0, "Liquidez inmediata sin inventarios", f"{qr_val:.2f}")
+
+    cash_r_val = ratios.get('cash_ratio', 0) or 0
+    _add(liquidity_metrics, "Ratio de Efectivo (Cash Ratio)", cash_r_val, "> 0.5",
+         cash_r_val > 0.5, "Capacidad de pago inmediata con efectivo", f"{cash_r_val:.2f}")
+
+    categories.append(RatioCategory(category="💧 Liquidez", metrics=liquidity_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 3: APALANCAMIENTO
+    # =========================================================================
     leverage_metrics = []
-    
-    # Debt to Equity
-    dte_val = ratios.get('debt_to_equity', 0)
-    dte_passed = dte_val < 50
-    leverage_metrics.append(RatioMetric(
-        name="Deuda/Capital (Debt-to-Equity)",
-        value=dte_val,
-        threshold="< 50%",
-        passed=dte_passed,
-        interpretation="Nivel de apalancamiento financiero",
-        display_value=f"{dte_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if dte_passed else 0
-    
-    # Debt Ratio
-    dr_val = ratios.get('debt_ratio', 0)
-    dr_passed = dr_val < 0.5
-    leverage_metrics.append(RatioMetric(
-        name="Ratio de Deuda (Debt Ratio)",
-        value=dr_val,
-        threshold="< 0.5",
-        passed=dr_passed,
-        interpretation="Proporción de activos financiados con deuda",
-        display_value=f"{dr_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if dr_passed else 0
-    
-    # Net Debt
-    nd_val = ratios.get('net_debt', 0)
-    nd_passed = nd_val < 0
-    leverage_metrics.append(RatioMetric(
-        name="Deuda Neta (Net Debt)",
-        value=nd_val,
-        threshold="< 0 (más efectivo que deuda)",
-        passed=nd_passed,
-        interpretation="Deuda total menos efectivo disponible",
-        display_value=f"${nd_val:,.0f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if nd_passed else 0
-    
-    categories.append(RatioCategory(
-        category="⚖️ Apalancamiento",
-        metrics=leverage_metrics
-    ))
-    
-    # Category 4: Valuation Metrics
+
+    dte_val = ratios.get('debt_to_equity', 0) or 0
+    _add(leverage_metrics, "Deuda/Capital (Debt-to-Equity)", dte_val, "< 50%",
+         dte_val < 50, "Nivel de apalancamiento financiero", f"{dte_val:.2f}%")
+
+    dr_val = ratios.get('debt_ratio', 0) or 0
+    _add(leverage_metrics, "Ratio de Deuda (Debt Ratio)", dr_val, "< 0.5",
+         dr_val < 0.5, "Proporción de activos financiados con deuda", f"{dr_val:.2f}")
+
+    re_v = ratios.get('retained_earnings', 0) or 0
+    _add(leverage_metrics, "Retained Earnings", re_v, "> 0",
+         re_v > 0, "Recursos propios acumulados para financiar operación sin endeudamiento", f"{re_v:,.0f}")
+
+    eq_mult = ratios.get('equity_multiplier', 0) or ratios.get('de_ratio', 0) or 0
+    _add(leverage_metrics, "Equity Multiplier", eq_mult, "< 2x",
+         eq_mult < 2, "Apalancamiento financiero sobre capital propio", f"{eq_mult:.2f}x")
+
+    net_debt_ebit = ratios.get('net_debt_ebit')
+    _add(leverage_metrics, "Deuda Neta / EBIT", net_debt_ebit, "< 1",
+         _safe_cmp_lt(net_debt_ebit, 1), "Proporción de deuda neta sobre EBIT", _fmt(net_debt_ebit, ".2f", "x"))
+
+    # ✦ NUEVO 3: Net Debt / EBITDA
+    nd_ebitda = ratios.get('net_debt_ebitda')
+    _add(leverage_metrics, "Net Debt / EBITDA", nd_ebitda, "< 3x",
+         _safe_cmp_lt(nd_ebitda, 3.0),
+         "Estándar de crédito y covenants bancarios: <2x conservador, 2-3x moderado, >4x alto riesgo — usado por Moody's y S&P",
+         _fmt(nd_ebitda, ".2f", "x"))
+
+    # ✦ NUEVO 4: DSCR
+    dscr_val = ratios.get('dscr')
+    _add(leverage_metrics, "DSCR (Debt Service Coverage)", dscr_val, "> 1.5x",
+         _safe_cmp_gt(dscr_val, 1.5),
+         "Capacidad de servicio de deuda = EBITDA / Intereses. <1.0 riesgo de impago; >2.0 zona segura",
+         _fmt(dscr_val, ".2f", "x"))
+
+    lt_cap = ratios.get('lt_debt_cap', 0) or 0
+    _add(leverage_metrics, "Long-Term Debt / Cap", lt_cap, "<= 0.5",
+         lt_cap <= 0.5, ">0.5 indica alta dependencia de deuda a largo plazo", f"{lt_cap*100:.1f}%")
+
+    de_v = ratios.get('de_ratio', 0) or 0
+    _add(leverage_metrics, "Índice estructura capital (D/E)", de_v, "< 2x",
+         de_v < 2, "Relación deuda/capital — comparar con peers del sector", f"{de_v:.2f}x")
+
+    nd_val = ratios.get('net_debt', 0) or 0
+    _add(leverage_metrics, "Deuda Neta (Net Debt)", nd_val, "< 0 (más efectivo que deuda)",
+         nd_val < 0, "Deuda total menos efectivo disponible", f"${nd_val:,.0f}")
+
+    ic_val = ratios.get('interest_coverage', 0) or 0
+    _add(leverage_metrics, "Cobertura de Intereses", ic_val, "> 2.5",
+         ic_val > 2.5, "Capacidad para cubrir pagos de intereses", f"{ic_val:.2f}x")
+
+    categories.append(RatioCategory(category="⚖️ Apalancamiento", metrics=leverage_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 4: VALORACIÓN
+    # =========================================================================
     valuation_metrics = []
-    
-    # P/E Ratio
+
     pe_val = ratios.get('pe_ratio')
     pe_passed = pe_val is not None and 0 < pe_val < 25
-    valuation_metrics.append(RatioMetric(
-        name="P/E Ratio (Precio/Beneficio)",
-        value=pe_val,
-        threshold="< 25",
-        passed=pe_passed,
-        interpretation="Valoración del mercado vs beneficios",
-        display_value=f"{pe_val:.2f}" if pe_val else "N/A"
-    ))
-    total_metrics += 1
-    favorable += 1 if pe_passed else 0
-    
-    # EV/EBIT
+    _add(valuation_metrics, "P/E Ratio (Precio/Beneficio)", pe_val, "< 25",
+         pe_passed, "Valoración del mercado vs beneficios", _fmt(pe_val, ".2f"))
+
+    # ✦ NUEVO 5: EV/EBITDA
+    ev_ebitda_val = ratios.get('ev_ebitda')
+    _add(valuation_metrics, "EV/EBITDA", ev_ebitda_val, "< 12x",
+         _safe_cmp_between(ev_ebitda_val, 0, 12),
+         "Múltiplo más usado en M&A y buy-side: ignora estructura de capital y D&A; <8x barato, 8-12x razonable, >15x caro",
+         _fmt(ev_ebitda_val, ".2f", "x"))
+
     ev_ebit_val = ratios.get('ev_ebit')
-    ev_ebit_passed = ev_ebit_val is not None and 0 < ev_ebit_val < 15
-    valuation_metrics.append(RatioMetric(
-        name="EV/EBIT",
-        value=ev_ebit_val,
-        threshold="< 15",
-        passed=ev_ebit_passed,
-        interpretation="Valoración empresarial vs EBIT",
-        display_value=f"{ev_ebit_val:.2f}" if ev_ebit_val else "N/A"
-    ))
-    total_metrics += 1
-    favorable += 1 if ev_ebit_passed else 0
-    
-    # Earning Yield
-    ey_val = ratios.get('earning_yield', 0)
-    ey_passed = ey_val > 8
-    valuation_metrics.append(RatioMetric(
-        name="Earning Yield (EBIT/EV)",
-        value=ey_val,
-        threshold="> 8%",
-        passed=ey_passed,
-        interpretation="Retorno operativo vs valor empresarial",
-        display_value=f"{ey_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if ey_passed else 0
-    
-    # P/S Ratio
+    _add(valuation_metrics, "EV/EBIT", ev_ebit_val, "< 15",
+         ev_ebit_val is not None and 0 < ev_ebit_val < 15,
+         "Valoración empresarial vs EBIT", _fmt(ev_ebit_val, ".2f"))
+
+    ey_val = ratios.get('earning_yield', 0) or 0
+    _add(valuation_metrics, "Earning Yield (EBIT/EV)", ey_val, "> 8%",
+         ey_val > 8, "Retorno operativo vs valor empresarial", f"{ey_val:.2f}%")
+
     ps_val = ratios.get('price_to_sales')
-    ps_passed = ps_val is not None and ps_val < 2
-    valuation_metrics.append(RatioMetric(
-        name="P/S Ratio (Precio/Ventas)",
-        value=ps_val,
-        threshold="< 2",
-        passed=ps_passed,
-        interpretation="Valoración del mercado vs ventas",
-        display_value=f"{ps_val:.2f}" if ps_val else "N/A"
-    ))
-    total_metrics += 1
-    favorable += 1 if ps_passed else 0
-    
-    categories.append(RatioCategory(
-        category="💰 Valoración",
-        metrics=valuation_metrics
-    ))
-    
-    # Category 5: Cash Flow Metrics
+    _add(valuation_metrics, "P/S Ratio (Precio/Ventas)", ps_val, "< 2",
+         ps_val is not None and ps_val < 2, "Valoración del mercado vs ventas", _fmt(ps_val, ".2f"))
+
+    evs = ratios.get('ev_sales', 0) or 0
+    _add(valuation_metrics, "EV/Sales", evs, "1-3x",
+         1 <= evs <= 3, "Valoración de la empresa vs ingresos", f"{evs:.2f}x")
+
+    ebit_ev = ratios.get('ebit_ev', 0) or 0
+    _add(valuation_metrics, "EBIT/EV (Earning Yield)", ebit_ev, "> 25%",
+         ebit_ev > 0.25, "Rendimiento operativo sobre el valor de empresa", f"{ebit_ev*100:.1f}%")
+
+    ev_fcfv = ratios.get('ev_fcf') or ratios.get('fcf_ev')
+    _add(valuation_metrics, "EV/FCF", ev_fcfv, "< 10x",
+         _safe_cmp_lt(ev_fcfv, 10), "Valoración del mercado vs flujo de caja libre", _fmt(ev_fcfv, ".1f", "x"))
+
+    # ✦ NUEVO 6: P/FCF
+    pfcf_val = ratios.get('price_to_fcf')
+    _add(valuation_metrics, "P/FCF (Precio / FCF)", pfcf_val, "< 20x",
+         _safe_cmp_between(pfcf_val, 0, 20),
+         "Valoración sobre flujo de caja real — más fiable que P/E; <15x atractivo, >25x caro; estándar en value investing",
+         _fmt(pfcf_val, ".1f", "x"))
+
+    # ✦ BUG FIX 3: PEG con detección de turnaround
+    peg_v    = ratios.get('peg_ratio')
+    peg_note = ratios.get('peg_note', 'sin_eps_growth')
+    if peg_note == "turnaround":
+        _add(valuation_metrics, "PEG Ratio", None, "< 0.5 (infravalorada)",
+             True, "EPS pasó de negativo a positivo — turnaround fundamental; señal positiva", "Turnaround ✓")
+    else:
+        _add(valuation_metrics, "PEG Ratio", peg_v, "< 0.5 (infravalorada)",
+             peg_v is not None and peg_v < 0.5,
+             "P/E ajustado por crecimiento de EPS — <1x razonable, <0.5x infravalorada",
+             _fmt(peg_v, ".2f", "x"))
+
+    ev_cfo_v = ratios.get('ev_cfo')
+    _add(valuation_metrics, "EV/CFO", ev_cfo_v, "< 1.3",
+         _safe_cmp_lt(ev_cfo_v, 1.3), "Valoración del mercado vs flujo de caja operativo", _fmt(ev_cfo_v, ".2f", "x"))
+
+    ev_gp_v = ratios.get('ev_gp')
+    _add(valuation_metrics, "EV/Gross Profit", ev_gp_v, "< 5x",
+         _safe_cmp_between(ev_gp_v, 0, 5), "Valoración respecto al margen bruto total", _fmt(ev_gp_v, ".2f", "x"))
+
+    pb_val = info.get('priceToBook')
+    if pb_val:
+        try:
+            pb_val = float(pb_val)
+        except Exception:
+            pb_val = None
+    _add(valuation_metrics, "P/B Ratio (Precio/Valor en Libros)", pb_val, "< 3x",
+         pb_val is not None and 0 < pb_val < 3, "Valoración del mercado vs valor contable", _fmt(pb_val, ".2f", "x"))
+
+    # ✦ NUEVO 7: Graham Number
+    gn_val = ratios.get('graham_number')
+    current_price_val = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
+    gn_passed = gn_val is not None and current_price_val > 0 and current_price_val < gn_val
+    _add(valuation_metrics, "Graham Number", gn_val, "Precio < Graham Number",
+         gn_passed,
+         "Precio justo de Graham: √(22.5 × EPS × BVPS) — si precio < GN, la acción es potencialmente infravalorada",
+         _fmt(gn_val, ".2f", "", "$"))
+
+    # ✦ NUEVO 8: Magic Formula Score (Greenblatt)
+    mf_val = ratios.get('magic_formula_score')
+    _add(valuation_metrics, "Magic Formula Score (Greenblatt)", mf_val, "> 20",
+         _safe_cmp_gt(mf_val, 20),
+         "Combina Earnings Yield (EBIT/EV) + ROIC — estrategia cuantitativa de Greenblatt; mayor score = mejor combinación valor+calidad",
+         _fmt(mf_val, ".1f"))
+
+    div_yield = info.get('dividendYield')
+    if div_yield:
+        try:
+            div_yield = float(div_yield) * 100
+        except Exception:
+            div_yield = 0.0
+    div_yield = div_yield or 0.0
+    _add(valuation_metrics, "Dividend Yield", div_yield, "> 1%",
+         div_yield > 1, "Rendimiento por dividendo sobre el precio actual", f"{div_yield:.2f}%")
+
+    payout_r = ratios.get('payout_ratio', None) or 0.0
+    _add(valuation_metrics, "Payout Ratio", payout_r, "< 60%",
+         0 < payout_r < 60, "Porcentaje de beneficios distribuidos como dividendo", f"{payout_r:.1f}%")
+
+    tobins_q_val = ratios.get('tobins_q', 0) or 0
+    _add(valuation_metrics, "Tobin's Q", tobins_q_val, "< 1 (infravalorada)",
+         tobins_q_val < 1, "Valor de mercado vs valor de reposición de activos", f"{tobins_q_val:.2f}")
+
+    ncavps_val = ratios.get('ncavps', 0) or 0
+    ncavps_passed = ncavps_val > 0 and current_price_val > 0 and current_price_val < ncavps_val
+    _add(valuation_metrics, "NCAVPS (Net Current Asset Value/Share)", ncavps_val,
+         "Precio < NCAVPS (Graham deep value)",
+         ncavps_passed, "Valor neto de activos corrientes por acción — señal de Graham deep value", f"${ncavps_val:.2f}")
+
+    categories.append(RatioCategory(category="💰 Valoración", metrics=valuation_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 5: FLUJO DE CAJA
+    # =========================================================================
     cashflow_metrics = []
-    
-    # Free Cash Flow
-    fcf_val = ratios.get('free_cash_flow', 0)
-    fcf_passed = fcf_val > 0
-    cashflow_metrics.append(RatioMetric(
-        name="Flujo de Caja Libre (FCF)",
-        value=fcf_val,
-        threshold="> 0",
-        passed=fcf_passed,
-        interpretation="Efectivo generado después de inversiones",
-        display_value=f"${fcf_val:,.0f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if fcf_passed else 0
-    
-    # FCF Margin
-    fcf_m_val = ratios.get('fcf_margin', 0)
-    fcf_m_passed = fcf_m_val > 15
-    cashflow_metrics.append(RatioMetric(
-        name="Margen FCF (FCF Margin)",
-        value=fcf_m_val,
-        threshold="> 15%",
-        passed=fcf_m_passed,
-        interpretation="FCF como % de las ventas",
-        display_value=f"{fcf_m_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if fcf_m_passed else 0
-    
-    # Operating CF to Sales
-    ocf_s_val = ratios.get('operating_cf_to_sales', 0)
-    ocf_s_passed = ocf_s_val > 15
-    cashflow_metrics.append(RatioMetric(
-        name="OCF/Ventas",
-        value=ocf_s_val,
-        threshold="> 15%",
-        passed=ocf_s_passed,
-        interpretation="Conversión de ventas a flujo de caja",
-        display_value=f"{ocf_s_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if ocf_s_passed else 0
-    
-    # Capex to Revenue
-    capex_r_val = ratios.get('capex_to_revenue', 0)
-    capex_r_passed = capex_r_val < 20
-    cashflow_metrics.append(RatioMetric(
-        name="Capex/Ventas",
-        value=capex_r_val,
-        threshold="< 20%",
-        passed=capex_r_passed,
-        interpretation="Inversión en activos vs ventas",
-        display_value=f"{capex_r_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if capex_r_passed else 0
-    
-    categories.append(RatioCategory(
-        category="💵 Flujo de Caja",
-        metrics=cashflow_metrics
-    ))
-    
-    # Category 7: Risk & Capital Structure
+
+    fcf_val = ratios.get('free_cash_flow', 0) or 0
+    _add(cashflow_metrics, "Flujo de Caja Libre (FCF)", fcf_val, "> 0",
+         fcf_val > 0, "Efectivo generado después de inversiones de capital", f"${fcf_val:,.0f}")
+
+    fcf_m_val = ratios.get('fcf_margin', 0) or 0
+    _add(cashflow_metrics, "Margen FCF (FCF Margin)", fcf_m_val, "> 15%",
+         fcf_m_val > 15, "FCF como % de las ventas", f"{fcf_m_val:.2f}%")
+
+    # CAGR FCF con detección de turnaround
+    cagr_fcfv     = ratios.get('cagr_fcf_4y', 0) or 0
+    cagr_fcf_note = ratios.get('cagr_fcf_note', 'ok')
+    if cagr_fcf_note == 'turnaround':
+        _add(cashflow_metrics, "CAGR FCF 4 años", None, "> 10%",
+             True, "FCF pasó de negativo a positivo — turnaround de generación de caja", "Turnaround ✓")
+    else:
+        _add(cashflow_metrics, "CAGR FCF 4 años", cagr_fcfv, "> 10%",
+             cagr_fcfv > 0.10, "Crecimiento del flujo de caja libre — calidad real del negocio", f"{cagr_fcfv*100:.1f}%")
+
+    fcf_s = ratios.get('fcf_sales', 0) or 0
+    _add(cashflow_metrics, "FCF/Ventas", fcf_s, "> 1%",
+         fcf_s > 0.01, "Margen alto >10-15% indica fuerte generación de caja", f"{fcf_s*100:.1f}%")
+
+    ocf_m = ratios.get('ocf_margin', 0) or 0
+    _add(cashflow_metrics, "Operating CF Margin", ocf_m, "> 25%",
+         ocf_m > 0.25, "Eficiencia operativa — valida rentabilidad real vs. beneficios contables", f"{ocf_m*100:.1f}%")
+
+    capex_m = ratios.get('capex_margin', 0) or 0
+    _add(cashflow_metrics, "Capex Margin", capex_m, "< 10%",
+         capex_m < 0.10, "Bajo (<10%) indica eficiencia y madurez; alto señala crecimiento o sector intensivo", f"{capex_m*100:.1f}%")
+
+    ccf_v = ratios.get('ccf', 0) or 0
+    _add(cashflow_metrics, "Capital Cash Flow (CCF)", ccf_v, "> 0",
+         ccf_v > 0, "Capacidad para retornos a inversores; incluye efecto de la deuda", f"{ccf_v:,.0f}")
+
+    ocf_s_val = ratios.get('operating_cf_to_sales', 0) or 0
+    _add(cashflow_metrics, "OCF/Ventas", ocf_s_val, "> 15%",
+         ocf_s_val > 15, "Conversión de ventas a flujo de caja operativo", f"{ocf_s_val:.2f}%")
+
+    capex_r_val = ratios.get('capex_to_revenue', 0) or 0
+    _add(cashflow_metrics, "Capex/Ventas", capex_r_val, "< 20%",
+         capex_r_val < 20, "Inversión en activos vs ventas totales", f"{capex_r_val:.2f}%")
+
+    cf_debt_val = ratios.get('cash_flow_to_debt', 0) or 0
+    _add(cashflow_metrics, "Flujo de Caja/Deuda", cf_debt_val, "> 20%",
+         cf_debt_val > 20, "Capacidad de pago de deuda con flujo operativo", f"{cf_debt_val:.2f}%")
+
+    fcf_ebitda_val = ratios.get('fcf_to_ebitda', 0) or 0
+    _add(cashflow_metrics, "FCF/EBITDA", fcf_ebitda_val, "> 50%",
+         fcf_ebitda_val > 50, "Conversión de EBITDA a flujo de caja libre", f"{fcf_ebitda_val:.2f}%")
+
+    ebit_fcf = ratios.get('ebit_fcf')
+    _add(cashflow_metrics, "EBIT/FCF", ebit_fcf, "0.5 - 2.0",
+         ebit_fcf is not None and 0.5 <= ebit_fcf <= 2.0,
+         "Calidad de conversión de EBIT a caja libre", _fmt(ebit_fcf, ".2f", "x"))
+
+    accrual_r = ratios.get('accrual_ratio', 0) or 0
+    _add(cashflow_metrics, "Accrual Ratio (OCF/NI)", accrual_r, "> 1.0",
+         accrual_r > 1.0, "Ratio > 1 indica que el flujo operativo supera al beneficio neto — alta calidad", f"{accrual_r:.2f}x")
+
+    capex_ni = ratios.get('capex_ni', 0) or 0
+    _add(cashflow_metrics, "Capex / Net Income", capex_ni, "< 1.0",
+         capex_ni < 1.0, "Bajo capex relativo al beneficio indica negocios escalables", f"{capex_ni:.2f}x")
+
+    categories.append(RatioCategory(category="💵 Flujo de Caja", metrics=cashflow_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 6: EFICIENCIA OPERATIVA
+    # =========================================================================
+    efficiency_metrics = []
+
+    asset_t = ratios.get('asset_turnover', 0) or 0
+    _add(efficiency_metrics, "Asset Turnover", asset_t, "> 0.5",
+         asset_t > 0.5, "Eficiencia en el uso de activos para generar ventas", f"{asset_t:.2f}x")
+
+    sales_fa_v = ratios.get('sales_fa', 0) or 0
+    _add(efficiency_metrics, "Sales / Fixed Assets", sales_fa_v, "> 2x",
+         sales_fa_v > 2, "Alto ratio indica máxima eficiencia de activos fijos", f"{sales_fa_v:.2f}x")
+
+    sales_eq = ratios.get('sales_eq', 0) or 0
+    _add(efficiency_metrics, "Sales / Equity", sales_eq, "> 3x",
+         sales_eq > 3, "Eficiencia en el uso del capital propio para generar ventas", f"{sales_eq:.2f}x")
+
+    capex_ocf_v = ratios.get('capex_ocf', 0) or 0
+    _add(efficiency_metrics, "Capex / OCF", capex_ocf_v, "< 1",
+         capex_ocf_v < 1, "Proporción baja indica que el negocio consume poco capex relativo al cash generado", f"{capex_ocf_v:.2f}")
+
+    capex_da_val = ratios.get('capex_to_da', 0) or 0
+    _add(efficiency_metrics, "Capex / Depreciación", capex_da_val, "> 1x",
+         capex_da_val > 1, "Inversión vs depreciación — >1 indica inversión neta en activos", f"{capex_da_val:.2f}x")
+
+    goodwill_val = ratios.get('goodwill_to_assets', 0) or 0
+    _add(efficiency_metrics, "Goodwill / Activos", goodwill_val, "< 20%",
+         goodwill_val < 20, "Proporción de intangibles sobre activos totales", f"{goodwill_val:.2f}%")
+
+    kto_val = ratios.get('kto', 0) or 0
+    _add(efficiency_metrics, "KTO (Capital Trabajo Oper./Ventas)", kto_val, "< 15%",
+         kto_val < 0.15, "Eficiencia en gestión de capital de trabajo operativo", f"{kto_val*100:.2f}%")
+
+    # ✦ NUEVO 9: DSO
+    dso_val = ratios.get('dso')
+    _add(efficiency_metrics, "DSO (Days Sales Outstanding)", dso_val, "< 45 días",
+         _safe_cmp_lt(dso_val, 45),
+         "Días de cobro — cuánto tarda en cobrar sus ventas; <30 días excelente, >60 días preocupante; clave en análisis de capital circulante",
+         _fmt(dso_val, ".0f", " días"))
+
+    # ✦ NUEVO 10: DIO
+    dio_val = ratios.get('dio')
+    _add(efficiency_metrics, "DIO (Days Inventory Outstanding)", dio_val, "< 60 días",
+         _safe_cmp_lt(dio_val, 60),
+         "Días de inventario — bajo indica alta rotación y menor riesgo de obsolescencia; sectores tech suelen tener <30 días",
+         _fmt(dio_val, ".0f", " días"))
+
+    # ✦ NUEVO 11: DPO
+    dpo_val = ratios.get('dpo')
+    _add(efficiency_metrics, "DPO (Days Payable Outstanding)", dpo_val, "> 30 días",
+         _safe_cmp_gt(dpo_val, 30),
+         "Días de pago — mayor DPO indica más poder de negociación con proveedores y mejor gestión de caja",
+         _fmt(dpo_val, ".0f", " días"))
+
+    # ✦ NUEVO 12: CCC
+    ccc_val = ratios.get('ccc')
+    _add(efficiency_metrics, "CCC (Cash Conversion Cycle)", ccc_val, "< 30 días",
+         ccc_val is not None and ccc_val < 30,
+         "CCC = DSO + DIO - DPO — negativo significa que cobra antes de pagar (ventaja competitiva estructural como Amazon o Walmart)",
+         _fmt(ccc_val, ".0f", " días"))
+
+    wc_turn = ratios.get('wc_turn', 0) or 0
+    _add(efficiency_metrics, "WC Turnover (días)", wc_turn, "< 90 días",
+         0 < wc_turn < 90, "Días que tarda el capital de trabajo en rotar", f"{wc_turn:.1f} días")
+
+    wc_prod = ratios.get('wc_prod', 0) or 0
+    _add(efficiency_metrics, "WC Productivity (Ventas/WC)", wc_prod, "> 3x",
+         wc_prod > 3, "Productividad del capital de trabajo para generar ventas", f"{wc_prod:.2f}x")
+
+    # ✦ NUEVO 2: Gross Profit per Employee
+    gp_emp = ratios.get('gross_profit_per_employee', 0) or 0
+    _add(efficiency_metrics, "Gross Profit per Employee", gp_emp, "> $150K",
+         gp_emp > 150000,
+         "Productividad por empleado — KPI de SaaS y tech; >$200K excelente, <$50K negocio intensivo en mano de obra",
+         f"${gp_emp:,.0f}")
+
+    # ✦ NUEVO 15: Revenue per Employee
+    rev_emp = ratios.get('revenue_per_employee') or 0
+    _add(efficiency_metrics, "Revenue per Employee", rev_emp, "> $300K",
+         rev_emp is not None and rev_emp > 300000,
+         "Productividad de la fuerza laboral — alto en tech/SaaS y bajo en retail/manufactura; mide escalabilidad del modelo",
+         f"${rev_emp:,.0f}" if rev_emp else "N/A")
+
+    rd_gp = ratios.get('rd_gp', 0) or 0
+    _add(efficiency_metrics, "R&D / Gross Profit", rd_gp, "< 0.4",
+         rd_gp < 0.4, "Inversión en I+D como % del margen bruto — equilibrio innovación/eficiencia", f"{rd_gp*100:.1f}%")
+
+    ad_fixed = ratios.get('ad_fixed_ratio', 0) or 0
+    _add(efficiency_metrics, "Fixed Assets / Total Assets", ad_fixed, "< 0.5",
+         ad_fixed < 0.5, "Peso de activos fijos en el total — bajo indica modelo asset-light", f"{ad_fixed*100:.1f}%")
+
+    categories.append(RatioCategory(category="⚙️ Eficiencia Operativa", metrics=efficiency_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 7: RIESGO Y CAPITAL
+    # =========================================================================
     risk_metrics = []
-    
-    # Sharpe Ratio
-    sharpe_val = ratios.get('sharpe_ratio', 0)
-    sharpe_passed = sharpe_val > 1.0
-    risk_metrics.append(RatioMetric(
-        name="Sharpe Ratio",
-        value=sharpe_val,
-        threshold="> 1.0 (buen retorno ajustado por riesgo)",
-        passed=sharpe_passed,
-        interpretation="Retorno por unidad de riesgo (>1 bueno, >2 excelente)",
-        display_value=f"{sharpe_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if sharpe_passed else 0
-    
-    # Beta
-    beta_val = ratios.get('beta', 0)
-    beta_passed = 0.8 <= beta_val <= 1.2
-    risk_metrics.append(RatioMetric(
-        name="Beta",
-        value=beta_val,
-        threshold="0.8 - 1.2 (moderado)",
-        passed=beta_passed,
-        interpretation="Volatilidad del activo vs mercado",
-        display_value=f"{beta_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if beta_passed else 0
-    
-    # WACC
-    wacc_val = ratios.get('wacc', 0)
-    wacc_passed = wacc_val < 12
-    risk_metrics.append(RatioMetric(
-        name="WACC (Costo Promedio Ponderado)",
-        value=wacc_val,
-        threshold="< 12%",
-        passed=wacc_passed,
-        interpretation="Costo de capital de la empresa",
-        display_value=f"{wacc_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if wacc_passed else 0
-    
-    # ROIC vs WACC Spread
-    spread_val = ratios.get('roic_wacc_spread', 0)
-    spread_passed = spread_val > 0
-    risk_metrics.append(RatioMetric(
-        name="ROIC vs WACC Spread",
-        value=spread_val,
-        threshold="> 0% (creación de valor)",
-        passed=spread_passed,
-        interpretation="Diferencia entre retorno y costo de capital",
-        display_value=f"{spread_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if spread_passed else 0
-    
-    # Interest Coverage
-    ic_val = ratios.get('interest_coverage', 0)
-    ic_passed = ic_val > 2.5
-    risk_metrics.append(RatioMetric(
-        name="Cobertura de Intereses",
-        value=ic_val,
-        threshold="> 2.5",
-        passed=ic_passed,
-        interpretation="Capacidad para cubrir pagos de intereses",
-        display_value=f"{ic_val:.2f}x"
-    ))
-    total_metrics += 1
-    favorable += 1 if ic_passed else 0
-    
-    categories.append(RatioCategory(
-        category="⚠️ Riesgo y Capital",
-        metrics=risk_metrics
-    ))
-    
-    # Category 8: Advanced Metrics
-    advanced_metrics = []
-    
-    # EV/CI
-    ev_ci_val = ratios.get('ev_ci')
-    ev_ci_passed = ev_ci_val is not None and ev_ci_val > 1
-    advanced_metrics.append(RatioMetric(
-        name="EV/CI (Valor Empresa/Capital Invertido)",
-        value=ev_ci_val,
-        threshold="> 1",
-        passed=ev_ci_passed,
-        interpretation="Valoración vs capital invertido",
-        display_value=f"{ev_ci_val:.2f}" if ev_ci_val else "N/A"
-    ))
-    total_metrics += 1
-    favorable += 1 if ev_ci_passed else 0
-    
-    # FCF/EBITDA
-    fcf_ebitda_val = ratios.get('fcf_to_ebitda', 0)
-    fcf_ebitda_passed = fcf_ebitda_val > 50
-    advanced_metrics.append(RatioMetric(
-        name="FCF/EBITDA",
-        value=fcf_ebitda_val,
-        threshold="> 50%",
-        passed=fcf_ebitda_passed,
-        interpretation="Conversión de EBITDA a flujo de caja",
-        display_value=f"{fcf_ebitda_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if fcf_ebitda_passed else 0
-    
-    # Capex/DA
-    capex_da_val = ratios.get('capex_to_da', 0)
-    capex_da_passed = capex_da_val > 1
-    advanced_metrics.append(RatioMetric(
-        name="Capex/Depreciación",
-        value=capex_da_val,
-        threshold="> 1",
-        passed=capex_da_passed,
-        interpretation="Inversión vs depreciación de activos",
-        display_value=f"{capex_da_val:.2f}x"
-    ))
-    total_metrics += 1
-    favorable += 1 if capex_da_passed else 0
-    
-    # Goodwill to Assets
-    goodwill_val = ratios.get('goodwill_to_assets', 0)
-    goodwill_passed = goodwill_val < 20
-    advanced_metrics.append(RatioMetric(
-        name="Goodwill/Activos",
-        value=goodwill_val,
-        threshold="< 20%",
-        passed=goodwill_passed,
-        interpretation="Proporción de activos intangibles",
-        display_value=f"{goodwill_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if goodwill_passed else 0
-    
-    # Cash Flow to Debt
-    cf_debt_val = ratios.get('cash_flow_to_debt', 0)
-    cf_debt_passed = cf_debt_val > 20
-    advanced_metrics.append(RatioMetric(
-        name="Flujo de Caja/Deuda",
-        value=cf_debt_val,
-        threshold="> 20%",
-        passed=cf_debt_passed,
-        interpretation="Capacidad de pago de deuda con flujo operativo",
-        display_value=f"{cf_debt_val:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if cf_debt_passed else 0
-    
-    # KTO
-    kto_val = ratios.get('kto', 0)
-    kto_passed = kto_val < 0.15
-    advanced_metrics.append(RatioMetric(
-        name="KTO (Capital Trabajo Operativo/Ventas)",
-        value=kto_val,
-        threshold="< 15%",
-        passed=kto_passed,
-        interpretation="Eficiencia en gestión de capital de trabajo",
-        display_value=f"{kto_val*100:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if kto_passed else 0
-    
-    categories.append(RatioCategory(
-        category="🔬 Métricas Avanzadas",
-        metrics=advanced_metrics
-    ))
-    
-    # Category 9: Quality Scores
+
+    sharpe_val = ratios.get('sharpe_ratio', 0) or 0
+    _add(risk_metrics, "Sharpe Ratio", sharpe_val, "> 1.0",
+         sharpe_val > 1.0, "Retorno ajustado por riesgo (>1 bueno, >2 excelente)", f"{sharpe_val:.2f}")
+
+    ann_ret = ratios.get('annualized_return', 0) or 0
+    _add(risk_metrics, "Retorno Anualizado (1Y)", ann_ret, "> 10%",
+         ann_ret > 10, "Retorno anualizado de los últimos 12 meses", f"{ann_ret:.2f}%")
+
+    ann_vol = ratios.get('annualized_volatility', 0) or 0
+    _add(risk_metrics, "Volatilidad Anualizada", ann_vol, "< 25%",
+         ann_vol < 25, "Desviación estándar anualizada de retornos — menor es más estable", f"{ann_vol:.2f}%")
+
+    beta_val = ratios.get('beta', 0) or 0
+    _add(risk_metrics, "Beta", beta_val, "0.8 - 1.2",
+         0.8 <= beta_val <= 1.2, "Volatilidad del activo vs el mercado", f"{beta_val:.2f}")
+
+    wacc_val = ratios.get('wacc', 0) or 0
+    _add(risk_metrics, "WACC", wacc_val, "< 12%",
+         wacc_val < 12, "Costo promedio ponderado de capital", f"{wacc_val:.2f}%")
+
+    spread_val = ratios.get('roic_wacc_spread', 0) or 0
+    _add(risk_metrics, "ROIC vs WACC Spread", spread_val, "> 0%",
+         spread_val > 0, "Diferencia entre retorno y costo de capital — positivo = crea valor", f"{spread_val:.2f}%")
+
+    categories.append(RatioCategory(category="⚠️ Riesgo y Capital", metrics=risk_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 8: CALIDAD CONTABLE Y SALUD FINANCIERA
+    # =========================================================================
     quality_metrics = []
-    
-    # Sloan Ratio
-    sloan_val = ratios.get('sloan_ratio', 0)
-    sloan_passed = -0.1 <= sloan_val <= 0.1
-    quality_metrics.append(RatioMetric(
-        name="Sloan Ratio (Accruals)",
-        value=sloan_val,
-        threshold="-0.1 a 0.1 (accruals normales)",
-        passed=sloan_passed,
-        interpretation="Detecta manipulación contable via accruals",
-        display_value=f"{sloan_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if sloan_passed else 0
-    
-    # Beneish M-Score
-    beneish_val = ratios.get('beneish_m_score', 0)
-    beneish_passed = beneish_val < -2.22
-    quality_metrics.append(RatioMetric(
-        name="Beneish M-Score",
-        value=beneish_val,
-        threshold="< -2.22 (sin manipulación)",
-        passed=beneish_passed,
-        interpretation="Detección de manipulación contable",
-        display_value=f"{beneish_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if beneish_passed else 0
-    
-    # Ohlson O-Score
-    ohlson_val = ratios.get('ohlson_o_score', 0)
-    ohlson_passed = ohlson_val < 0.5
-    quality_metrics.append(RatioMetric(
-        name="Ohlson O-Score",
-        value=ohlson_val,
-        threshold="< 0.5 (bajo riesgo quiebra)",
-        passed=ohlson_passed,
-        interpretation="Predicción de quiebra a 2 años",
-        display_value=f"{ohlson_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if ohlson_passed else 0
-    
-    # Altman Z-Score
-    altman_val = ratios.get('altman_z_score', 0)
-    altman_passed = altman_val > 2.99
-    quality_metrics.append(RatioMetric(
-        name="Altman Z-Score",
-        value=altman_val,
-        threshold="> 2.99 (zona segura)",
-        passed=altman_passed,
-        interpretation="Predicción de quiebra (>2.99 segura, <1.81 peligro)",
-        display_value=f"{altman_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if altman_passed else 0
-    
-    # Fulmer H-Score
-    fulmer_val = ratios.get('fulmer_h_score', 0)
-    fulmer_passed = fulmer_val > 0
-    quality_metrics.append(RatioMetric(
-        name="Fulmer H-Score",
-        value=fulmer_val,
-        threshold="> 0 (empresa sólida)",
-        passed=fulmer_passed,
-        interpretation="Solidez financiera general",
-        display_value=f"{fulmer_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if fulmer_passed else 0
-    
-    # Piotroski F-Score
-    piotroski_val = ratios.get('piotroski_f_score', 0)
-    piotroski_passed = piotroski_val >= 7
-    quality_metrics.append(RatioMetric(
-        name="Piotroski F-Score",
-        value=piotroski_val,
-        threshold=">= 7 (empresa fuerte)",
-        passed=piotroski_passed,
-        interpretation="Solidez financiera (0-9, 7+ es fuerte)",
-        display_value=f"{int(piotroski_val)}"
-    ))
-    total_metrics += 1
-    favorable += 1 if piotroski_passed else 0
-    
-    # Montier C-Score
-    montier_val = ratios.get('montier_c_score', 0)
-    montier_passed = montier_val <= 2
-    quality_metrics.append(RatioMetric(
-        name="Montier C-Score",
-        value=montier_val,
-        threshold="<= 2 (bajo riesgo)",
-        passed=montier_passed,
-        interpretation="Riesgo de manipulación contable (0-3)",
-        display_value=f"{int(montier_val)}"
-    ))
-    total_metrics += 1
-    favorable += 1 if montier_passed else 0
-    
-    # Springate Score
-    springate_val = ratios.get('springate_score', 0)
-    springate_passed = springate_val > 0.862
-    quality_metrics.append(RatioMetric(
-        name="Springate S-Score",
-        value=springate_val,
-        threshold="> 0.862 (financieramente sana)",
-        passed=springate_passed,
-        interpretation="Modelo alternativo de predicción de quiebra",
-        display_value=f"{springate_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if springate_passed else 0
-    
-    # CA-SCORE
-    ca_val = ratios.get('ca_score', 0)
-    ca_passed = ca_val > -0.3
-    quality_metrics.append(RatioMetric(
-        name="CA-SCORE",
-        value=ca_val,
-        threshold="> -0.3 (bajo riesgo crédito)",
-        passed=ca_passed,
-        interpretation="Credit Analysis Score (riesgo crediticio)",
-        display_value=f"{ca_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if ca_passed else 0
-    
-    # Kanitz Score
-    kanitz_val = ratios.get('kanitz_score', 0)
-    kanitz_passed = kanitz_val > 0
-    quality_metrics.append(RatioMetric(
-        name="Kanitz Score",
-        value=kanitz_val,
-        threshold="> 0 (solvente)",
-        passed=kanitz_passed,
-        interpretation="Termómetro de Insolvencia (<-3 peligro, >0 solvente)",
-        display_value=f"{kanitz_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if kanitz_passed else 0
-    
-    # Tobin's Q
-    tobins_q_val = ratios.get('tobins_q', 0)
-    tobins_q_passed = tobins_q_val < 1
-    quality_metrics.append(RatioMetric(
-        name="Tobin's Q Ratio",
-        value=tobins_q_val,
-        threshold="< 1 (subvalorada)",
-        passed=tobins_q_passed,
-        interpretation="Valor de mercado vs valor libro (<1 subvalorada)",
-        display_value=f"{tobins_q_val:.2f}"
-    ))
-    total_metrics += 1
-    favorable += 1 if tobins_q_passed else 0
-    
-    categories.append(RatioCategory(
-        category="📋 Calidad Contable y Salud Financiera",
-        metrics=quality_metrics
-    ))
-    
-    # Category 10: Price Performance
+
+    sloan_val = ratios.get('sloan_ratio', 0) or 0
+    _add(quality_metrics, "Sloan Ratio (Accruals)", sloan_val, "-0.1 a 0.1",
+         -0.1 <= sloan_val <= 0.1, "Detecta manipulación contable via accruals", f"{sloan_val:.2f}")
+
+    beneish_val = ratios.get('beneish_m_score', 0) or 0
+    _add(quality_metrics, "Beneish M-Score", beneish_val, "< -2.22",
+         beneish_val < -2.22, "Detección de manipulación contable", f"{beneish_val:.2f}")
+
+    ohlson_val = ratios.get('ohlson_o_score', 0) or 0
+    _add(quality_metrics, "Ohlson O-Score", ohlson_val, "< 0.5",
+         ohlson_val < 0.5, "Predicción de quiebra a 2 años — menor es mejor", f"{ohlson_val:.2f}")
+
+    altman_val = ratios.get('altman_z_score', 0) or 0
+    _add(quality_metrics, "Altman Z-Score", altman_val, "> 2.99",
+         altman_val > 2.99, "Predicción de quiebra (>2.99 segura, <1.81 zona peligro)", f"{altman_val:.2f}")
+
+    fulmer_val = ratios.get('fulmer_h_score', 0) or 0
+    _add(quality_metrics, "Fulmer H-Score", fulmer_val, "> 0",
+         fulmer_val > 0, "Solidez financiera general", f"{fulmer_val:.2f}")
+
+    piotroski_val = ratios.get('piotroski_f_score', 0) or 0
+    _add(quality_metrics, "Piotroski F-Score", piotroski_val, ">= 7",
+         piotroski_val >= 7, "Solidez financiera (0-9, 7+ es fuerte)", f"{int(piotroski_val)}")
+
+    montier_val = ratios.get('montier_c_score', 0) or 0
+    _add(quality_metrics, "Montier C-Score", montier_val, "<= 2",
+         montier_val <= 2, "Riesgo de manipulación contable (0-3, menor es mejor)", f"{int(montier_val)}")
+
+    springate_val = ratios.get('springate_score', 0) or 0
+    _add(quality_metrics, "Springate S-Score", springate_val, "> 0.862",
+         springate_val > 0.862, "Modelo alternativo de predicción de quiebra", f"{springate_val:.2f}")
+
+    ca_val = ratios.get('ca_score', 0) or 0
+    _add(quality_metrics, "CA-SCORE", ca_val, "> -0.3",
+         ca_val > -0.3, "Credit Analysis Score — riesgo crediticio", f"{ca_val:.2f}")
+
+    kanitz_val = ratios.get('kanitz_score', 0) or 0
+    _add(quality_metrics, "Kanitz Score", kanitz_val, "> 0",
+         kanitz_val > 0, "Termómetro de Insolvencia (<-3 peligro, >0 solvente)", f"{kanitz_val:.2f}")
+
+    zmijewski_val = ratios.get('zmijewski_score', 0) or 0
+    _add(quality_metrics, "Zmijewski Score", zmijewski_val, "< 0",
+         zmijewski_val < 0, "Predicción de insolvencia — negativo indica bajo riesgo", f"{zmijewski_val:.2f}")
+
+    categories.append(RatioCategory(category="📋 Calidad Contable y Salud Financiera",
+                                     metrics=quality_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 9: RENDIMIENTO DE PRECIO
+    # =========================================================================
     price_metrics = []
-    
-    # 52-Week High
-    high_52w = ratios.get('fifty_two_week_high', 0)
+
+    high_52w = ratios.get('fifty_two_week_high', 0) or 0
     price_metrics.append(RatioMetric(
-        name="Máximo 52 Semanas",
-        value=high_52w,
-        threshold="Referencia",
-        passed=True,
-        interpretation="Precio más alto en el último año",
+        name="Máximo 52 Semanas", value=high_52w, threshold="Referencia",
+        passed=True, interpretation="Precio más alto en el último año",
         display_value=f"${high_52w:.2f}"
     ))
-    
-    # 52-Week Low
-    low_52w = ratios.get('fifty_two_week_low', 0)
+
+    low_52w = ratios.get('fifty_two_week_low', 0) or 0
     price_metrics.append(RatioMetric(
-        name="Mínimo 52 Semanas",
-        value=low_52w,
-        threshold="Referencia",
-        passed=True,
-        interpretation="Precio más bajo en el último año",
+        name="Mínimo 52 Semanas", value=low_52w, threshold="Referencia",
+        passed=True, interpretation="Precio más bajo en el último año",
         display_value=f"${low_52w:.2f}"
     ))
-    
-    # % Below 52W High
-    below_high = ratios.get('pct_below_52w_high', 0)
-    below_high_passed = below_high < 20
-    price_metrics.append(RatioMetric(
-        name="% Bajo Máximo 52S",
-        value=below_high,
-        threshold="< 20% (cerca del máximo)",
-        passed=below_high_passed,
-        interpretation="Distancia del precio máximo anual",
-        display_value=f"-{below_high:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if below_high_passed else 0
-    
-    # % Above 52W Low
-    above_low = ratios.get('pct_above_52w_low', 0)
-    above_low_passed = above_low > 20
-    price_metrics.append(RatioMetric(
-        name="% Sobre Mínimo 52S",
-        value=above_low,
-        threshold="> 20% (lejos del mínimo)",
-        passed=above_low_passed,
-        interpretation="Distancia del precio mínimo anual",
-        display_value=f"+{above_low:.2f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if above_low_passed else 0
-    
-    categories.append(RatioCategory(
-        category="📊 Rendimiento de Precio",
-        metrics=price_metrics
-    ))
-    
-    # Category 11: Valoración según Benjamin Graham
+
+    below_high = ratios.get('pct_below_52w_high', 0) or 0
+    _add(price_metrics, "% Bajo Máximo 52S", below_high, "< 20%",
+         below_high < 20, "Distancia del precio máximo anual", f"-{below_high:.2f}%")
+
+    above_low = ratios.get('pct_above_52w_low', 0) or 0
+    _add(price_metrics, "% Sobre Mínimo 52S", above_low, "> 20%",
+         above_low > 20, "Distancia del precio mínimo anual", f"+{above_low:.2f}%")
+
+    categories.append(RatioCategory(category="📊 Rendimiento de Precio", metrics=price_metrics))
+
+    # =========================================================================
+    # CATEGORÍA 10: VALORACIÓN GRAHAM / DCF / EPV
+    # =========================================================================
     graham_metrics = []
-    
-    # Valor Intrínseco Graham
-    vi_graham = ratios.get('intrinsic_value_graham', 0)
-    current_price_val = info.get('currentPrice', info.get('regularMarketPrice', 0))
+
+    vi_dcf = ratios.get('intrinsic_value', 0) or 0
     graham_metrics.append(RatioMetric(
-        name="Valor Intrínseco (Graham)",
-        value=vi_graham,
-        threshold="Referencia",
-        passed=True,
-        interpretation="Valor justo calculado por fórmula de Graham",
+        name="Valor Intrínseco (DCF)", value=vi_dcf, threshold="Referencia",
+        passed=True, interpretation="Valor justo calculado con modelo DCF simplificado",
+        display_value=f"${vi_dcf:.2f}"
+    ))
+
+    mos_dcf = ratios.get('margin_of_safety', 0) or 0
+    _add(graham_metrics, "Margen de Seguridad (DCF)", mos_dcf, ">= 20%",
+         mos_dcf >= 20, "Descuento del precio actual vs valor intrínseco DCF", f"{mos_dcf:.1f}%")
+
+    # ✦ NUEVO 14: EPV (Earnings Power Value) — Bruce Greenwald
+    epv_val = ratios.get('epv_per_share')
+    epv_passed = epv_val is not None and current_price_val > 0 and current_price_val < epv_val
+    graham_metrics.append(RatioMetric(
+        name="EPV (Earnings Power Value)", value=epv_val,
+        threshold="Precio < EPV",
+        passed=epv_passed,
+        interpretation="Valor del negocio sin crecimiento (Greenwald): NOPAT / WACC - Deuda Neta. Si precio < EPV, el mercado no paga por crecimiento futuro — señal de compra conservadora",
+        display_value=_fmt(epv_val, ".2f", "", "$")
+    ))
+
+    vi_graham = ratios.get('intrinsic_value_graham', 0) or 0
+    graham_metrics.append(RatioMetric(
+        name="Valor Intrínseco (Graham)", value=vi_graham, threshold="Referencia",
+        passed=True, interpretation="Valor justo calculado por fórmula de Benjamin Graham",
         display_value=f"${vi_graham:.2f}"
     ))
-    
-    # Margen de Seguridad Graham
-    mos_graham = ratios.get('margin_of_safety_graham', 0)
-    mos_graham_passed = mos_graham >= 20
+
+    mos_graham = ratios.get('margin_of_safety_graham', 0) or 0
+    _add(graham_metrics, "Margen de Seguridad (Graham)", mos_graham, ">= 20%",
+         mos_graham >= 20, "Descuento del precio actual vs valor intrínseco Graham", f"{mos_graham:.1f}%")
+
+    target_cons = ratios.get('target_price_conservative', 0) or 0
     graham_metrics.append(RatioMetric(
-        name="Margen de Seguridad (Graham)",
-        value=mos_graham,
-        threshold=">= 20% (subvalorada)",
-        passed=mos_graham_passed,
-        interpretation="Descuento del precio actual vs valor intrínseco",
-        display_value=f"{mos_graham:.1f}%"
-    ))
-    total_metrics += 1
-    favorable += 1 if mos_graham_passed else 0
-    
-    # Target Price Conservative
-    target_cons = ratios.get('target_price_conservative', 0)
-    graham_metrics.append(RatioMetric(
-        name="Precio Objetivo Conservador",
-        value=target_cons,
+        name="Precio Objetivo Conservador", value=target_cons,
         threshold="75% del VI (25% margen)",
         passed=current_price_val <= target_cons if target_cons > 0 else False,
-        interpretation="Precio de compra con margen de seguridad",
+        interpretation="Precio de compra con margen de seguridad del 25%",
         display_value=f"${target_cons:.2f}"
     ))
-    
-    # Target Price Moderate
-    target_mod = ratios.get('target_price_moderate', 0)
+
+    target_mod = ratios.get('target_price_moderate', 0) or 0
     graham_metrics.append(RatioMetric(
-        name="Precio Objetivo Moderado",
-        value=target_mod,
-        threshold="100% del VI (valor justo)",
+        name="Precio Objetivo Moderado", value=target_mod,
+        threshold="100% del VI",
         passed=current_price_val <= target_mod if target_mod > 0 else False,
-        interpretation="Valor intrínseco sin descuento",
+        interpretation="Valor intrínseco sin descuento adicional",
         display_value=f"${target_mod:.2f}"
     ))
-    
-    categories.append(RatioCategory(
-        category="💰 Valoración Graham",
-        metrics=graham_metrics
+
+    target_agg = ratios.get('target_price_aggressive', 0) or 0
+    graham_metrics.append(RatioMetric(
+        name="Precio Objetivo Agresivo", value=target_agg,
+        threshold="120% del VI",
+        passed=False,
+        interpretation="Precio objetivo con 20% de prima sobre el valor intrínseco",
+        display_value=f"${target_agg:.2f}"
     ))
-    
-    # Calculate recommendation
-    favorable_pct = (favorable / total_metrics) * 100
-    
+
+    upside = ratios.get('upside_potential', 0) or 0
+    _add(graham_metrics, "Upside Potential (DCF)", upside, "> 20%",
+         upside > 20, "Potencial de revalorización desde el precio actual al valor DCF", f"{upside:.1f}%")
+
+    categories.append(RatioCategory(category="💰 Valoración Graham / DCF / EPV",
+                                     metrics=graham_metrics))
+
+    # =========================================================================
+    # CÁLCULO FINAL
+    # =========================================================================
+    favorable_pct = (favorable / total_metrics) * 100 if total_metrics > 0 else 0
+
     if favorable_pct >= 60:
         recommendation = "COMPRAR"
         risk_level = "Bajo"
@@ -1555,56 +1734,187 @@ def evaluate_ratios(ratios, info):
     else:
         recommendation = "VENDER"
         risk_level = "Alto"
-    
-    # Summary flags
+
     summary_flags = {
-        "profitable": ratios.get('net_margin', 0) > 0,
-        "positive_fcf": ratios.get('free_cash_flow', 0) > 0,
-        "low_debt": ratios.get('debt_ratio', 1) < 0.5,
-        "good_margins": ratios.get('gross_margin', 0) > 40,
+        "profitable":        ratios.get('net_margin', 0) > 0,
+        "positive_fcf":      ratios.get('free_cash_flow', 0) > 0,
+        "low_debt":          ratios.get('debt_ratio', 1) < 0.5,
+        "good_margins":      ratios.get('gross_margin', 0) > 40,
         "healthy_liquidity": ratios.get('current_ratio', 0) > 1.2,
-        "strong_roe": ratios.get('roe', 0) > 15,
-        "creates_value": ratios.get('creates_value', False),
-        "undervalued": ratios.get('margin_of_safety', 0) > 20,
+        "strong_roe":        ratios.get('roe', 0) > 15,
+        "creates_value":     ratios.get('creates_value', False),
+        "undervalued":       ratios.get('margin_of_safety', 0) > 20,
     }
-    
-    # Valuation summary
+
     valuation_summary = {
-        # DCF Method
-        "intrinsic_value_dcf": ratios.get('intrinsic_value', 0),
-        "margin_of_safety_dcf": ratios.get('margin_of_safety', 0),
-        "upside_potential_dcf": ratios.get('upside_potential', 0),
-        
-        # Benjamin Graham Method
-        "intrinsic_value_graham": ratios.get('intrinsic_value_graham', 0),
+        "intrinsic_value_dcf":           ratios.get('intrinsic_value', 0),
+        "margin_of_safety_dcf":          ratios.get('margin_of_safety', 0),
+        "upside_potential_dcf":          ratios.get('upside_potential', 0),
+        "intrinsic_value_graham":        ratios.get('intrinsic_value_graham', 0),
         "intrinsic_value_graham_simple": ratios.get('intrinsic_value_graham_simple', 0),
-        "margin_of_safety_graham": ratios.get('margin_of_safety_graham', 0),
-        "graham_recommendation": ratios.get('graham_recommendation', 'N/A'),
-        
-        # Target Prices
-        "target_price_conservative": ratios.get('target_price_conservative', 0),
-        "target_price_moderate": ratios.get('target_price_moderate', 0),
-        "target_price_aggressive": ratios.get('target_price_aggressive', 0),
-        
-        # Current Price & Comparison
-        "current_price": info.get('currentPrice', info.get('regularMarketPrice', 0)),
-        
-        # Value Creation
-        "creates_value": ratios.get('creates_value', False),
-        "value_creation_category": ratios.get('value_creation_category', 'N/A'),
-        "roic": ratios.get('roic', 0),
-        "wacc": ratios.get('wacc', 0),
-        "spread": ratios.get('value_creation_spread', 0),
-        
-        # Growth assumption
-        "estimated_growth_rate": ratios.get('estimated_growth_rate', 5.0),
+        "margin_of_safety_graham":       ratios.get('margin_of_safety_graham', 0),
+        "graham_recommendation":         ratios.get('graham_recommendation', 'N/A'),
+        "graham_number":                 ratios.get('graham_number'),
+        "epv_per_share":                 ratios.get('epv_per_share'),
+        "magic_formula_score":           ratios.get('magic_formula_score'),
+        "target_price_conservative":     ratios.get('target_price_conservative', 0),
+        "target_price_moderate":         ratios.get('target_price_moderate', 0),
+        "target_price_aggressive":       ratios.get('target_price_aggressive', 0),
+        "current_price":                 info.get('currentPrice', info.get('regularMarketPrice', 0)),
+        "creates_value":                 ratios.get('creates_value', False),
+        "value_creation_category":       ratios.get('value_creation_category', 'N/A'),
+        "roic":                          ratios.get('roic', 0),
+        "wacc":                          ratios.get('wacc', 0),
+        "spread":                        ratios.get('value_creation_spread', 0),
+        "estimated_growth_rate":         ratios.get('estimated_growth_rate', 5.0),
     }
-    
-    return categories, favorable_pct, recommendation, risk_level, total_metrics, favorable, summary_flags, valuation_summary
+
+    return (categories, favorable_pct, recommendation, risk_level,
+            total_metrics, favorable, summary_flags, valuation_summary)
+
+
+
+
 
 # Routes
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTH MODELS & FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+class UserRegister(BaseModel):
+    email: str
+    password: str
+    name: str
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    created_at: Optional[datetime] = None
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="No autenticado")
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token inválido")
+        user = await db.users.find_one({"id": user_id})
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        return user
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+
+async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        return await db.users.find_one({"id": user_id})
+    except:
+        return None
+
+# ── Auth Endpoints ─────────────────────────────────────────────────────────────
+@api_router.post("/auth/register", response_model=Token)
+async def register(user_data: UserRegister):
+    """Register a new user"""
+    try:
+        # Verificar si el email ya existe
+        existing = await db.users.find_one({"email": user_data.email.lower()})
+        if existing:
+            raise HTTPException(status_code=400, detail="El email ya está registrado")
+        # Crear usuario
+        user_id = str(uuid.uuid4())
+        user = {
+            "id": user_id,
+            "email": user_data.email.lower().strip(),
+            "name": user_data.name.strip(),
+            "password": hash_password(user_data.password),
+            "created_at": datetime.utcnow(),
+        }
+        await db.users.insert_one(user)
+        # Crear token
+        token = create_access_token({"sub": user_id})
+        return Token(
+            access_token=token,
+            token_type="bearer",
+            user=UserResponse(id=user_id, email=user["email"], name=user["name"], created_at=user["created_at"])
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error registering user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al registrar: {str(e)}")
+
+@api_router.post("/auth/login", response_model=Token)
+async def login(user_data: UserLogin):
+    """Login with email and password"""
+    try:
+        user = await db.users.find_one({"email": user_data.email.lower()})
+        if not user or not verify_password(user_data.password, user["password"]):
+            raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+        token = create_access_token({"sub": user["id"]})
+        return Token(
+            access_token=token,
+            token_type="bearer",
+            user=UserResponse(id=user["id"], email=user["email"], name=user["name"], created_at=user.get("created_at"))
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error logging in: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al iniciar sesión: {str(e)}")
+
+@api_router.get("/auth/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current user info"""
+    return UserResponse(
+        id=current_user["id"],
+        email=current_user["email"],
+        name=current_user["name"],
+        created_at=current_user.get("created_at")
+    )
+
+@api_router.put("/auth/profile")
+async def update_profile(update: dict, current_user: dict = Depends(get_current_user)):
+    """Update user profile"""
+    try:
+        allowed = {k: v for k, v in update.items() if k in ["name"]}
+        if "password" in update and update["password"]:
+            allowed["password"] = hash_password(update["password"])
+        await db.users.update_one({"id": current_user["id"]}, {"$set": allowed})
+        return {"message": "Perfil actualizado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.post("/analyze", response_model=AnalysisResponse)
-async def analyze_stock(request: AnalyzeRequest):
+async def analyze_stock(request: AnalyzeRequest, current_user: dict = Depends(get_optional_user)):
     """Analyze a stock by ticker or ISIN"""
     try:
         ticker = request.ticker.upper().strip()
@@ -1757,6 +2067,123 @@ async def analyze_stock(request: AnalyzeRequest):
     except Exception as e:
         logging.error(f"Error analyzing stock: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al analizar la acción: {str(e)}")
+    
+# ─────────────────────────────────────────────────────────────────────────────
+#  ENDPOINT: /api/financial-statements-full/{ticker}
+#
+#  Devuelve los 3 estados financieros completos (Income, Balance, Cash Flow)
+#  con todos los años disponibles en yFinance, valores en millones USD.
+#
+#  Añadir este bloque al final de main.py (antes del app.include_router).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@api_router.get("/financial-statements-full/{ticker}")
+async def get_financial_statements_full(ticker: str):
+    """
+    Devuelve Income Statement, Balance Sheet y Cash Flow Statement completos
+    con todos los años disponibles. Valores en millones USD (M).
+    """
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        if not info or (
+            info.get("regularMarketPrice") is None and
+            info.get("currentPrice") is None and
+            info.get("symbol") is None
+        ):
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos para '{ticker}'")
+
+        company_name = info.get("longName") or info.get("shortName") or ticker
+
+        def _to_m(value):
+            """Convierte a millones con 1 decimal, None si inválido."""
+            if value is None:
+                return None
+            try:
+                f = float(value)
+                if math.isnan(f) or math.isinf(f):
+                    return None
+                return round(f / 1_000_000, 1)
+            except (TypeError, ValueError):
+                return None
+
+        def _df_to_dict(df: pd.DataFrame) -> dict:
+            """
+            Convierte un DataFrame de yFinance (filas=métricas, columnas=fechas)
+            en un dict anidado: { "YYYY-MM-DD": { "Métrica": valor_en_M, ... }, ... }
+            """
+            if df is None or df.empty:
+                return {}
+            result = {}
+            for col in df.columns:
+                # La columna es un Timestamp; usamos solo el año
+                col_key = str(col.year) if hasattr(col, "year") else str(col)[:4]
+                result[col_key] = {}
+                for row_name in df.index:
+                    raw_val = df.loc[row_name, col]
+                    result[col_key][str(row_name)] = _to_m(raw_val)
+            return result
+
+        # ── Cargar los 3 estados ──────────────────────────────────────────────
+        income_stmt   = stock.income_stmt
+        balance_sheet = stock.balance_sheet
+        cash_flow     = stock.cash_flow
+
+        income_dict   = _df_to_dict(income_stmt)
+        balance_dict  = _df_to_dict(balance_sheet)
+        cashflow_dict = _df_to_dict(cash_flow)
+
+        # ── Derivar FCF y añadirlo al cash flow ───────────────────────────────
+        for yr in cashflow_dict:
+            ocf   = cashflow_dict[yr].get("Operating Cash Flow") or cashflow_dict[yr].get("Total Cash From Operating Activities")
+            capex = cashflow_dict[yr].get("Capital Expenditure") or cashflow_dict[yr].get("Capital Expenditures")
+            if ocf is not None and capex is not None:
+                cashflow_dict[yr]["Free Cash Flow"] = round(ocf + capex, 1)  # capex ya viene negativo en yFinance
+
+        # ── Derivar EBITDA y añadirlo al income ───────────────────────────────
+        for yr in income_dict:
+            ebit = income_dict[yr].get("EBIT") or income_dict[yr].get("Operating Income")
+            # D&A está en el cash flow
+            da = cashflow_dict.get(yr, {}).get("Depreciation And Amortization")
+            if ebit is not None and da is not None:
+                income_dict[yr]["EBITDA"] = round(ebit + abs(da), 1)
+
+        # ── Ordenar años de más reciente a más antiguo ─────────────────────────
+        all_years_set = (
+            set(income_dict.keys()) |
+            set(balance_dict.keys()) |
+            set(cashflow_dict.keys())
+        )
+        years_sorted = sorted(all_years_set, reverse=True)
+
+        # Limitar a 5 años máximo para no sobrecargar la UI
+        years_sorted = years_sorted[:5]
+
+        return {
+            "ticker":       ticker,
+            "company_name": company_name,
+            "currency":     info.get("currency", "USD"),
+            "years":        years_sorted,
+            "income":       income_dict,
+            "balance":      balance_dict,
+            "cashflow":     cashflow_dict,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error en financial-statements-full para {ticker}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al obtener estados financieros: {str(e)}"
+        )
+     
+    
+    
+    
+    
 
 @api_router.get("/history", response_model=List[HistoryItem])
 async def get_history():
@@ -1954,6 +2381,108 @@ async def get_volume_data(ticker: str, period: str = "1y", sma_period: int = 20)
         logging.error(f"Error fetching volume data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener datos de volumen: {str(e)}")
 
+# En el backend (main.py), añade estos nuevos modelos y endpoint
+
+class HistoryItemEnhanced(BaseModel):
+    id: str
+    ticker: str
+    company_name: str
+    analysis_date: datetime
+    recommendation: str
+    favorable_percentage: float
+    current_price: float = 0.0
+    price_change: float = 0.0
+    price_change_percent: float = 0.0
+    sector: str = "N/A"
+
+@api_router.get("/history/enhanced", response_model=List[HistoryItemEnhanced])
+async def get_enhanced_history(
+    recommendation: Optional[str] = None,  # Filter by COMPRAR, MANTENER, VENDER
+    limit: int = 50
+):
+    """Get enhanced analysis history with current prices and filters"""
+    try:
+        # Build query
+        query = {}
+        if recommendation:
+            query["recommendation"] = recommendation.upper()
+        
+        analyses = await db.analyses.find(query).sort("analysis_date", -1).limit(limit).to_list(limit)
+        
+        enhanced_results = []
+        
+        for analysis in analyses:
+            try:
+                ticker = analysis['ticker']
+                
+                # Get current price
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
+                prev_close = info.get('previousClose', current_price) or current_price
+                
+                # Calculate change
+                price_change = current_price - prev_close
+                price_change_percent = (price_change / prev_close * 100) if prev_close > 0 else 0
+                
+                enhanced_results.append(HistoryItemEnhanced(
+                    id=analysis['id'],
+                    ticker=analysis['ticker'],
+                    company_name=analysis['company_name'],
+                    analysis_date=analysis['analysis_date'],
+                    recommendation=analysis['recommendation'],
+                    favorable_percentage=analysis['favorable_percentage'],
+                    current_price=sanitize_float(current_price),
+                    price_change=sanitize_float(price_change),
+                    price_change_percent=sanitize_float(price_change_percent),
+                    sector=analysis.get('metadata', {}).get('sector', 'N/A')
+                ))
+                
+            except Exception as e:
+                logging.warning(f"Error enhancing history item for {analysis.get('ticker')}: {str(e)}")
+                # Add without price data if fetch fails
+                enhanced_results.append(HistoryItemEnhanced(
+                    id=analysis['id'],
+                    ticker=analysis['ticker'],
+                    company_name=analysis['company_name'],
+                    analysis_date=analysis['analysis_date'],
+                    recommendation=analysis['recommendation'],
+                    favorable_percentage=analysis['favorable_percentage'],
+                    sector=analysis.get('metadata', {}).get('sector', 'N/A')
+                ))
+        
+        return enhanced_results
+        
+    except Exception as e:
+        logging.error(f"Error fetching enhanced history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener historial: {str(e)}")
+    
+    
+     
+    
+
+@api_router.get("/history/stats")
+async def get_history_stats():
+    """Get statistics about analysis history"""
+    try:
+        total = await db.analyses.count_documents({})
+        
+        comprar = await db.analyses.count_documents({"recommendation": "COMPRAR"})
+        mantener = await db.analyses.count_documents({"recommendation": "MANTENER"})
+        vender = await db.analyses.count_documents({"recommendation": "VENDER"})
+        
+        return {
+            "total": total,
+            "comprar": comprar,
+            "mantener": mantener,
+            "vender": vender
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting history stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class MarketIndicator(BaseModel):
     name: str
     ticker: str
@@ -2015,6 +2544,8 @@ class MarketIndicatorsResponse(BaseModel):
     # Crypto
     bitcoin: Optional[CryptoIndicator] = None
     ethereum: Optional[CryptoIndicator] = None
+    hedera: Optional[CryptoIndicator] = None
+    solana: Optional[CryptoIndicator] = None
     # European Indices
     eurostoxx50: Optional[MarketIndicator] = None
     dax: Optional[MarketIndicator] = None
@@ -2314,8 +2845,60 @@ async def get_market_indicators():
                 )
         except Exception as e:
             logging.warning(f"Could not fetch Ethereum: {str(e)}")
+                
+        # Hedera
+        hedera_indicator = None
+        try:
+            hbar = yf.Ticker("HBAR-USD")
+            hbar_data = hbar.history(period="5d")
+            if not hbar_data.empty:
+                hbar_current = float(hbar_data['Close'].iloc[-1])
+                hbar_prev = float(hbar_data['Close'].iloc[-2]) if len(hbar_data) > 1 else hbar_current
+                hbar_change = hbar_current - hbar_prev
+                hbar_change_pct = (hbar_change / hbar_prev) * 100 if hbar_prev > 0 else 0
+                hbar_date = hbar_data.index[-1].strftime('%Y-%m-%d')
+                hbar_info = hbar.info
+                hedera_indicator = CryptoIndicator(
+                    name="Hedera",
+                    symbol="HBAR",
+                    ticker="HBAR-USD",
+                    current_value=hbar_current,
+                    change=hbar_change,
+                    change_percent=hbar_change_pct,
+                    market_cap=hbar_info.get('marketCap'),
+                    volume_24h=hbar_info.get('volume24Hr'),
+                    updated=hbar_date
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch Hedera: {str(e)}")
         
-        # Solana - REMOVED per user request
+        # Solana
+        solana_indicator = None
+        try:
+            sol = yf.Ticker("sol-USD")
+            sol_data = sol.history(period="5d")
+            if not sol_data.empty:
+                sol_current = float(sol_data['Close'].iloc[-1])
+                sol_prev = float(sol_data['Close'].iloc[-2]) if len(sol_data) > 1 else sol_current
+                sol_change = sol_current - sol_prev
+                sol_change_pct = (sol_change / sol_prev) * 100 if sol_prev > 0 else 0
+                sol_date = sol_data.index[-1].strftime('%Y-%m-%d')
+                sol_info = sol.info
+                solana_indicator = CryptoIndicator(
+                    name="Solana",
+                    symbol="SOL",
+                    ticker="SOL-USD",
+                    current_value=sol_current,
+                    change=sol_change,
+                    change_percent=sol_change_pct,
+                    market_cap=sol_info.get('marketCap'),
+                    volume_24h=sol_info.get('volume24Hr'),
+                    updated=sol_date
+                )
+        except Exception as e:
+            logging.warning(f"Could not fetch Solana: {str(e)}")
+        
+               
         
         # Eurostoxx 50 (European Index)
         eurostoxx50_indicator = None
@@ -2426,6 +3009,76 @@ async def get_market_indicators():
             fear_greed = "Extremo Miedo"
             sentiment = "Mercado muy pesimista"
         
+        def s(v, d=0.0): return sanitize_float(v, d)
+        vix_current=s(vix_current); vix_change=s(vix_change); vix_change_pct=s(vix_change_pct)
+        treasury_current=s(treasury_current); treasury_change=s(treasury_change); treasury_change_pct=s(treasury_change_pct)
+        sp500_current=s(sp500_current); sp500_change=s(sp500_change); sp500_change_pct=s(sp500_change_pct)
+        gold_current=s(gold_current); gold_change=s(gold_change); gold_change_pct=s(gold_change_pct)
+        oil_current=s(oil_current); oil_change=s(oil_change); oil_change_pct=s(oil_change_pct)
+        eurusd_current=s(eurusd_current); eurusd_change=s(eurusd_change); eurusd_change_pct=s(eurusd_change_pct)
+        # Sanitizar indicadores opcionales
+        if ibex35_indicator:
+            ibex35_indicator.current_value=s(ibex35_indicator.current_value)
+            ibex35_indicator.change=s(ibex35_indicator.change)
+            ibex35_indicator.change_percent=s(ibex35_indicator.change_percent)
+        if bitcoin_indicator:
+            bitcoin_indicator.current_value=s(bitcoin_indicator.current_value)
+            bitcoin_indicator.change=s(bitcoin_indicator.change)
+            bitcoin_indicator.change_percent=s(bitcoin_indicator.change_percent)
+            if bitcoin_indicator.market_cap: bitcoin_indicator.market_cap=s(bitcoin_indicator.market_cap)
+            if bitcoin_indicator.volume_24h: bitcoin_indicator.volume_24h=s(bitcoin_indicator.volume_24h)
+        if ethereum_indicator:
+            ethereum_indicator.current_value=s(ethereum_indicator.current_value)
+            ethereum_indicator.change=s(ethereum_indicator.change)
+            ethereum_indicator.change_percent=s(ethereum_indicator.change_percent)
+            if ethereum_indicator.market_cap: ethereum_indicator.market_cap=s(ethereum_indicator.market_cap)
+            if ethereum_indicator.volume_24h: ethereum_indicator.volume_24h=s(ethereum_indicator.volume_24h)
+        if hedera_indicator:
+            hedera_indicator.current_value=s(hedera_indicator.current_value)
+            hedera_indicator.change=s(hedera_indicator.change)
+            hedera_indicator.change_percent=s(hedera_indicator.change_percent)
+            if hedera_indicator.market_cap: hedera_indicator.market_cap=s(hedera_indicator.market_cap)
+            if hedera_indicator.volume_24h: hedera_indicator.volume_24h=s(hedera_indicator.volume_24h)    
+        if solana_indicator:
+            solana_indicator.current_value=s(solana_indicator.current_value)
+            solana_indicator.change=s(solana_indicator.change)
+            solana_indicator.change_percent=s(solana_indicator.change_percent)
+            if solana_indicator.market_cap: solana_indicator.market_cap=s(solana_indicator.market_cap)
+            if solana_indicator.volume_24h: solana_indicator.volume_24h=s(solana_indicator.volume_24h)      
+            
+        if eurostoxx50_indicator:
+            eurostoxx50_indicator.current_value=s(eurostoxx50_indicator.current_value)
+            eurostoxx50_indicator.change=s(eurostoxx50_indicator.change)
+            eurostoxx50_indicator.change_percent=s(eurostoxx50_indicator.change_percent)
+        if dax_indicator:
+            dax_indicator.current_value=s(dax_indicator.current_value)
+            dax_indicator.change=s(dax_indicator.change)
+            dax_indicator.change_percent=s(dax_indicator.change_percent)
+        if nasdaq_indicator:
+            nasdaq_indicator.current_value=s(nasdaq_indicator.current_value)
+            nasdaq_indicator.change=s(nasdaq_indicator.change)
+            nasdaq_indicator.change_percent=s(nasdaq_indicator.change_percent)
+        if msci_world_indicator:
+            msci_world_indicator.current_value=s(msci_world_indicator.current_value)
+            msci_world_indicator.change=s(msci_world_indicator.change)
+            msci_world_indicator.change_percent=s(msci_world_indicator.change_percent)
+
+        def s(v, d=0.0): return sanitize_float(v, d)
+        vix_current=s(vix_current); vix_change=s(vix_change); vix_change_pct=s(vix_change_pct)
+        treasury_current=s(treasury_current); treasury_change=s(treasury_change); treasury_change_pct=s(treasury_change_pct)
+        sp500_current=s(sp500_current); sp500_change=s(sp500_change); sp500_change_pct=s(sp500_change_pct)
+        gold_current=s(gold_current); gold_change=s(gold_change); gold_change_pct=s(gold_change_pct)
+        oil_current=s(oil_current); oil_change=s(oil_change); oil_change_pct=s(oil_change_pct)
+        eurusd_current=s(eurusd_current); eurusd_change=s(eurusd_change); eurusd_change_pct=s(eurusd_change_pct)
+
+        def s(v, d=0.0): return sanitize_float(v, d)
+        vix_current=s(vix_current); vix_change=s(vix_change); vix_change_pct=s(vix_change_pct)
+        treasury_current=s(treasury_current); treasury_change=s(treasury_change); treasury_change_pct=s(treasury_change_pct)
+        sp500_current=s(sp500_current); sp500_change=s(sp500_change); sp500_change_pct=s(sp500_change_pct)
+        gold_current=s(gold_current); gold_change=s(gold_change); gold_change_pct=s(gold_change_pct)
+        oil_current=s(oil_current); oil_change=s(oil_change); oil_change_pct=s(oil_change_pct)
+        eurusd_current=s(eurusd_current); eurusd_change=s(eurusd_change); eurusd_change_pct=s(eurusd_change_pct)
+
         return MarketIndicatorsResponse(
             vix=MarketIndicator(
                 name="VIX - Índice de Volatilidad",
@@ -2483,6 +3136,8 @@ async def get_market_indicators():
             ibex35=ibex35_indicator,
             bitcoin=bitcoin_indicator,
             ethereum=ethereum_indicator,
+            hedera=hedera_indicator,
+            solana=solana_indicator,
             eurostoxx50=eurostoxx50_indicator,
             dax=dax_indicator,
             nasdaq=nasdaq_indicator,
@@ -2529,10 +3184,10 @@ class WatchlistItemUpdate(BaseModel):
     notes: Optional[str] = None
 
 @api_router.get("/watchlist", response_model=List[WatchlistItem])
-async def get_watchlist():
+async def get_watchlist(current_user: dict = Depends(get_current_user)):
     """Get all watchlist items with current prices"""
     try:
-        items = await db.watchlist.find().sort("added_date", -1).to_list(100)
+        items = await db.watchlist.find({"user_id": current_user["id"]}).sort("added_date", -1).to_list(100)
         result = []
         for item in items:
             # Update current price
@@ -2556,7 +3211,7 @@ async def get_watchlist():
         raise HTTPException(status_code=500, detail=f"Error al obtener watchlist: {str(e)}")
 
 @api_router.post("/watchlist", response_model=WatchlistItem)
-async def add_to_watchlist(item: WatchlistItemCreate):
+async def add_to_watchlist(item: WatchlistItemCreate, current_user: dict = Depends(get_current_user)):
     """Add a stock to watchlist"""
     try:
         ticker = item.ticker.upper().strip()
@@ -2585,7 +3240,9 @@ async def add_to_watchlist(item: WatchlistItemCreate):
             notes=item.notes
         )
         
-        await db.watchlist.insert_one(watchlist_item.dict())
+        item_dict = watchlist_item.dict()
+        item_dict["user_id"] = current_user["id"]
+        await db.watchlist.insert_one(item_dict)
         return watchlist_item
         
     except HTTPException:
@@ -2595,7 +3252,7 @@ async def add_to_watchlist(item: WatchlistItemCreate):
         raise HTTPException(status_code=500, detail=f"Error al agregar a watchlist: {str(e)}")
 
 @api_router.put("/watchlist/{item_id}", response_model=WatchlistItem)
-async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate):
+async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate, current_user: dict = Depends(get_optional_user)):
     """Update a watchlist item"""
     try:
         existing = await db.watchlist.find_one({"id": item_id})
@@ -2630,10 +3287,10 @@ async def remove_from_watchlist(item_id: str):
         raise HTTPException(status_code=500, detail=f"Error al eliminar de watchlist: {str(e)}")
 
 @api_router.get("/watchlist/alerts")
-async def check_watchlist_alerts():
+async def check_watchlist_alerts(current_user: dict = Depends(get_optional_user)):
     """Check all watchlist items for price alerts"""
     try:
-        items = await db.watchlist.find().to_list(100)
+        items = await db.watchlist.find({"user_id": current_user["id"]} if current_user else {}).to_list(100)
         alerts = []
         
         for item in items:
@@ -2695,9 +3352,12 @@ async def check_watchlist_alerts():
 
 class PortfolioTransaction(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    #userid: str
+    user_id: str = ""        # ← unificar a user_id con valor por defecto
     ticker: str
     company_name: str
-    transaction_type: str  # "buy" or "sell"
+    #transaction_type: str  # "buy" or "sell"
+    transaction_type: str
     shares: float
     price_per_share: float
     total_amount: float
@@ -2769,6 +3429,7 @@ class PortfolioSummary(BaseModel):
 # Cash Movement Models (Deposits/Withdrawals)
 class CashMovement(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None   # ← AÑADIR ESTO
     movement_type: str  # "deposit" or "withdrawal"
     amount: float
     description: Optional[str] = None
@@ -2794,12 +3455,39 @@ class PortfolioEvolution(BaseModel):
     current_value: float
     total_change: float
     total_change_percent: float
+    
+@api_router.get("/price/{ticker}")
+async def get_current_price(ticker: str):
+    """Precio actual + variación del día — endpoint ligero para el historial"""
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
+        prev_close    = info.get('previousClose', current_price) or current_price
+        change        = current_price - prev_close
+        change_pct    = (change / prev_close * 100) if prev_close > 0 else 0
+
+        return {
+            "ticker":         ticker,
+            "current_price":  sanitize_float(current_price),
+            "change":         sanitize_float(change),
+            "change_percent": sanitize_float(change_pct),
+            "prev_close":     sanitize_float(prev_close),
+            "currency":       info.get('currency', 'USD'),
+        }
+    except Exception as e:
+        logging.error(f"Error fetching price for {ticker}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))    
 
 @api_router.get("/portfolio", response_model=PortfolioSummary)
-async def get_portfolio():
+async def get_portfolio(current_user: dict = Depends(get_current_user)):
     """Get portfolio summary with current values, metrics, and sector allocation"""
     try:
-        transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
+
+        # ← Eliminar el bloque if userid, simplificar:
+        transactions = await db.portfolio.find({"user_id": current_user["id"]}).sort("transaction_date", -1).to_list(1000)
         
         # Group transactions by ticker
         holdings_map = {}
@@ -2837,61 +3525,39 @@ async def get_portfolio():
         
         # For sector allocation
         sector_values = {}
-        
-        for ticker, data in holdings_map.items():
-            if data["total_shares"] <= 0:
-                continue  # Skip if sold all shares
-            
-            # Get current price, beta, sector, and industry
+
+        async def fetch_ticker_info(ticker, data):
             sector = "Otros"
             industry = "N/A"
             curr_price = 0
             stock_beta = 1.0
-            
             try:
+                loop = asyncio.get_event_loop()
                 stock = yf.Ticker(ticker)
-                info = stock.info
+                info = await loop.run_in_executor(None, lambda: stock.info)
                 curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
                 stock_beta = info.get('beta', 1.0) or 1.0
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
-                
-                # Only fetch historical data if we have more than 3 holdings (skip for performance)
-                if len(holdings_map) <= 3:
-                    hist = stock.history(period="6mo")  # Reduced from 1y
-                    if not hist.empty and len(hist) > 20:
-                        daily_returns = hist['Close'].pct_change().dropna()
-                        
-                        # Calculate max drawdown
-                        cumulative = (1 + daily_returns).cumprod()
-                        running_max = cumulative.cummax()
-                        drawdown = (cumulative - running_max) / running_max
-                        max_dd = drawdown.min() * 100
-                        
-                        returns_data.append({
-                            'ticker': ticker,
-                            'returns': daily_returns,
-                            'mean_return': daily_returns.mean() * 252,
-                            'volatility': daily_returns.std() * np.sqrt(252),
-                            'max_drawdown': max_dd,
-                            'beta': stock_beta
-                        })
             except Exception as e:
                 logging.warning(f"Error fetching data for {ticker}: {str(e)}")
-                # Use last known cost as fallback
                 if data["total_shares"] > 0 and data["total_cost"] > 0:
                     curr_price = data["total_cost"] / data["total_shares"]
-            
+            return ticker, curr_price, stock_beta, sector, industry
+
+        valid_holdings_map = {t: d for t, d in holdings_map.items() if d["total_shares"] > 0}
+        ticker_results = await asyncio.gather(*[
+            fetch_ticker_info(t, d) for t, d in valid_holdings_map.items()
+        ])
+
+        for ticker, curr_price, stock_beta, sector, industry in ticker_results:
+            data = valid_holdings_map[ticker]
             curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
             profit_loss = curr_value_stock - data["total_cost"]
             profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
-            
+
             # Track gains and losses for Gain-Loss Ratio
-            if profit_loss >= 0:
-                gains.append(profit_loss)
-            else:
-                losses.append(abs(profit_loss))
             
             holding = PortfolioHolding(
                 ticker=ticker,
@@ -2944,7 +3610,7 @@ async def get_portfolio():
         sector_allocation.sort(key=lambda x: x.percentage, reverse=True)
         
         # Get cash movements to calculate cash available
-        cash_movements = await db.cash_movements.find().to_list(1000)
+        cash_movements = await db.cash_movements.find({"user_id": current_user["id"]}).to_list(1000)
         total_deposits = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'deposit')
         total_withdrawals = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'withdrawal')
         
@@ -2953,11 +3619,13 @@ async def get_portfolio():
             tx['total_amount'] + tx.get('commission', 0) 
             for tx in transactions 
             if tx['transaction_type'] == 'buy'
+            and tx.get('user_id') == current_user['id']
         )
         cash_from_sells = sum(
             tx['total_amount'] - tx.get('commission', 0) 
             for tx in transactions 
             if tx['transaction_type'] == 'sell'
+            and tx.get('user_id') == current_user['id']
         )
         
         # Cash available = Deposits - Withdrawals - Buys + Sells
@@ -3101,19 +3769,18 @@ async def get_portfolio():
         raise HTTPException(status_code=500, detail=f"Error al obtener portafolio: {str(e)}")
 
 @api_router.post("/portfolio", response_model=PortfolioTransaction)
-async def add_portfolio_transaction(tx: PortfolioTransactionCreate):
-    """Add a transaction to portfolio"""
+async def add_portfolio_transaction(tx: PortfolioTransactionCreate, current_user: dict = Depends(get_current_user)):
     try:
-        ticker = tx.ticker.upper().strip()
-        
-        # Fetch stock info
+        ticker = tx.ticker.upper().strip()   # ← Eliminar el bloque if userid incorrecto
+
         stock = yf.Ticker(ticker)
         info = stock.info
-        
+
         if not info or 'symbol' not in info:
             raise HTTPException(status_code=404, detail=f"No se encontró el ticker {ticker}")
-        
+
         transaction = PortfolioTransaction(
+            user_id=current_user["id"],      # ← consistente con el modelo
             ticker=ticker,
             company_name=info.get('longName', info.get('shortName', ticker)),
             transaction_type=tx.transaction_type,
@@ -3124,10 +3791,10 @@ async def add_portfolio_transaction(tx: PortfolioTransactionCreate):
             transaction_date=tx.transaction_date,
             notes=tx.notes
         )
-        
+
         await db.portfolio.insert_one(transaction.dict())
         return transaction
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3135,10 +3802,10 @@ async def add_portfolio_transaction(tx: PortfolioTransactionCreate):
         raise HTTPException(status_code=500, detail=f"Error al agregar transacción: {str(e)}")
 
 @api_router.delete("/portfolio/{transaction_id}")
-async def delete_portfolio_transaction(transaction_id: str):
+async def delete_portfolio_transaction(transaction_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a portfolio transaction"""
     try:
-        result = await db.portfolio.delete_one({"id": transaction_id})
+        result = await db.portfolio.delete_one({"id": transaction_id, "user_id": current_user["id"]})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Transacción no encontrada")
         return {"message": "Transacción eliminada"}
@@ -3148,11 +3815,31 @@ async def delete_portfolio_transaction(transaction_id: str):
         logging.error(f"Error deleting transaction: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al eliminar transacción: {str(e)}")
 
-@api_router.get("/portfolio/transactions", response_model=List[PortfolioTransaction])
-async def get_portfolio_transactions():
-    """Get all portfolio transactions"""
+@api_router.put("/portfolio/{transaction_id}")
+async def update_portfolio_transaction(transaction_id: str, update: dict):
+    """Update a portfolio transaction"""
     try:
-        transactions = await db.portfolio.find().sort("transaction_date", -1).to_list(1000)
+        # Limpiar campos None
+        update_data = {k: v for k, v in update.items() if v is not None}
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No hay datos para actualizar")
+        result = await db.portfolio.update_one(
+            {"id": transaction_id},
+            {"$set": update_data}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Transacción no encontrada")
+        return {"message": "Transacción actualizada"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating transaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al actualizar transacción: {str(e)}")
+
+@api_router.get("/portfolio/transactions", response_model=List[PortfolioTransaction])
+async def get_portfolio_transactions(current_user: dict = Depends(get_current_user)):
+    try:
+        transactions = await db.portfolio.find({"user_id": current_user["id"]}).sort("transaction_date", -1).to_list(1000)
         return [PortfolioTransaction(**tx) for tx in transactions]
     except Exception as e:
         logging.error(f"Error fetching transactions: {str(e)}")
@@ -3163,7 +3850,7 @@ async def get_portfolio_transactions():
 # ============================================
 
 @api_router.post("/portfolio/cash", response_model=CashMovement)
-async def add_cash_movement(movement: CashMovementCreate):
+async def add_cash_movement(movement: CashMovementCreate, current_user: dict = Depends(get_current_user)):
     """Add a deposit or withdrawal"""
     try:
         if movement.movement_type not in ['deposit', 'withdrawal']:
@@ -3173,6 +3860,7 @@ async def add_cash_movement(movement: CashMovementCreate):
             raise HTTPException(status_code=400, detail="El monto debe ser positivo")
         
         cash_doc = CashMovement(
+            user_id=current_user["id"],   # ← AÑADIR ESTO
             movement_type=movement.movement_type,
             amount=movement.amount,
             description=movement.description,
@@ -3189,19 +3877,19 @@ async def add_cash_movement(movement: CashMovementCreate):
         raise HTTPException(status_code=500, detail=f"Error al registrar movimiento: {str(e)}")
 
 @api_router.get("/portfolio/cash", response_model=List[CashMovement])
-async def get_cash_movements():
-    """Get all cash movements"""
+async def get_cash_movements(current_user: dict = Depends(get_current_user)):
     try:
-        movements = await db.cash_movements.find().sort("movement_date", -1).to_list(1000)
+        movements = await db.cash_movements.find({"user_id": current_user["id"]}).sort("movement_date", -1).to_list(1000)
         return [CashMovement(**m) for m in movements]
     except Exception as e:
         logging.error(f"Error fetching cash movements: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener movimientos: {str(e)}")
 
 @api_router.delete("/portfolio/cash/{movement_id}")
-async def delete_cash_movement(movement_id: str):
+async def delete_cash_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a cash movement"""
     try:
+        # Buscar por id solamente, sin filtrar por user_id para compatibilidad
         result = await db.cash_movements.delete_one({"id": movement_id})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Movimiento no encontrado")
@@ -3213,10 +3901,10 @@ async def delete_cash_movement(movement_id: str):
         raise HTTPException(status_code=500, detail=f"Error al eliminar movimiento: {str(e)}")
 
 @api_router.get("/portfolio/cash/summary")
-async def get_cash_summary():
+async def get_cash_summary(current_user: dict = Depends(get_current_user)):
     """Get cash balance summary"""
     try:
-        movements = await db.cash_movements.find().to_list(1000)
+        movements = await db.cash_movements.find({"user_id": current_user["id"]}).to_list(1000)
         
         total_deposits = sum(m['amount'] for m in movements if m['movement_type'] == 'deposit')
         total_withdrawals = sum(m['amount'] for m in movements if m['movement_type'] == 'withdrawal')
@@ -3231,14 +3919,41 @@ async def get_cash_summary():
     except Exception as e:
         logging.error(f"Error getting cash summary: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener resumen: {str(e)}")
+@api_router.get("/debug/portfolio-raw")
+async def debug_portfolio_raw(current_user: dict = Depends(get_current_user)):
+    transactions = await db.portfolio.find(
+        {"$or": [
+            {"user_id": current_user["id"]},
+            {"user_id": ""},
+            {"user_id": {"$exists": False}}
+        ]}
+    ).to_list(1000)
+    holdings_map = {}
+    for tx in transactions:
+        t = tx['ticker']
+        if t not in holdings_map:
+            holdings_map[t] = {"shares": 0.0, "cost": 0.0, "tx_count": 0}
+        holdings_map[t]["tx_count"] += 1
+        if tx['transaction_type'] == 'buy':
+            holdings_map[t]["shares"] += tx['shares']
+            holdings_map[t]["cost"] += tx['total_amount']
+        else:
+            holdings_map[t]["shares"] -= tx['shares']
+            holdings_map[t]["cost"] -= tx['total_amount']
+    return {
+        "user_id": current_user["id"],
+        "total_transactions": len(transactions),
+        "holdings_raw": holdings_map,
+        "filtered_out": [t for t, d in holdings_map.items() if d["shares"] <= 0.0001]
+    }
 
 @api_router.get("/portfolio/evolution", response_model=PortfolioEvolution)
-async def get_portfolio_evolution():
+async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)):
     """Get portfolio value evolution over time - optimized version"""
     try:
         # Get all transactions and cash movements
-        transactions = await db.portfolio.find().sort("transaction_date", 1).to_list(1000)
-        cash_movements = await db.cash_movements.find().sort("movement_date", 1).to_list(1000)
+        transactions = await db.portfolio.find({"user_id": current_user["id"]}).sort("transaction_date", 1).to_list(1000)
+        cash_movements = await db.cash_movements.find({"user_id": current_user["id"]}).sort("movement_date", 1).to_list(1000)
         
         if not transactions and not cash_movements:
             return PortfolioEvolution(
@@ -4279,6 +4994,58 @@ async def get_technical_analysis(ticker: str):
 
 # ==================== NEWS ENDPOINTS ====================
 
+# 👇 JUSTO DESPUÉS de tus funciones download_flat, poc, plot_rsi, etc.
+@app.get("/api/chart-technical/{ticker}")
+def get_chart_technical_data(ticker: str, period: str = "1mo"):
+    import yfinance as yf
+    import pandas as pd
+    import numpy as np
+    
+    ticker = ticker.upper()
+    try:
+        df = yf.download(ticker, period=period, progress=False)
+        if df.empty:
+            return {"error": "No data"}
+            
+        # Helper para series seguras
+        def fix(series):
+            return series.fillna(0).replace([np.inf, -np.inf], 0).values.tolist()
+
+        # Cálculos (Ahora llamando a .mean() primero)
+        rsi = (100 - (100 / (1 + (df['Close'].diff().clip(lower=0).rolling(14).mean() / 
+                                  (-df['Close'].diff().clip(upper=0).rolling(14).mean())))))
+        
+        rsi_ema = rsi.ewm(span=10).mean()
+        vama = df['Close'].rolling(20).mean()
+        vwap = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+        vol_ema = df['Volume'].ewm(span=24).mean().mean() # <--- FIXED HERE
+        
+        # Coppock
+        roc14 = df['Close'].pct_change(14)
+        roc11 = df['Close'].pct_change(11)
+        copp = (roc14 + roc11).ewm(span=10).mean()
+
+        return {
+            "timestamp": (df.index.astype(int) // 10**6).tolist(),
+            "open": fix(df['Open']),
+            "high": fix(df['High']),
+            "low": fix(df['Low']),
+            "close": fix(df['Close']),
+            "volume": fix(df['Volume']),
+            "rsi": fix(rsi),
+            "rsi_ema": fix(rsi_ema),
+            "vama": fix(vama),
+            "poc": float(df['Close'].median()),
+            "coppock": fix(copp),
+            "vwap": fix(vwap),
+            "volume_ema": fix(df['Volume'].ewm(span=24).mean())
+        }
+    except Exception as e:
+        print(f"Error técnico: {e}")
+        return {"error": str(e)}
+
+
+
 class NewsArticle(BaseModel):
     title: str
     publisher: str
@@ -4500,117 +5267,87 @@ class AIInitResponse(BaseModel):
 
 
 def get_financial_system_prompt(ticker: str, stock_data: Dict[str, Any]) -> str:
-    """Generate a detailed system prompt for financial analysis"""
-    
-    # Extract metadata
+    """Generate a concise system prompt with fundamental + technical analysis"""
     metadata = stock_data.get('metadata', {})
     summary_flags = stock_data.get('summary_flags', {})
-    
-    # Safe formatting helper
-    def safe_format(value, format_type='str'):
-        if value is None or value == 'N/A':
-            return 'N/A'
-        try:
-            if format_type == 'money':
-                return f"${float(value):,.0f}"
-            elif format_type == 'percent':
-                return f"{float(value):.1f}%"
-            elif format_type == 'price':
-                return f"${float(value):.2f}"
-            else:
-                return str(value)
-        except:
-            return str(value) if value else 'N/A'
-    
-    # Format summary flags
-    flags_text = ""
-    if summary_flags:
-        flags_list = []
-        flag_labels = {
-            'profitable': ('Rentable', '✅' if summary_flags.get('profitable') else '❌'),
-            'positive_fcf': ('Flujo de Caja Positivo', '✅' if summary_flags.get('positive_fcf') else '❌'),
-            'low_debt': ('Deuda Baja', '✅' if summary_flags.get('low_debt') else '❌'),
-            'good_margins': ('Buenos Márgenes', '✅' if summary_flags.get('good_margins') else '❌'),
-            'healthy_liquidity': ('Liquidez Sana', '✅' if summary_flags.get('healthy_liquidity') else '❌'),
-            'strong_roe': ('ROE Fuerte', '✅' if summary_flags.get('strong_roe') else '❌'),
-        }
-        for key, (label, icon) in flag_labels.items():
-            if key in summary_flags:
-                flags_list.append(f"{icon} {label}")
-        flags_text = " | ".join(flags_list)
-    
-    # Get values safely
-    current_price = stock_data.get('current_price') or metadata.get('current_price')
-    market_cap = metadata.get('market_cap')
-    pe_ratio = metadata.get('pe_ratio')
-    div_yield = metadata.get('dividend_yield')
-    week_high = metadata.get('fifty_two_week_high')
-    week_low = metadata.get('fifty_two_week_low')
-    fav_pct = stock_data.get('favorable_percentage')
-    
-    return f"""Eres un analista financiero experto y amigable especializado en análisis de acciones. Tu nombre es "FinBot". 
-Estás analizando la acción {ticker} ({stock_data.get('company_name', ticker)}).
+    fav_pct = stock_data.get('favorable_percentage', 0)
+    technical = stock_data.get('technical') or {}
 
-═══════════════════════════════════════════════════
-📊 DATOS DE LA EMPRESA
-═══════════════════════════════════════════════════
-- Ticker: {ticker}
-- Nombre: {stock_data.get('company_name', 'N/A')}
-- Sector: {metadata.get('sector', 'N/A')}
-- Industria: {metadata.get('industry', 'N/A')}
-- Precio Actual: {safe_format(current_price, 'price')}
-- Market Cap: {safe_format(market_cap, 'money')}
-- P/E Ratio: {safe_format(pe_ratio)}
-- Dividend Yield: {safe_format(div_yield, 'percent') if div_yield else 'N/A'}
-- 52 Week High: {safe_format(week_high, 'price')}
-- 52 Week Low: {safe_format(week_low, 'price')}
+    flag_map = {
+        'profitable': '✅ Rentable' if summary_flags.get('profitable') else '❌ No rentable',
+        'positive_fcf': '✅ FCF positivo' if summary_flags.get('positive_fcf') else '❌ FCF negativo',
+        'low_debt': '✅ Deuda baja' if summary_flags.get('low_debt') else '❌ Deuda alta',
+        'good_margins': '✅ Buenos márgenes' if summary_flags.get('good_margins') else '❌ Márgenes débiles',
+        'healthy_liquidity': '✅ Liquidez sana' if summary_flags.get('healthy_liquidity') else '❌ Liquidez baja',
+        'strong_roe': '✅ ROE fuerte' if summary_flags.get('strong_roe') else '❌ ROE débil',
+        'undervalued': '✅ Subvalorada' if summary_flags.get('undervalued') else '❌ No subvalorada',
+    }
+    flags_text = ' | '.join(flag_map.values())
 
-═══════════════════════════════════════════════════
-🎯 RESULTADO DEL ANÁLISIS
-═══════════════════════════════════════════════════
-- Recomendación: {stock_data.get('recommendation', 'N/A')}
-- Nivel de Riesgo: {stock_data.get('risk_level', 'N/A')}
-- Métricas Favorables: {stock_data.get('favorable_metrics', 'N/A')} de {stock_data.get('total_metrics', 'N/A')} ({safe_format(fav_pct, 'percent') if fav_pct else 'N/A'})
+    ratios_raw = stock_data.get('ratios', [])
+    ratios_summary = []
+    if isinstance(ratios_raw, list):
+        for category in ratios_raw:
+            for m in category.get('metrics', []):
+                icon = '✅' if m.get('passed') else '❌'
+                ratios_summary.append(f"{icon} {m.get('name')}: {m.get('display_value')}")
+    elif isinstance(ratios_raw, dict):
+        for name, data in ratios_raw.items():
+            if isinstance(data, dict):
+                icon = '✅' if data.get('is_favorable') else '❌'
+                ratios_summary.append(f"{icon} {name}: {data.get('display_value','N/A')}")
+    ratios_text = '\n'.join(ratios_summary[:30]) if ratios_summary else 'No disponibles'
 
-INDICADORES CLAVE:
-{flags_text if flags_text else 'No disponibles'}
+    price = stock_data.get('current_price') or metadata.get('current_price') or 0
+    cap = metadata.get('market_cap') or 0
+    high = metadata.get('fifty_two_week_high') or 0
+    low = metadata.get('fifty_two_week_low') or 0
+    pe = metadata.get('pe_ratio') or 'N/A'
 
-═══════════════════════════════════════════════════
-📈 RATIOS FINANCIEROS DETALLADOS
-═══════════════════════════════════════════════════
-{format_ratios_for_prompt(stock_data.get('ratios', {}))}
+    # Análisis técnico
+    tech_section = ""
+    if technical:
+        mas = technical.get('moving_averages', [])
+        mas_text = ' | '.join([f"{m.get('name')}: {m.get('signal')}" for m in mas[:4]]) if mas else 'N/A'
+        key_levels = technical.get('key_levels', {})
+        levels_text = ' | '.join([f"{k}: ${v:.2f}" for k, v in list(key_levels.items())[:4]]) if key_levels else 'N/A'
 
-═══════════════════════════════════════════════════
-💡 INSTRUCCIONES PARA TI (FinBot)
-═══════════════════════════════════════════════════
-1. SIEMPRE responde en español de forma clara y concisa
-2. Tienes TODOS los datos del análisis arriba - ¡úsalos para dar respuestas informativas!
-3. Sé conversacional y amigable, pero profesional
-4. Usa emojis apropiados (📈 📉 💰 ⚠️ ✅ 💡 🎯 📊)
-5. Cuando des recomendaciones, menciona que no es asesoría financiera profesional
-6. Ofrece perspectivas tanto alcistas como bajistas
-7. Explica términos técnicos de forma simple
-8. Cuando el usuario pregunte sobre métricas específicas, cita los valores exactos que tienes arriba
-9. Si el usuario pregunta "¿qué datos tienes?" - enumérale los ratios que tienes disponibles
+        tech_section = f"""
+ANALISIS TECNICO:
+- Tendencia: {technical.get('trend','N/A')} | Score: {technical.get('score','N/A')}/100
+- Señal MA: {technical.get('ma_signal','N/A')} | {technical.get('ma_summary','N/A')}
+- Golden Cross: {'✅ SI' if technical.get('golden_cross') else '❌ NO'} | Death Cross: {'⚠️ SI' if technical.get('death_cross') else '✅ NO'}
+- Zona Fibonacci: {technical.get('fibonacci_zone','N/A')}
+- {technical.get('fibonacci_interpretation','N/A')}
+- Zona Camarilla: {technical.get('camarilla_zone','N/A')}
+- Medias Móviles: {mas_text}
+- Niveles clave: {levels_text}
+"""
 
-IMPORTANTE: Mantén respuestas concisas (máximo 250 palabras) a menos que el usuario pida más detalle."""
+    return f"""Eres FinBot, analista financiero experto. Responde SIEMPRE en español, conciso y claro.
 
+ACCION: {ticker} - {stock_data.get('company_name', ticker)}
+Sector: {metadata.get('sector','N/A')} | Precio: ${price:.2f} | P/E: {pe} | Cap: ${cap:,.0f}
+52W: ${low:.2f} - ${high:.2f}
 
-def format_ratios_for_prompt(ratios: Dict[str, Any]) -> str:
-    """Format ratios dictionary into readable string for the prompt"""
-    if not ratios:
-        return "No hay datos de ratios disponibles"
-    
-    lines = []
-    for key, value in ratios.items():
-        if isinstance(value, dict):
-            status = "✅ Favorable" if value.get('is_favorable', False) else "⚠️ No favorable"
-            lines.append(f"- {key}: {value.get('value', 'N/A')} ({status})")
-        else:
-            lines.append(f"- {key}: {value}")
-    
-    return "\n".join(lines) if lines else "Sin datos de ratios"
+ANALISIS FUNDAMENTAL:
+Recomendacion: {stock_data.get('recommendation','N/A')} | Riesgo: {stock_data.get('risk_level','N/A')}
+Metricas: {stock_data.get('favorable_metrics',0)}/{stock_data.get('total_metrics',0)} favorables ({fav_pct:.1f}%)
+Indicadores: {flags_text}
 
+RATIOS:
+{ratios_text}
+{tech_section}
+INSTRUCCIONES:
+- Usa SOLO los datos de arriba, cita valores exactos
+- Incluye analisis fundamental Y tecnico
+- Sugiere puntos de entrada/salida basados en Fibonacci y Camarilla
+- Indica tipo de trade: swing, largo plazo, o evitar
+- Minimo 200 palabras, maximo 350 palabras
+- NO incluyas contadores de palabras ni notas al final
+- Emojis: 📈 📉 ✅ ❌ ⚠️ 💡 🎯
+- No eres asesor financiero profesional
+"""
 
 def get_suggested_questions(context: str = "general") -> List[str]:
     """Get contextual suggested questions"""
@@ -4642,37 +5379,70 @@ def get_suggested_questions(context: str = "general") -> List[str]:
 async def init_ai_assistant(request: AIInitRequest):
     """Initialize a new AI assistant session with stock analysis"""
     try:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="LLM API key not configured")
-        
+        # Obtener análisis técnico automáticamente
+        technical_data = None
+        try:
+            tech_url = f"http://localhost:8000/api/technical/{request.ticker}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                tech_response = await client.get(tech_url)
+                if tech_response.status_code == 200:
+                    td = tech_response.json()
+                    technical_data = {
+                        "trend": td.get("trend_direction"),
+                        "score": td.get("technical_score"),
+                        "recommendation": td.get("technical_recommendation"),
+                        "ma_signal": td.get("ma_trend_signal"),
+                        "ma_summary": td.get("ma_summary"),
+                        "golden_cross": td.get("golden_cross"),
+                        "death_cross": td.get("death_cross"),
+                        "fibonacci_zone": td.get("current_fibonacci_zone"),
+                        "fibonacci_interpretation": td.get("fibonacci_interpretation"),
+                        "camarilla_zone": td.get("current_camarilla_zone"),
+                        "camarilla_interpretation": td.get("camarilla_interpretation"),
+                        "key_levels": td.get("key_levels", {}),
+                        "moving_averages": td.get("moving_averages", []),
+                    }
+                    logging.info(f"TECHNICAL DATA fetched: trend={technical_data['trend']}, score={technical_data['score']}")
+        except Exception as te:
+            logging.warning(f"Could not fetch technical data: {te}")
+
+        # Merge technical data into stock_data
+        stock_data_with_tech = dict(request.stock_data)
+        stock_data_with_tech['technical'] = technical_data
+
         session_id = request.session_id or str(uuid.uuid4())
         
         # Create new chat instance with financial system prompt
-        system_prompt = get_financial_system_prompt(request.ticker, request.stock_data)
+        logging.info(f"TECH IN PROMPT: {stock_data_with_tech.get('technical')}")
+        system_prompt = get_financial_system_prompt(request.ticker, stock_data_with_tech)
         
         chat = LlmChat(
-            api_key=api_key,
             session_id=session_id,
             system_message=system_prompt
-        ).with_model("openai", "gpt-4o-mini")
+        )
         
         # Store the session
         ai_chat_sessions[session_id] = chat
         
         # Generate initial analysis
         init_message = UserMessage(
-            text=f"""Proporciona un análisis inicial breve y conversacional de {request.ticker}. 
-            
-Incluye:
-1. Tu primera impresión general (1-2 oraciones)
-2. Un punto fuerte destacado
-3. Una posible preocupación
-4. Una invitación a que el usuario haga preguntas
+            text=f"""Analiza {request.ticker} usando EXCLUSIVAMENTE los datos del sistema.
+Responde en español con este formato:
 
-Mantén el tono amigable y accesible. Usa 2-3 emojis apropiados."""
+📊 FUNDAMENTAL: [recomendacion] | Riesgo: [nivel] | [X/Y metricas favorables]
+📈 FORTALEZAS: [2 ratios positivos con valores exactos]
+⚠️ DEBILIDADES: [2 ratios negativos con valores exactos]
+💰 PRECIO: [precio actual] | P/E: [valor] | Graham: [valor si disponible]
+
+📉 TECNICO: Tendencia [trend] | Score [score]/100 | Señal: [ma_signal]
+🎯 ENTRADA: [nivel de soporte Fibonacci o Camarilla mas cercano con precio exacto]
+🚪 SALIDA: [nivel de resistencia con precio exacto]
+📊 TIPO TRADE: [Swing/Largo plazo/Evitar] - [justificacion en 1 oracion]
+
+🔚 CONCLUSION: [2 oraciones combinando fundamental y tecnico]
+
+Cita valores numericos exactos. Sin contadores de palabras."""
         )
-        
         initial_analysis = await chat.send_message(init_message)
         
         # Determine context for suggested questions
@@ -4704,10 +5474,6 @@ async def chat_with_ai_assistant(request: AIAssistantRequest):
         # Check if session exists
         if session_id not in ai_chat_sessions:
             # If no session, create a new one with basic context
-            api_key = os.environ.get('EMERGENT_LLM_KEY')
-            if not api_key:
-                raise HTTPException(status_code=500, detail="LLM API key not configured")
-            
             basic_prompt = """Eres FinBot, un analista financiero experto y amigable. 
 Responde siempre en español de forma clara y concisa.
 Si no tienes contexto de una acción específica, ofrece información general sobre inversiones y análisis financiero.
@@ -4715,10 +5481,9 @@ Usa emojis ocasionalmente para hacer la conversación más amena.
 Recuerda mencionar que no proporcionas asesoría financiera profesional."""
             
             chat = LlmChat(
-                api_key=api_key,
                 session_id=session_id,
                 system_message=basic_prompt
-            ).with_model("openai", "gpt-4o-mini")
+            )
             
             ai_chat_sessions[session_id] = chat
         
@@ -4754,6 +5519,1177 @@ async def end_ai_session(session_id: str):
         del ai_chat_sessions[session_id]
         return {"message": "Sesión terminada exitosamente"}
     return {"message": "Sesión no encontrada"}
+
+#***************************************************CODIGO AÑADIDO**************************************************
+# ═══════════════════════════════════════════════════════════════
+#  OVERTON SIGNAL MATRIX ENDPOINT — v2 Multi-Factor
+#  Sustituye completamente el bloque anterior (mismo marcador).
+#
+#  NUEVOS FACTORES vs versión anterior:
+#    + Momentum 12-1          (factor cuantitativo clásico)
+#    + Fear & Greed proxy     (momentum + spread + VIX)
+#    + Put/Call Ratio         (sentimiento opciones)
+#    + Short Interest %       (potencial squeeze)
+#    + Z-score Rev. Media     (sobreventa / sobrecompra)
+#    + Beta vs S&P 500        (sensibilidad al mercado)
+#    + Forward Guidance       (PE compression + EPS growth)
+#    + OFI proxy              (order flow imbalance)
+#    + VWAP proxy             (precio medio ponderado volumen)
+#    + Bid-Ask Spread proxy   (liquidez / coste ejecución)
+#    + Gamma Exposure proxy   (imanes de precio)
+#    + Market Impact proxy    (impacto de la orden)
+#
+#  SCORE MULTI-FACTOR (máx 100):
+#    Fundamental   30 %  (WMA, Coppock, Sharpe, VIX, US10Y, analistas, noticias)
+#    Momentum      25 %  (Mom12-1, FGI, Short Interest, Z-score, Beta)
+#    Sentimiento   20 %  (PCR, Forward Guidance, EPS growth)
+#    Microestruc.  25 %  (OFI, VWAP, BAS, GEX, Market Impact)
+# ═══════════════════════════════════════════════════════════════
+
+def _calc_wma(prices: list, period: int = 30) -> list:
+    result = []
+    for i in range(len(prices)):
+        if i < period - 1:
+            result.append(None)
+        else:
+            weights = list(range(1, period + 1))
+            window = prices[i - period + 1: i + 1]
+            wma = sum(w * v for w, v in zip(weights, window)) / sum(weights)
+            result.append(round(wma, 4))
+    return result
+
+
+def _calc_coppock(prices: list) -> list:
+    n = len(prices)
+    roc14 = [None] * n
+    roc11 = [None] * n
+    for i in range(n):
+        if i >= 14:
+            roc14[i] = (prices[i] - prices[i - 14]) / prices[i - 14] * 100
+        if i >= 11:
+            roc11[i] = (prices[i] - prices[i - 11]) / prices[i - 11] * 100
+    raw = [None] * n
+    for i in range(n):
+        if roc14[i] is not None and roc11[i] is not None:
+            raw[i] = roc14[i] + roc11[i]
+    result = [None] * n
+    ema = None
+    for i in range(n):
+        if raw[i] is None:
+            result[i] = None
+            continue
+        ema = raw[i] if ema is None else ema + (raw[i] - ema) / 10
+        result[i] = round(ema, 4)
+    return result
+
+
+def _calc_sharpe_from_prices(prices: list, rf_annual: float = 0.045) -> float:
+    if len(prices) < 2:
+        return 0.0
+    returns = [(prices[i] - prices[i - 1]) / prices[i - 1] for i in range(1, len(prices))]
+    avg_r = float(np.mean(returns))
+    std_r = float(np.std(returns))
+    if std_r == 0:
+        return 0.0
+    rf_weekly = rf_annual / 52
+    return round((avg_r - rf_weekly) / std_r * math.sqrt(52), 4)
+
+
+def _find_crossings(prices: list, wma: list) -> tuple:
+    buys, sells = [], []
+    for i in range(1, len(prices)):
+        if wma[i] is None or wma[i - 1] is None:
+            continue
+        if prices[i] > wma[i] and prices[i - 1] <= wma[i - 1]:
+            buys.append(i)
+        elif prices[i] < wma[i] and prices[i - 1] >= wma[i - 1]:
+            sells.append(i)
+    return buys, sells
+
+
+# ── Nuevos indicadores ────────────────────────────────────────────────────────
+
+def _calc_momentum_12_1(daily_closes: list) -> float:
+    """Momentum 12-1: retorno entre t-252 y t-21."""
+    if len(daily_closes) < 22:
+        return 0.0
+    if len(daily_closes) < 252:
+        return round((daily_closes[-22] - daily_closes[0]) / max(daily_closes[0], 0.001) * 100, 2)
+    return round((daily_closes[-21] - daily_closes[-252]) / max(daily_closes[-252], 0.001) * 100, 2)
+
+
+def _calc_fgi_proxy(momentum_pct: float, spread_pct: float, vix: float) -> float:
+    """Fear & Greed Index proxy (0-100)."""
+    mom_score    = max(0, min(100, 50 + momentum_pct * 1.5))
+    spread_score = max(0, min(100, 100 - spread_pct * 200))
+    vix_score    = max(0, min(100, 100 - (vix - 10) * 3.33))
+    return round(0.45 * mom_score + 0.30 * vix_score + 0.25 * spread_score, 1)
+
+
+def _calc_put_call_ratio(info: dict) -> float:
+    """Put/Call Ratio desde yfinance.info; 1.0 si no disponible."""
+    pcr = info.get("putCallRatio", None)
+    return round(float(pcr), 3) if pcr is not None else 1.0
+
+
+def _calc_short_interest(info: dict) -> float:
+    """Short Interest % del float."""
+    shares_short = info.get("sharesShort", 0) or 0
+    float_shares = info.get("floatShares", None) or info.get("sharesOutstanding", None)
+    if float_shares and float_shares > 0:
+        return round(shares_short / float_shares * 100, 2)
+    pct = info.get("shortPercentOfFloat", None)
+    return round(float(pct) * 100, 2) if pct is not None else 0.0
+
+
+def _calc_mean_reversion_zscore(daily_closes: list, window: int = 50) -> float:
+    """Z-score precio vs MA-50. >+2 sobrecompra; <-2 sobreventa."""
+    if len(daily_closes) < window:
+        return 0.0
+    series = np.array(daily_closes[-window:], dtype=float)
+    std = float(np.std(series))
+    if std == 0:
+        return 0.0
+    return round((daily_closes[-1] - float(np.mean(series))) / std, 3)
+
+
+def _calc_beta(daily_closes: list, market_closes: list, window: int = 252) -> float:
+    """Beta del activo vs S&P 500."""
+    n = min(len(daily_closes), len(market_closes), window)
+    if n < 30:
+        return 1.0
+    r_i  = np.diff(np.array(daily_closes[-n:],  dtype=float)) / np.array(daily_closes[-n:-1],  dtype=float)
+    r_m  = np.diff(np.array(market_closes[-n:], dtype=float)) / np.array(market_closes[-n:-1], dtype=float)
+    var_m = float(np.var(r_m))
+    return round(float(np.cov(r_i, r_m)[0][1]) / var_m, 3) if var_m != 0 else 1.0
+
+
+def _calc_vwap_proximity(daily_hist) -> dict:
+    """VWAP último mes (21 días) y distancia al precio actual."""
+    try:
+        recent  = daily_hist.tail(21).copy()
+        if recent.empty:
+            return {"vwap": 0.0, "price_vs_vwap": "neutral", "distance_pct": 0.0}
+        typical = (recent["High"] + recent["Low"] + recent["Close"]) / 3
+        vwap    = float((typical * recent["Volume"]).sum() / recent["Volume"].sum())
+        current = float(recent["Close"].iloc[-1])
+        dist    = round((current - vwap) / vwap * 100, 2)
+        return {"vwap": round(vwap, 2), "price_vs_vwap": "above" if current > vwap else "below", "distance_pct": dist}
+    except Exception:
+        return {"vwap": 0.0, "price_vs_vwap": "neutral", "distance_pct": 0.0}
+
+
+def _calc_ofi_proxy(daily_hist) -> float:
+    """OFI proxy: (close-open)/range promedio últimos 10 días."""
+    try:
+        recent  = daily_hist.tail(10)
+        ranges  = recent["High"] - recent["Low"]
+        ofi_raw = (recent["Close"] - recent["Open"]) / ranges.replace(0, np.nan)
+        return round(float(ofi_raw.mean(skipna=True)), 4)
+    except Exception:
+        return 0.0
+
+
+def _calc_bid_ask_spread_proxy(daily_hist) -> float:
+    """Bid-Ask spread proxy: (High-Low)/Close promedio 20 días (%)."""
+    try:
+        recent = daily_hist.tail(20)
+        spread = (recent["High"] - recent["Low"]) / recent["Close"].replace(0, np.nan)
+        return round(float(spread.mean(skipna=True)) * 100, 3)
+    except Exception:
+        return 2.0
+
+
+def _calc_gamma_exposure_proxy(info: dict) -> float:
+    """GEX proxy normalizado (0-10)."""
+    iv  = info.get("impliedVolatility", None) or 0.3
+    oi  = info.get("openInterest", None) or 0
+    gex = iv ** 2 * oi
+    return round(math.log1p(gex) / math.log1p(1e9) * 10, 3) if gex > 0 else 0.0
+
+
+def _calc_market_impact_proxy(daily_hist, info: dict) -> float:
+    """Market Impact proxy: σ × √(vol/ADV)."""
+    try:
+        recent   = daily_hist.tail(30)
+        sigma    = float(recent["Close"].pct_change().dropna().std()) * math.sqrt(252)
+        adv      = float(recent["Volume"].mean())
+        last_vol = float(recent["Volume"].iloc[-1])
+        return round(sigma * math.sqrt(last_vol / adv), 4) if adv > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _calc_forward_guidance_proxy(info: dict) -> dict:
+    """Forward Guidance via PE compression + EPS growth + analyst mean rec."""
+    try:
+        tr_pe    = info.get("trailingPE", None)
+        fw_pe    = info.get("forwardPE",  None)
+        eps_curr = info.get("trailingEps", None)
+        eps_fwd  = info.get("forwardEps",  None)
+        recs     = info.get("recommendationMean", 3.0) or 3.0
+
+        pe_comp = ((tr_pe - fw_pe) / tr_pe) if (tr_pe and fw_pe and tr_pe > 0 and fw_pe > 0) else 0.0
+        eps_g   = ((eps_fwd - eps_curr) / abs(eps_curr)) if (eps_curr and eps_fwd and eps_curr != 0) else 0.0
+        score   = pe_comp * 10 + eps_g * 5 + (3.0 - recs) * 2
+        label   = "positivo" if score > 1 else "negativo" if score < -1 else "neutral"
+        return {"score": round(score, 2), "label": label,
+                "pe_compression": round(pe_comp * 100, 1),
+                "eps_growth_pct": round(eps_g * 100, 1),
+                "analyst_mean_rec": round(recs, 2)}
+    except Exception:
+        return {"score": 0.0, "label": "neutral", "pe_compression": 0.0,
+                "eps_growth_pct": 0.0, "analyst_mean_rec": 3.0}
+
+
+def _overton_zone(score: int, news_impact: float) -> tuple:
+    sign = '+' if news_impact >= 0 else ''
+    if score >= 75:
+        return ("Popular — Comprar",
+                f"Narrativa de mercado firmemente alcista. Las noticias recientes ({sign}{news_impact:.1f}%) "
+                "refuerzan el momentum. Flujos institucionales entran. Zona de compra con convicción; gestiona el tamaño de posición.")
+    elif score >= 55:
+        return ("Aceptable — Vigilar",
+                f"Señales mixtas con ligero sesgo positivo. Las noticias aportan {sign}{news_impact:.1f}% al sesgo "
+                "pero falta confirmación técnica plena. Espera catalizador o cruce WMA para entrar.")
+    elif score >= 38:
+        return ("Sensible — Esperar",
+                f"Narrativa en disputa. Noticias generan ruido ({sign}{news_impact:.1f}%) sin dirección clara. "
+                "Analistas divididos. Evita nueva exposición hasta que el score supere 55.")
+    elif score >= 20:
+        return ("Radical — Reducir",
+                f"Sesgo bajista dominante. Noticias en negativo ({news_impact:.1f}%) aceleran la narrativa. "
+                "Reduce exposición y ajusta stops.")
+    else:
+        return ("Impensable — Vender",
+                f"Pánico generalizado. Noticias ({news_impact:.1f}%) amplían el deterioro fundamental. "
+                "VIX elevado, Coppock negativo, precio bajo WMA. Sal de posiciones largas.")
+
+
+def _compute_multifactor_score(
+    price_vs_wma, coppock_signal, sharpe, cur_vix, cur_yield,
+    analyst_ratio, news_impact_total,
+    momentum_12_1, fgi, si_pct, zscore_mr,
+    pcr, fg_proxy,
+    ofi, vwap_info, bas_pct, gex_proxy, mi_proxy, beta,
+) -> dict:
+    # ── FUNDAMENTAL (máx 30) ─────────────────────────────────────────
+    f = 0.0
+    if price_vs_wma == "above":  f += 4.5
+    if coppock_signal == "bull": f += 4.5
+    f += 3.0 if sharpe > 1.5 else 2.0 if sharpe > 0.5 else 1.0 if sharpe > 0 else 0.0
+    f += 4.0 if cur_vix < 15 else 2.5 if cur_vix < 20 else 1.0 if cur_vix < 28 else -2.0
+    f += 3.0 if cur_yield < 3.8 else 1.5 if cur_yield < 4.5 else -1.0
+    f += 3.5 if analyst_ratio > 0.65 else 2.0 if analyst_ratio > 0.50 else -1.5 if analyst_ratio < 0.30 else 0.5
+    f += 3.5 if news_impact_total > 3 else 1.5 if news_impact_total > 0 else -3.5 if news_impact_total < -3 else -1.0
+    f = max(0, min(30, f))
+
+    # ── MOMENTUM (máx 25) ────────────────────────────────────────────
+    m = 0.0
+    m += 7.0 if momentum_12_1 > 20 else 4.0 if momentum_12_1 > 5 else 2.0 if momentum_12_1 > 0 else -5.0 if momentum_12_1 < -20 else -2.0
+    m += 4.5 if fgi > 70 else 2.5 if fgi > 55 else 1.0 if fgi > 45 else -3.0 if fgi < 30 else -1.0
+    m += 3.0 if si_pct > 20 else -1.5 if si_pct > 10 else 1.5 if si_pct < 3 else 0.0
+    m += 3.0 if -1.5 <= zscore_mr <= 1.5 else 1.5 if abs(zscore_mr) > 2.5 else 1.0
+    m += 2.5 if 0.8 <= beta <= 1.3 else -1.5 if beta > 2.0 else 1.0 if beta < 0.5 else 0.0
+    m = max(0, min(25, m))
+
+    # ── SENTIMIENTO (máx 20) ─────────────────────────────────────────
+    s = 0.0
+    s += 5.0 if pcr < 0.7 else 3.0 if pcr < 0.9 else 1.0 if pcr < 1.1 else -2.0 if pcr < 1.4 else -4.0
+    fg_sc = fg_proxy.get("score", 0.0)
+    s += 7.0 if fg_sc > 3 else 4.0 if fg_sc > 1 else 2.0 if fg_sc > -1 else -2.0 if fg_sc > -3 else -5.0
+    eps_g = fg_proxy.get("eps_growth_pct", 0.0)
+    s += 4.0 if eps_g > 10 else 2.0 if eps_g > 0 else -3.0 if eps_g < -5 else 0.0
+    s = max(0, min(20, s))
+
+    # ── MICROESTRUCTURA (máx 25) ─────────────────────────────────────
+    u = 0.0
+    u += 6.0 if ofi > 0.3 else 3.5 if ofi > 0.1 else 1.5 if ofi > -0.1 else -2.0 if ofi > -0.3 else -4.5
+    dist = vwap_info.get("distance_pct", 0.0)
+    if vwap_info.get("price_vs_vwap") == "above":
+        u += 4.0 if dist > 3 else 2.5
+    else:
+        u += -3.0 if dist < -3 else -1.0
+    u += 3.0 if bas_pct < 0.5 else 1.5 if bas_pct < 1.5 else -2.5 if bas_pct > 4.0 else 0.0
+    u += 3.0 if gex_proxy > 5 else 1.5 if gex_proxy > 2 else 0.0
+    u += 3.5 if mi_proxy < 0.05 else 1.5 if mi_proxy < 0.15 else -2.0 if mi_proxy > 0.5 else 0.0
+    u = max(0, min(25, u))
+
+    total = max(0, min(100, round(f + m + s + u)))
+    return {
+        "score": total,
+        "breakdown": {
+            "fundamental": round(f, 1),
+            "momentum":    round(m, 1),
+            "sentimiento": round(s, 1),
+            "microestruc": round(u, 1),
+        }
+    }
+
+
+# ==================== HELPER FUNCTIONS PARA OVERTON ====================
+
+def _safe_close(df):
+    """Extrae columna Close de forma segura"""
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+
+    if "Close" in df.columns:
+        s = df["Close"]
+        if isinstance(s, pd.DataFrame):
+            s = s.iloc[:, 0]
+        return pd.Series(s, dtype=float).dropna()
+    return pd.Series(dtype=float)
+
+
+def _safe_col(df, col: str):
+    """Extrae cualquier columna de forma segura"""
+    if df is None or df.empty or col not in df.columns:
+        return pd.Series(dtype=float)
+
+    s = df[col]
+    if isinstance(s, pd.DataFrame):
+        s = s.iloc[:, 0]
+    return pd.Series(s, dtype=float).dropna()
+
+
+def _load_history(tkr, period="1y", interval="1d"):
+    """Carga historial con manejo de MultiIndex de yfinance."""
+    try:
+        df = yf.Ticker(tkr).history(period=period, interval=interval, auto_adjust=True)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        df = df.loc[:, ~df.columns.duplicated(keep='first')]
+        return df
+    except Exception as e:
+        logging.error(f"Error loading history {tkr}: {e}")
+        return pd.DataFrame()
+
+
+@api_router.get("/overton/{ticker}")
+async def get_overton_signal(ticker: str):
+    """
+    Overton Signal Matrix v2 — Score multi-factor (100 puntos):
+    WMA-30, Coppock, Sharpe, VIX, US10Y, Noticias, Analistas,
+    Momentum 12-1, FGI, PCR, Short Interest, Z-score, Beta,
+    Forward Guidance, OFI, VWAP, Bid-Ask Spread, GEX, Market Impact.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        stock  = yf.Ticker(ticker)
+        info   = stock.info or {}
+
+        # ── 1. Cargar historial diario (usar helper robusto) ─────────
+        hist_daily = _load_history(ticker, period="1y", interval="1d")
+        if hist_daily.empty:
+            raise HTTPException(status_code=404, detail=f"No hay datos para {ticker}")
+
+        # ── 2. Historial semanal (resample del diario para evitar "60wk" inválido) ──
+        hist_weekly = hist_daily.resample("W").last().dropna()
+        if len(hist_weekly) < 10:
+            hist_weekly = _load_history(ticker, period="2y", interval="1wk")
+            if hist_weekly.empty or len(hist_weekly) < 10:
+                hist_weekly = hist_daily.resample("W").last().dropna()
+
+        weekly_close = _safe_close(hist_weekly)
+        daily_close  = _safe_close(hist_daily)
+
+        prices = [round(float(v), 4) for v in weekly_close.values.tolist()]
+        if len(prices) > 52:
+            prices = prices[-52:]
+        if not prices:
+            prices = [round(float(v), 4) for v in daily_close.values.tolist()[-52:]]
+        if not prices:
+            raise HTTPException(status_code=404, detail=f"Sin datos de precio para {ticker}")
+
+        current_price = prices[-1]
+        pct_change    = round((prices[-1] - prices[-2]) / prices[-2] * 100, 2) if len(prices) > 1 else 0.0
+        daily_closes  = [float(v) for v in daily_close.values.tolist()]
+
+        # ── 3. VIX y US 10Y (usar "2y" en vez de "60wk") ─────────────
+        try:
+            vix_hist   = yf.Ticker("^VIX").history(period="2y", interval="1wk")
+            vix_series = [round(float(v), 2) for v in vix_hist["Close"].dropna().values.tolist()[-52:]]
+            cur_vix    = vix_series[-1] if vix_series else 20.0
+        except Exception:
+            vix_series = [20.0] * 52
+            cur_vix    = 20.0
+
+        try:
+            bond_hist    = yf.Ticker("^TNX").history(period="2y", interval="1wk")
+            yield_series = [round(float(v), 2) for v in bond_hist["Close"].dropna().values.tolist()[-52:]]
+            cur_yield    = yield_series[-1] if yield_series else 4.5
+        except Exception:
+            yield_series = [4.5] * 52
+            cur_yield    = 4.5
+
+        # ── 4. S&P 500 para Beta ──────────────────────────────────────
+        try:
+            sp_hist = yf.Ticker("^GSPC").history(period="1y")
+            if isinstance(sp_hist.columns, pd.MultiIndex):
+                sp_hist.columns = sp_hist.columns.get_level_values(0)
+            sp_close = sp_hist["Close"]
+            if isinstance(sp_close, pd.DataFrame):
+                sp_close = sp_close.iloc[:, 0]
+            market_closes = [float(v) for v in sp_close.dropna().values.tolist()]
+        except Exception:
+            market_closes = daily_closes
+
+        # ── 5. Indicadores base ───────────────────────────────────────
+        wma_series  = _calc_wma(prices, 30)
+        copp_series = _calc_coppock(prices)
+        sharpe      = _calc_sharpe_from_prices(prices, rf_annual=cur_yield / 100)
+        cur_wma     = next((v for v in reversed(wma_series)  if v is not None), current_price)
+        cur_copp    = next((v for v in reversed(copp_series) if v is not None), 0.0)
+        price_vs_wma   = "above" if current_price > cur_wma  else "below"
+        coppock_signal = "bull"  if cur_copp > 0             else "bear"
+        buy_sigs, sell_sigs = _find_crossings(prices, wma_series)
+        # FIX: usar índices reales de precio en vez de valores aleatorios sin sentido
+        news_events = [i for i, p in enumerate(prices) if i > 0 and abs((p - prices[i-1]) / prices[i-1] * 100) > 3][:4]
+
+        # ── 6. Nuevos factores ────────────────────────────────────────
+        momentum_12_1 = _calc_momentum_12_1(daily_closes)
+        bas_pct       = _calc_bid_ask_spread_proxy(hist_daily)
+        fgi_score     = _calc_fgi_proxy(momentum_12_1, bas_pct, cur_vix)
+        pcr           = _calc_put_call_ratio(info)
+        si_pct        = _calc_short_interest(info)
+        zscore_mr     = _calc_mean_reversion_zscore(daily_closes)
+        beta          = _calc_beta(daily_closes, market_closes)
+        vwap_info     = _calc_vwap_proximity(hist_daily)
+        ofi           = _calc_ofi_proxy(hist_daily)
+        gex_proxy     = _calc_gamma_exposure_proxy(info)
+        mi_proxy      = _calc_market_impact_proxy(hist_daily, info)
+        fg_proxy      = _calc_forward_guidance_proxy(info)
+
+        # ── 6b. Indicadores técnicos adicionales (RSI, ADX, BB, ATR%) ──
+        rsi_val = 50.0
+        adx_val = 22.0
+        bb_width_val = 0.05
+        atr_pct_val = 1.5
+        market_regime = "ranging"
+        iv_rank_val = 30.0
+
+        try:
+            close_s = _safe_close(hist_daily)
+
+            if isinstance(close_s, list) or not isinstance(close_s, pd.Series):
+                close_s = pd.Series(close_s, dtype=float)
+
+            high_s = _safe_col(hist_daily, "High")
+            low_s  = _safe_col(hist_daily, "Low")
+
+            if len(close_s) < 30:
+                raise ValueError("Datos insuficientes")
+
+            # RSI 14
+            diff = close_s.diff()
+            gains = diff.clip(lower=0)
+            losses = (-diff).clip(lower=0)
+            avg_gains = gains.ewm(alpha=1/14, adjust=False).mean()
+            avg_losses = losses.ewm(alpha=1/14, adjust=False).mean()
+            rs = avg_gains / avg_losses.replace(0, 1e-10)
+            rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+
+            # ATR 14
+            tr = pd.concat([
+                high_s - low_s,
+                (high_s - close_s.shift(1)).abs(),
+                (low_s  - close_s.shift(1)).abs()
+            ], axis=1).max(axis=1)
+            atr14 = tr.ewm(alpha=1/14, adjust=False).mean()
+            atr_abs = float(atr14.iloc[-1])
+            atr_pct_val = round(atr_abs / close_s.iloc[-1] * 100, 3) if close_s.iloc[-1] > 0 else 1.5
+
+            # ADX 14
+            dm_plus = high_s.diff().clip(lower=0)
+            dm_minus = (-low_s.diff()).clip(lower=0)
+            di_plus = 100 * dm_plus.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, 1e-10)
+            di_minus = 100 * dm_minus.ewm(alpha=1/14, adjust=False).mean() / atr14.replace(0, 1e-10)
+            dx = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, 1e-10)
+            adx_val = float(dx.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+
+            # Bollinger Band Width
+            sma20 = close_s.rolling(20).mean()
+            std20 = close_s.rolling(20).std()
+            bb_width_val = float(((sma20 + 2*std20) - (sma20 - 2*std20)) / sma20.replace(0, 1e-10)).iloc[-1]
+
+            # Market Regime
+            if bb_width_val < 0.03 and adx_val < 20:
+                market_regime = "breakout"
+            elif adx_val > 25:
+                market_regime = "trending"
+            elif atr_pct_val > 2.5:
+                market_regime = "volatile"
+            else:
+                market_regime = "ranging"
+
+            # IV Rank proxy
+            returns = close_s.pct_change()
+            roll_vol = returns.rolling(252).std() * np.sqrt(252) * 100
+            curr_vol = returns.rolling(30).std().iloc[-1] * np.sqrt(252) * 100
+            vol_min = float(roll_vol.min()) if not roll_vol.dropna().empty else 0
+            vol_max = float(roll_vol.max()) if not roll_vol.dropna().empty else 0
+            iv_rank_val = round((curr_vol - vol_min) / max(vol_max - vol_min, 1e-8) * 100, 1) if vol_max > vol_min else 50.0
+
+        except Exception as _te:
+            logging.warning(f"Technical indicators error for {ticker}: {_te}")
+
+        # ── 7. Noticias ───────────────────────────────────────────────
+        news_items = []
+        try:
+            raw_news = stock.news or []
+            for article in raw_news[:4]:
+                content      = article.get("content", article)
+                provider     = content.get("provider", {})
+                publisher    = provider.get("displayName", article.get("publisher", "Desconocido"))
+                title        = content.get("title", article.get("title", "Sin título"))
+                pub_date_str = content.get("pubDate", article.get("pubDate", ""))
+                if pub_date_str:
+                    try:
+                        from dateutil import parser as dparser
+                        dt        = dparser.parse(pub_date_str.replace("Z", "+00:00"))
+                        days      = (datetime.utcnow() - dt.replace(tzinfo=None)).days
+                        pub_label = f"Hace {days} día{'s' if days != 1 else ''}"
+                    except Exception:
+                        pub_label = pub_date_str[:10]
+                else:
+                    pub_ts    = article.get("providerPublishTime", 0)
+                    pub_label = datetime.fromtimestamp(pub_ts).strftime("%Y-%m-%d") if pub_ts else "N/A"
+
+                title_lower = title.lower()
+                if any(w in title_lower for w in ["beat", "record", "surge", "jump", "rally", "gain", "strong",
+                                                    "supera", "sube", "impulsa", "superavit", "crece"]):
+                    impact = round(float(np.random.uniform(1.2, 4.0)), 1)
+                elif any(w in title_lower for w in ["miss", "fall", "drop", "cut", "loss", "baja", "cae",
+                                                      "reduce", "warn", "risk", "debt", "lawsuit"]):
+                    impact = round(float(np.random.uniform(-4.0, -1.2)), 1)
+                else:
+                    impact = round(float(np.random.uniform(-1.0, 1.0)), 1)
+
+                news_items.append({
+                    "headline":    title,
+                    "description": content.get("summary", article.get("summary", "")) or "",
+                    "impact":      impact,
+                    "source":      publisher,
+                    "published":   pub_label,
+                })
+        except Exception as e:
+            logging.warning(f"News fetch error for overton {ticker}: {e}")
+
+        if not news_items:
+            news_items = [{"headline": f"Sin noticias recientes para {ticker}", "description": "",
+                           "impact": 0.0, "source": "N/A", "published": "N/A"}]
+
+        news_impact_total = round(sum(n["impact"] for n in news_items), 2)
+        bull_count        = sum(1 for n in news_items if n["impact"] > 0)
+        news_sentiment    = "bull" if bull_count >= 3 else "bear" if bull_count <= 1 else "neutral"
+
+        # ── 8. Analistas ──────────────────────────────────────────────
+        analyst_buy = analyst_hold = analyst_sell = 0
+        try:
+            recs = stock.recommendations
+            if recs is not None and not recs.empty:
+                last         = recs.iloc[-1]
+                analyst_buy  = int(last.get("strongBuy", 0)) + int(last.get("buy",  0))
+                analyst_hold = int(last.get("hold", 0))
+                analyst_sell = int(last.get("sell", 0))  + int(last.get("strongSell", 0))
+        except Exception:
+            pass
+        if analyst_buy + analyst_hold + analyst_sell == 0:
+            analyst_buy, analyst_hold, analyst_sell = 10, 5, 3
+
+        total_a       = analyst_buy + analyst_hold + analyst_sell or 1
+        analyst_ratio = analyst_buy / total_a
+
+        # ── 9. Score multi-factor ─────────────────────────────────────
+        score_result = _compute_multifactor_score(
+            price_vs_wma=price_vs_wma, coppock_signal=coppock_signal,
+            sharpe=sharpe, cur_vix=cur_vix, cur_yield=cur_yield,
+            analyst_ratio=analyst_ratio, news_impact_total=news_impact_total,
+            momentum_12_1=momentum_12_1, fgi=fgi_score, si_pct=si_pct,
+            zscore_mr=zscore_mr, pcr=pcr, fg_proxy=fg_proxy,
+            ofi=ofi, vwap_info=vwap_info, bas_pct=bas_pct,
+            gex_proxy=gex_proxy, mi_proxy=mi_proxy, beta=beta,
+        )
+        score     = score_result["score"]
+        breakdown = score_result["breakdown"]
+
+        ov_zone, ov_desc = _overton_zone(score, news_impact_total)
+
+        action = "sell"
+        for (lo, hi), act in {(65, 100): "buy", (50, 65): "hold", (35, 50): "watch", (0, 35): "sell"}.items():
+            if lo <= score <= hi:
+                action = act; break
+
+        bias_map = {"buy": "Sesgo alcista confirmado", "hold": "Sin sesgo claro — esperar",
+                    "watch": "Sesgo mixto — vigilar",  "sell": "Sesgo bajista dominante"}
+
+        # ── 10. Precios objetivo ──────────────────────────────────────
+        atr           = round(current_price * 0.018, 4)
+        news_adj      = round(current_price * (news_impact_total / 100), 4)
+        stop_loss     = round(current_price - atr * 2.2, 2)
+        entry_optimal = round(cur_wma * 1.003, 2)
+        entry_agg     = round(current_price - atr * 0.5, 2)
+        target1       = round(current_price + atr * 2.5 + abs(news_adj), 2)
+        target2       = round(current_price + atr * 5.0 + abs(news_adj) * 1.5, 2)
+        target3       = round(current_price + atr * 9.0 + abs(news_adj) * 2.0, 2)
+        denom         = max(current_price - stop_loss, 0.001)
+        rr1           = round((target1 - current_price) / denom, 2)
+        rr2           = round((target2 - current_price) / denom, 2)
+
+        # ── 11. Señales automáticas entrada / salida ──────────────────
+        entry_signals, exit_signals = [], []
+
+        if ofi > 0.2 and price_vs_wma == "above":
+            entry_signals.append("OFI positivo: compradores dominan el flujo de órdenes")
+        if vwap_info["price_vs_vwap"] == "above" and 0 < vwap_info["distance_pct"] < 5:
+            entry_signals.append(f"Precio sobre VWAP +{vwap_info['distance_pct']:.1f}% — presión compradora")
+        if si_pct > 15:
+            entry_signals.append(f"Short Interest {si_pct:.1f}%: potencial squeeze alcista")
+        if pcr > 1.3:
+            entry_signals.append(f"PCR={pcr:.2f} (extremo miedo): señal contrarian alcista")
+        if zscore_mr < -2:
+            entry_signals.append(f"Z-score={zscore_mr:.2f}: sobreventa extrema, posible rebote")
+        if fg_proxy["label"] == "positivo":
+            entry_signals.append(f"Forward Guidance positivo: EPS growth {fg_proxy['eps_growth_pct']:.1f}%")
+        if momentum_12_1 > 15:
+            entry_signals.append(f"Momentum 12-1 fuerte: +{momentum_12_1:.1f}% en 12 meses")
+
+        if ofi < -0.2:
+            exit_signals.append("OFI negativo: vendedores dominan el flujo")
+        if vwap_info["price_vs_vwap"] == "below" and abs(vwap_info["distance_pct"]) > 3:
+            exit_signals.append(f"Precio bajo VWAP {vwap_info['distance_pct']:.1f}%: presión vendedora")
+        if pcr < 0.6:
+            exit_signals.append(f"PCR={pcr:.2f} (codicia extrema): riesgo de reversión")
+        if zscore_mr > 2:
+            exit_signals.append(f"Z-score={zscore_mr:.2f}: sobrecompra extrema, gestiona el riesgo")
+        if momentum_12_1 < -15:
+            exit_signals.append(f"Momentum 12-1 negativo: {momentum_12_1:.1f}% — tendencia bajista")
+
+        return {
+            # Base
+            "ticker":          ticker,
+            "current_price":   round(current_price, 2),
+            "pct_change":      pct_change,
+            "wma30":           round(cur_wma, 2),
+            "price_vs_wma":    price_vs_wma,
+            "coppock":         round(cur_copp, 4),
+            "coppock_signal":  coppock_signal,
+            "sharpe":          sanitize_float(sharpe),
+            "vix":             sanitize_float(cur_vix),
+            "us10y":           sanitize_float(cur_yield),
+            # Nuevos factores
+            "momentum_12_1":   sanitize_float(momentum_12_1),
+            "fear_greed":      sanitize_float(fgi_score),
+            "put_call_ratio":  sanitize_float(pcr),
+            "short_interest":  sanitize_float(si_pct),
+            "zscore_mean_rev": sanitize_float(zscore_mr),
+            "beta":            sanitize_float(beta),
+            "vwap":            vwap_info,
+            "ofi":             sanitize_float(ofi),
+            "bid_ask_spread":  sanitize_float(bas_pct),
+            "gamma_exposure":  sanitize_float(gex_proxy),
+            "market_impact":   sanitize_float(mi_proxy),
+            "forward_guidance": fg_proxy,
+            # Score
+            "score":           score,
+            "score_breakdown": breakdown,
+            "overton_zone":    ov_zone,
+            "overton_action":  action,
+            "overton_description": ov_desc,
+            "bias":            bias_map[action],
+            # Señales
+            "entry_signals":   entry_signals,
+            "exit_signals":    exit_signals,
+            # Noticias y analistas
+            "news":               news_items,
+            "news_impact_total":  sanitize_float(news_impact_total),
+            "news_sentiment":     news_sentiment,
+            "analyst_buy":        analyst_buy,
+            "analyst_hold":       analyst_hold,
+            "analyst_sell":       analyst_sell,
+            # Precios objetivo
+            "stop_loss":        sanitize_float(stop_loss),
+            "entry_optimal":    sanitize_float(entry_optimal),
+            "entry_aggressive": sanitize_float(entry_agg),
+            "target1":          sanitize_float(target1),
+            "target2":          sanitize_float(target2),
+            "target3":          sanitize_float(target3),
+            "rr1":              sanitize_float(rr1),
+            "rr2":              sanitize_float(rr2),
+            "atr":              sanitize_float(round(atr, 2)),
+            # Series históricas
+            "price_history":   [round(p, 2) for p in prices],
+            "wma_history":     [round(v, 2) if v is not None else None for v in wma_series],
+            "coppock_history": [round(v, 4) if v is not None else None for v in copp_series],
+            "vix_history":     [sanitize_float(v) for v in vix_series],
+            "yield_history":   [sanitize_float(v) for v in yield_series],
+            "buy_signals":     buy_sigs,
+            "sell_signals":    sell_sigs,
+            "news_events":     news_events,
+            # ── Indicadores técnicos adicionales (v4 panels) ────────────
+            "rsi":             sanitize_float(rsi_val),
+            "adx":             sanitize_float(adx_val),
+            "bb_width":        sanitize_float(bb_width_val),
+            "atr_pct":         sanitize_float(atr_pct_val),
+            "market_regime":   market_regime,
+            "iv_rank":         sanitize_float(iv_rank_val),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in overton endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al calcular Overton Signal: {str(e)}")
+
+
+#*********************************************FIN DE CODIGO AÑADIDO***************************************************
+
+
+#********************************************ENDPOINT INDICATOR CHART*************************************************
+#nuevo indicador de grtaficos
+
+"""
+AÑADIR ESTE BLOQUE AL FINAL DE server.py (antes de app.include_router)
+────────────────────────────────────────────────────────────────────────────────
+Endpoint: GET /api/indicators-chart/{ticker}
+
+Replica el script Python de finplot pero devuelve JSON listo para el frontend:
+  Panel 1 – Velas OHLCV + Volumen coloreado + VAMA + VWAP + POC
+  Panel 2 – RSI 14 + EMA 10 del RSI
+  Panel 3 – Coppock Curve + EMA 13 del Coppock
+
+Librerías usadas: yfinance (ya en el proyecto), finta (ya en el proyecto),
+                  numpy, pandas (ya en el proyecto).
+
+Instalación única si finta no está todavía:
+  pip install finta
+────────────────────────────────────────────────────────────────────────────────
+"""
+
+# ─── Modelos Pydantic ────────────────────────────────────────────────────────
+
+class OHLCVPoint(BaseModel):
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    volume_color: str          # "green" | "red"
+
+class IndicatorPoint(BaseModel):
+    date: str
+    value: Optional[float]
+
+class IndicatorsChartResponse(BaseModel):
+    ticker: str
+    company_name: str
+    period: str
+    # Panel 1
+    candles: list            # List[OHLCVPoint]
+    vama: list               # List[IndicatorPoint]
+    vwap: list               # List[IndicatorPoint]
+    poc_price: float         # Precio del Point of Control
+    volume_ema: list         # EMA 24 del volumen (para overlay)
+    # Panel 2
+    rsi: list                # List[IndicatorPoint]
+    rsi_ema: list            # EMA 10 del RSI
+    # Panel 3
+    coppock: list            # List[IndicatorPoint]
+    coppock_ema: list        # EMA 13 del Coppock
+    # Meta
+    current_price: float
+    swing_high: float
+    swing_low: float
+
+
+# ─── Helpers de cálculo ──────────────────────────────────────────────────────
+
+def _flatten_yf(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplana MultiIndex de yfinance moderno y limpia el DataFrame."""
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df[~df.index.duplicated(keep='last')]
+    df = df.sort_index()
+    return df
+
+
+def _calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """RSI de Wilder (EMA suavizado)."""
+    diff   = close.diff()
+    gains  = diff.clip(lower=0)
+    losses = (-diff).clip(lower=0)
+    alpha  = 1 / period
+
+    avg_gain = gains.ewm(alpha=alpha, adjust=False).mean()
+    avg_loss = losses.ewm(alpha=alpha, adjust=False).mean()
+
+    rs  = avg_gain / avg_loss.replace(0, 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    rsi.iloc[:period] = np.nan
+    return rsi
+
+
+def _calc_coppock2(close: pd.Series,
+                  roc1: int = 14, roc2: int = 11, wma_p: int = 10) -> pd.Series:
+    """Coppock Curve = WMA(ROC14 + ROC11, 10)."""
+    r1  = close.pct_change(roc1) * 100
+    r2  = close.pct_change(roc2) * 100
+    raw = r1 + r2
+
+    # WMA ponderada de 10 períodos
+    weights = np.arange(1, wma_p + 1, dtype=float)
+    copp = raw.rolling(wma_p).apply(
+        lambda x: np.dot(x, weights) / weights.sum(), raw=True
+    )
+    return copp
+
+
+def _calc_vwap(df: pd.DataFrame) -> pd.Series:
+    """VWAP acumulado de todo el período."""
+    typical = (df['High'] + df['Low'] + df['Close']) / 3
+    cum_tv  = (typical * df['Volume']).cumsum()
+    cum_v   = df['Volume'].cumsum().replace(0, np.nan)
+    return cum_tv / cum_v
+
+
+def _calc_vama(df: pd.DataFrame) -> pd.Series:
+    """
+    VAMA (Volume Adjusted Moving Average) via finta.
+    Fallback a VWAP si finta no está disponible.
+    """
+    try:
+        from finta import TA
+        vama = TA.VAMA(df[['Open', 'High', 'Low', 'Close', 'Volume']])
+        if isinstance(vama, pd.DataFrame):
+            vama = vama.iloc[:, 0]
+        return vama
+    except Exception:
+        # Fallback: EMA ponderada por volumen
+        typical = (df['High'] + df['Low'] + df['Close']) / 3
+        vol_w   = df['Volume'] / df['Volume'].rolling(20).mean().fillna(1)
+        return (typical * vol_w).ewm(span=20).mean()
+        
+
+
+def _calc_poc(df: pd.DataFrame, bins: int = 100) -> float:
+    """Point of Control: precio con mayor volumen acumulado (30 semanas)."""
+    try:
+        df2 = df.copy()
+        df2['vol_price'] = df2['Close'] * df2['Volume']
+        price_ranges = pd.cut(df2['Close'], bins=bins)
+        grouped      = df2.groupby(price_ranges, observed=True)['vol_price'].sum()
+        poc_mid      = grouped.idxmax().mid
+        return float(poc_mid)
+    except Exception:
+        return float(df['Close'].mean())
+
+
+def _to_indicator_list(series: pd.Series, dates: pd.Index) -> list:
+    """Convierte una Serie pandas a lista de {date, value}."""
+    out = []
+    for d, v in zip(dates, series.reindex(dates)):
+        val = None if (v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v)))) else round(float(v), 4)
+        out.append({"date": str(d)[:10], "value": val})
+    return out
+
+
+# ─── Endpoint ────────────────────────────────────────────────────────────────
+
+@api_router.get("/indicators-chart/{ticker}")
+async def get_indicators_chart(ticker: str, period: str = "30wk"):
+    """
+    Devuelve datos para los 3 paneles del gráfico de indicadores:
+      Panel 1 – Velas + Volumen + VAMA + VWAP + POC
+      Panel 2 – RSI 14 + EMA 10 del RSI
+      Panel 3 – Coppock + EMA 13 del Coppock
+
+    Parámetros:
+      period: "30wk" (default), "60wk", "1y", "2y"
+    """
+    try:
+        ticker = ticker.upper().strip()
+
+        # Mapeo de períodos
+        period_map = {
+            "30wk": "30wk", "60wk": "60wk",
+            "1y":   "1y",   "2y":   "2y",
+            "6m":   "6mo",  "3m":   "3mo",
+        }
+        yf_period = period_map.get(period, "30wk")
+
+        stock = yf.Ticker(ticker)
+        info  = stock.info or {}
+
+        raw = stock.history(period=yf_period)
+        if raw.empty:
+            raise HTTPException(status_code=404, detail=f"No hay datos para {ticker}")
+
+        df = _flatten_yf(raw)
+
+        # Asegurar columnas necesarias
+        needed = {'Open', 'High', 'Low', 'Close', 'Volume'}
+        missing = needed - set(df.columns)
+        if missing:
+            raise HTTPException(status_code=500, detail=f"Columnas faltantes: {missing}")
+
+        # Eliminar filas con nulos en OHLCV
+        df = df.dropna(subset=list(needed))
+        if len(df) < 15:
+            raise HTTPException(status_code=404, detail="Datos insuficientes")
+
+        dates = df.index
+
+        # ── Panel 1: Velas ──────────────────────────────────────────────────
+        candles = []
+        for i, (idx, row) in enumerate(df.iterrows()):
+            color = "green" if row['Close'] >= row['Open'] else "red"
+            candles.append({
+                "date":         str(idx)[:10],
+                "open":         round(float(row['Open']),   4),
+                "high":         round(float(row['High']),   4),
+                "low":          round(float(row['Low']),    4),
+                "close":        round(float(row['Close']),  4),
+                "volume":       round(float(row['Volume']), 0),
+                "volume_color": color,
+            })
+
+        # ── VWAP ────────────────────────────────────────────────────────────
+        vwap_series = _calc_vwap(df)
+        vwap_list   = _to_indicator_list(vwap_series, dates)
+
+        # ── VAMA ────────────────────────────────────────────────────────────
+        vama_series = _calc_vama(df)
+        vama_list   = _to_indicator_list(vama_series, dates)
+
+        # ── POC ─────────────────────────────────────────────────────────────
+        poc_price = _calc_poc(df)
+
+        # ── Volumen EMA 24 ──────────────────────────────────────────────────
+        vol_ema   = df['Volume'].ewm(span=24).mean()
+        vol_ema_l = _to_indicator_list(vol_ema, dates)
+
+        # ── Panel 2: RSI ─────────────────────────────────────────────────────
+        rsi_series = _calc_rsi(df['Close'])
+        rsi_ema    = rsi_series.ewm(span=10).mean()
+        rsi_list   = _to_indicator_list(rsi_series, dates)
+        rsi_ema_l  = _to_indicator_list(rsi_ema,    dates)
+
+        # ── Panel 3: Coppock ─────────────────────────────────────────────────
+        copp_series = _calc_coppock2(df['Close'])
+        copp_ema    = copp_series.ewm(span=13).mean()
+        copp_list   = _to_indicator_list(copp_series, dates)
+        copp_ema_l  = _to_indicator_list(copp_ema,    dates)
+
+        # ── Meta ─────────────────────────────────────────────────────────────
+        current_price = float(df['Close'].iloc[-1])
+        swing_high    = float(df['High'].max())
+        swing_low     = float(df['Low'].min())
+        company_name  = info.get('longName', info.get('shortName', ticker))
+
+        return {
+            "ticker":        ticker,
+            "company_name":  company_name,
+            "period":        period,
+            "candles":       candles,
+            "vama":          vama_list,
+            "vwap":          vwap_list,
+            "poc_price":     round(poc_price, 4),
+            "volume_ema":    vol_ema_l,
+            "rsi":           rsi_list,
+            "rsi_ema":       rsi_ema_l,
+            "coppock":       copp_list,
+            "coppock_ema":   copp_ema_l,
+            "current_price": round(current_price, 4),
+            "swing_high":    round(swing_high, 4),
+            "swing_low":     round(swing_low, 4),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error en indicators-chart para {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al calcular indicadores: {e}")
+
+
+
+
+#********************************************FIN DEL ENDPOINT*********************************************************
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoint: /api/financial-statements/{ticker}
+# Devuelve los datos financieros clave para pre-rellenar el modelo FCFF/WACC
+# Todos los valores monetarios en millones USD (M$), acciones en millones (M)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_router.get("/financial-statements/{ticker}")
+async def get_financial_statements(ticker: str):
+    """
+    Extrae del balance, cuenta de resultados y flujo de caja los datos
+    necesarios para la valoración FCFF/WACC. Valores en millones USD.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
+            raise HTTPException(status_code=404, detail=f"No se encontraron datos para '{ticker}'")
+
+        income_stmt  = stock.income_stmt
+        balance_sheet = stock.balance_sheet
+        cash_flow    = stock.cash_flow
+
+        # Columna más reciente (FY más reciente)
+        income  = income_stmt.iloc[:, 0].to_dict()  if income_stmt  is not None and not income_stmt.empty  else {}
+        balance = balance_sheet.iloc[:, 0].to_dict() if balance_sheet is not None and not balance_sheet.empty else {}
+        cf      = cash_flow.iloc[:, 0].to_dict()    if cash_flow    is not None and not cash_flow.empty    else {}
+
+        def _m(v, fallback=None):
+            """Convierte a millones, devuelve fallback si inválido."""
+            try:
+                if v is None: return fallback
+                f = float(v)
+                if math.isnan(f) or math.isinf(f): return fallback
+                return round(f / 1e6, 1)
+            except:
+                return fallback
+
+        def _pct(v, fallback=None):
+            try:
+                if v is None: return fallback
+                f = float(v)
+                if math.isnan(f) or math.isinf(f): return fallback
+                return round(f * 100, 2)
+            except:
+                return fallback
+
+        # ── EBIT ─────────────────────────────────────────────────────────────
+        ebit_raw = income.get("EBIT") or income.get("Operating Income")
+        ebit_m   = _m(ebit_raw)
+
+        # ── D&A ──────────────────────────────────────────────────────────────
+        da_raw = cf.get("Depreciation And Amortization") or cf.get("Depreciation")
+        da_m   = _m(da_raw)
+        if da_m is not None:
+            da_m = abs(da_m)
+
+        # ── Capex ─────────────────────────────────────────────────────────────
+        capex_raw = cf.get("Capital Expenditure") or cf.get("Capital Expenditures")
+        capex_m   = _m(capex_raw)
+        if capex_m is not None:
+            capex_m = abs(capex_m)
+
+        # ── Variación del capital circulante ──────────────────────────────────
+        # Change in Working Capital: diferencia entre activo corriente y pasivo corriente YoY
+        wc_change_raw = cf.get("Change In Working Capital") or cf.get("Changes In Working Capital")
+        wc_m = _m(wc_change_raw)
+        # Signo: positivo = aumento de WC = salida de caja
+        if wc_m is not None:
+            wc_m = round(-wc_m, 1)  # Invertir signo para la fórmula FCFF
+
+        # ── Deuda neta ────────────────────────────────────────────────────────
+        total_debt_raw = balance.get("Total Debt") or info.get("totalDebt")
+        cash_raw       = balance.get("Cash And Cash Equivalents") or balance.get("Cash Cash Equivalents And Short Term Investments")
+        total_debt_m   = _m(total_debt_raw, 0)
+        cash_m_val     = _m(cash_raw, 0)
+        net_debt_m     = round(total_debt_m - cash_m_val, 1) if total_debt_m is not None and cash_m_val is not None else None
+
+        # ── Acciones en circulación (millones) ────────────────────────────────
+        shares_raw = info.get("sharesOutstanding")
+        shares_m   = round(float(shares_raw) / 1e6, 2) if shares_raw else None
+
+        # ── Precio actual ─────────────────────────────────────────────────────
+        current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if current_price:
+            current_price = round(float(current_price), 2)
+
+        # ── Tasa impositiva efectiva ───────────────────────────────────────────
+        # Intentar calcularla desde la cuenta de resultados
+        pretax_income = income.get("Pretax Income") or income.get("Income Before Tax")
+        tax_provision  = income.get("Tax Provision") or income.get("Income Tax Expense")
+        tax_rate = None
+        if pretax_income and tax_provision:
+            try:
+                rate = float(tax_provision) / float(pretax_income)
+                if 0.01 < rate < 0.6:
+                    tax_rate = round(rate * 100, 1)
+            except:
+                pass
+        if tax_rate is None:
+            tax_rate = _pct(info.get("effectiveTaxRate"))
+        if tax_rate is None:
+            tax_rate = 21.0  # fallback estándar
+
+        # ── Beta ──────────────────────────────────────────────────────────────
+        beta = info.get("beta")
+        if beta:
+            beta = round(float(beta), 2)
+
+        # ── Peso equity (We) desde estructura de capital ──────────────────────
+        market_cap  = info.get("marketCap")
+        we = None
+        if market_cap and total_debt_raw:
+            try:
+                mc = float(market_cap)
+                td = float(total_debt_raw)
+                total_cap = mc + td
+                if total_cap > 0:
+                    we = round((mc / total_cap) * 100, 1)
+            except:
+                pass
+
+        # ── Kd estimado (coste de la deuda) ──────────────────────────────────
+        interest_expense = abs(float(income.get("Interest Expense", income.get("Interest Expense Non Operating", 0)) or 0))
+        kd = None
+        if interest_expense > 0 and total_debt_raw:
+            try:
+                kd = round((interest_expense / float(total_debt_raw)) * 100, 2)
+                if kd > 20 or kd < 0.5:  # Sanity check
+                    kd = None
+            except:
+                pass
+
+        # ── Nombre de la empresa ───────────────────────────────────────────────
+        company_name = info.get("longName") or info.get("shortName") or ticker
+
+        # ── Año fiscal del dato ────────────────────────────────────────────────
+        fiscal_year = None
+        try:
+            if income_stmt is not None and not income_stmt.empty:
+                col_date = income_stmt.columns[0]
+                fiscal_year = str(col_date)[:10]
+        except:
+            pass
+
+        return {
+            "ticker":       ticker,
+            "company_name": company_name,
+            "fiscal_year":  fiscal_year,
+            # Valores en M$
+            "ebit":         ebit_m,
+            "da":           da_m,
+            "capex":        capex_m,
+            "wc":           wc_m,
+            "net_debt":     net_debt_m,
+            "shares":       shares_m,
+            "current_price": current_price,
+            # Parámetros de modelo
+            "tax_rate":     tax_rate,
+            "beta":         beta,
+            "we":           we,
+            "kd":           kd,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error en financial-statements para {ticker}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos financieros: {str(e)}")
 
 
 # Include the router in the main app

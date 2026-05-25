@@ -126,7 +126,7 @@ export default function SearchScreen() {
           <View style={styles.infoCard}>
             <Ionicons name="information-circle" size={24} color="#007AFF" />
             <Text style={styles.infoText}>
-              Esta app analiza más de 25 ratios financieros y proporciona una recomendación basada en métricas clave
+              Esta app analiza más de 100 ratios financieros y proporciona una recomendación basada en métricas clave
             </Text>
           </View>
         </View>
