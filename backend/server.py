@@ -4016,6 +4016,20 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
                 total_change_percent=0
             )
         
+        # Helper to parse date from string or datetime
+        def parse_date(val):
+            if isinstance(val, str):
+                # Try multiple formats
+                for fmt in ["%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"]:
+                    try:
+                        return datetime.strptime(val, fmt)
+                    except ValueError:
+                        continue
+                return datetime.utcnow()
+            elif hasattr(val, 'replace'):
+                return val.replace(tzinfo=None) if val.tzinfo else val
+            return datetime.utcnow()
+        
         # Get current prices for current value calculation
         tickers = list(set(tx['ticker'] for tx in transactions))
         current_prices = {}
@@ -4030,14 +4044,10 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
         # Build timeline: collect all event dates (transactions + cash movements)
         event_dates = set()
         for tx in transactions:
-            tx_date = tx['transaction_date']
-            if hasattr(tx_date, 'replace'):
-                tx_date = tx_date.replace(tzinfo=None)
+            tx_date = parse_date(tx['transaction_date'])
             event_dates.add(tx_date.date())
         for m in cash_movements:
-            m_date = m['movement_date']
-            if hasattr(m_date, 'replace'):
-                m_date = m_date.replace(tzinfo=None)
+            m_date = parse_date(m['movement_date'])
             event_dates.add(m_date.date())
         
         # Add monthly snapshots from first event to now
@@ -4077,9 +4087,7 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
             # Process transactions up to this date
             while tx_idx < len(transactions):
                 tx = transactions[tx_idx]
-                tx_date = tx['transaction_date']
-                if hasattr(tx_date, 'replace'):
-                    tx_date = tx_date.replace(tzinfo=None)
+                tx_date = parse_date(tx['transaction_date'])
                 if tx_date.date() > point_date:
                     break
                 
@@ -4107,9 +4115,7 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
             # Process cash movements up to this date
             while cash_idx < len(cash_movements):
                 m = cash_movements[cash_idx]
-                m_date = m['movement_date']
-                if hasattr(m_date, 'replace'):
-                    m_date = m_date.replace(tzinfo=None)
+                m_date = parse_date(m['movement_date'])
                 if m_date.date() > point_date:
                     break
                 
