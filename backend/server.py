@@ -3564,6 +3564,9 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             industry = "N/A"
             curr_price = 0
             stock_beta = 1.0
+            mean_return = 0.0
+            volatility = 0.0
+            max_dd = 0.0
             try:
                 loop = asyncio.get_event_loop()
                 stock = yf.Ticker(ticker)
@@ -3572,18 +3575,31 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                 stock_beta = info.get('beta', 1.0) or 1.0
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
+
+                # Fetch 1 year of historical data for return metrics
+                hist = await loop.run_in_executor(None, lambda: stock.history(period="1y"))
+                if hist is not None and len(hist) > 30:
+                    closes = hist['Close'].dropna()
+                    daily_returns = closes.pct_change().dropna()
+                    mean_return = float(daily_returns.mean() * 252)  # Annualized
+                    volatility = float(daily_returns.std() * (252 ** 0.5))  # Annualized
+
+                    # Max drawdown
+                    cummax = closes.cummax()
+                    drawdown = (closes - cummax) / cummax
+                    max_dd = float(drawdown.min() * 100)  # As percentage
             except Exception as e:
                 logging.warning(f"Error fetching data for {ticker}: {str(e)}")
                 if data["total_shares"] > 0 and data["total_cost"] > 0:
                     curr_price = data["total_cost"] / data["total_shares"]
-            return ticker, curr_price, stock_beta, sector, industry
+            return ticker, curr_price, stock_beta, sector, industry, mean_return, volatility, max_dd
 
         valid_holdings_map = {t: d for t, d in holdings_map.items() if d["total_shares"] > 0}
         ticker_results = await asyncio.gather(*[
             fetch_ticker_info(t, d) for t, d in valid_holdings_map.items()
         ])
 
-        for ticker, curr_price, stock_beta, sector, industry in ticker_results:
+        for ticker, curr_price, stock_beta, sector, industry, mean_ret, vol, mdd in ticker_results:
             data = valid_holdings_map[ticker]
             curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
