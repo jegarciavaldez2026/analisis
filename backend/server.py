@@ -6692,6 +6692,70 @@ async def get_financial_statements(ticker: str):
         raise HTTPException(status_code=500, detail=f"Error al obtener datos financieros: {str(e)}")
 
 
+
+# ── Ticker Search / Autocomplete ──────────────────────────────────────────────
+class TickerSearchResult(BaseModel):
+    ticker: str
+    name: str
+    exchange: str
+    type: str
+
+@api_router.get("/search", response_model=List[TickerSearchResult])
+async def search_tickers(q: str = ""):
+    """Search tickers using Yahoo Finance v8 autocomplete API"""
+    if not q or len(q.strip()) < 1:
+        return []
+    
+    url = "https://query2.finance.yahoo.com/v1/finance/search"
+    params = {
+        "q": q.strip(),
+        "quotesCount": 12,
+        "newsCount": 0,
+        "listsCount": 0,
+        "enableFuzzyQuery": True,
+        "quotesQueryId": "tss_match_phrase_query",
+        "multiQuoteQueryId": "multi_quote_single_token_query"
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            seen = set()
+            
+            for quote in data.get("quotes", []):
+                symbol = quote.get("symbol", "")
+                if not symbol or symbol in seen:
+                    continue
+                seen.add(symbol)
+                
+                quote_type = quote.get("quoteType", "")
+                if quote_type not in ("EQUITY", "ETF", "INDEX", "MUTUALFUND"):
+                    continue
+                
+                results.append(TickerSearchResult(
+                    ticker=symbol,
+                    name=quote.get("shortname", "") or quote.get("longname", "") or symbol,
+                    exchange=quote.get("exchDisp", "") or quote.get("exchange", ""),
+                    type=quote_type
+                ))
+                
+                if len(results) >= 12:
+                    break
+            
+            return results
+    except Exception as e:
+        logging.error(f"Error searching tickers: {e}")
+        return []
+
+
 # Include the router in the main app
 app.include_router(api_router)
 

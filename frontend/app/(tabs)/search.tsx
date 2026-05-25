@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -26,15 +28,24 @@ interface HistoryItem {
   favorable_percentage: number;
 }
 
+interface SearchSuggestion {
+  ticker: string;
+  name: string;
+  exchange: string;
+  type: string;
+}
+
 export default function SearchScreen() {
   const { colors, isDark } = useTheme();
   const [ticker, setTicker] = useState('');
   const [loading, setLoading] = useState(false);
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [suggestions, setSuggestions] = useState<HistoryItem[]>([]);
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
   const inputRef = useRef<any>(null);
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     fetchHistory();
@@ -43,7 +54,6 @@ export default function SearchScreen() {
   const fetchHistory = async () => {
     try {
       const response = await axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000 });
-      // Deduplicar por ticker
       const seen = new Set();
       const unique = response.data.filter((item: HistoryItem) => {
         if (seen.has(item.ticker)) return false;
@@ -56,32 +66,59 @@ export default function SearchScreen() {
     }
   };
 
+  const searchTickers = useCallback(async (query: string) => {
+    if (!query || query.trim().length < 1) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    setSearchLoading(true);
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/search`, {
+        params: { q: query.trim() },
+        timeout: 8000,
+      });
+      if (response.data && response.data.length > 0) {
+        setSuggestions(response.data);
+        setShowSuggestions(true);
+      } else {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    } catch (error) {
+      console.error('Error searching tickers:', error);
+      setSuggestions([]);
+      setShowSuggestions(false);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, []);
+
   const handleTickerChange = (text: string) => {
     setTicker(text);
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
     if (text.trim().length > 0) {
-      const filtered = history.filter(item =>
-        item.ticker.toLowerCase().includes(text.toLowerCase()) ||
-        item.company_name.toLowerCase().includes(text.toLowerCase())
-      );
-      setSuggestions(filtered.slice(0, 6));
-      setShowSuggestions(filtered.length > 0);
+      searchTimeout.current = setTimeout(() => {
+        searchTickers(text);
+      }, 250);
     } else {
       setSuggestions([]);
       setShowSuggestions(false);
     }
   };
 
-  const handleSelectSuggestion = (item: HistoryItem) => {
+  const handleSelectSuggestion = (item: SearchSuggestion) => {
     setTicker(item.ticker);
     setShowSuggestions(false);
     setSuggestions([]);
+    inputRef.current?.blur();
   };
 
   const handleAnalyze = async () => {
     if (!ticker.trim()) {
       Platform.OS === 'web'
-        ? window.alert('Por favor ingresa un ticker o código ISIN')
-        : Alert.alert('Error', 'Por favor ingresa un ticker o código ISIN');
+        ? window.alert('Por favor ingresa un ticker o nombre de una empresa')
+        : Alert.alert('Error', 'Por favor ingresa un ticker o nombre de una empresa');
       return;
     }
     setShowSuggestions(false);
@@ -91,7 +128,7 @@ export default function SearchScreen() {
         ticker: ticker.trim().toUpperCase(),
       });
       setAnalysisData(response.data);
-      fetchHistory(); // Actualizar historial
+      fetchHistory();
     } catch (error: any) {
       console.error('Error analyzing stock:', error);
       const msg = error.response?.data?.detail || 'No se pudo analizar la acción. Verifica el ticker e intenta nuevamente.';
@@ -113,6 +150,16 @@ export default function SearchScreen() {
     return '#FF9500';
   };
 
+  const getTypeIcon = (type: string) => {
+    switch (type) {
+      case 'EQUITY': return 'business';
+      case 'ETF': return 'grid';
+      case 'INDEX': return 'trending-up';
+      case 'MUTUALFUND': return 'wallet';
+      default: return 'document';
+    }
+  };
+
   if (analysisData) {
     return <ResultsScreen data={analysisData} onBack={handleBack} />;
   }
@@ -131,59 +178,67 @@ export default function SearchScreen() {
           <Ionicons name="bar-chart" size={80} color={colors.primary} />
           <Text style={[styles.title, { color: colors.text }]}>Análisis Financiero</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            Ingresa el ticker o nombre de una acción para analizar sus ratios financieros
+            Busca una empresa por nombre o ticker para analizar sus ratios financieros
           </Text>
         </View>
 
         <View style={[styles.inputSection, { zIndex: 100 }]}>
           <View style={{ position: 'relative' }}>
-            <View style={[styles.inputContainer, { backgroundColor: colors.card, borderColor: showSuggestions ? colors.primary : 'transparent', borderWidth: showSuggestions ? 2 : 0 }]}>
+            <View style={[styles.inputContainer, { backgroundColor: colors.card, borderColor: showSuggestions ? colors.primary : colors.border, borderWidth: 1 }]}>
               <Ionicons name="search" size={24} color={colors.textSecondary} style={styles.inputIcon} />
               <TextInput
                 ref={inputRef}
                 style={[styles.input, { color: colors.text }]}
-                placeholder="Ej: AAPL, Apple, MSFT..."
+                placeholder="Buscar empresa o ticker..."
                 placeholderTextColor={colors.textSecondary}
                 value={ticker}
                 onChangeText={handleTickerChange}
-                onFocus={() => ticker.length > 0 && setShowSuggestions(suggestions.length > 0)}
+                onFocus={() => ticker.length > 0 && suggestions.length > 0 && setShowSuggestions(true)}
                 autoCapitalize="characters"
                 autoCorrect={false}
                 editable={!loading}
                 onSubmitEditing={handleAnalyze}
+                returnKeyType="search"
               />
-              {ticker.length > 0 && !loading && (
+              {searchLoading && (
+                <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 8 }} />
+              )}
+              {ticker.length > 0 && !searchLoading && !loading && (
                 <TouchableOpacity onPress={() => { setTicker(''); setSuggestions([]); setShowSuggestions(false); }} style={styles.clearButton}>
                   <Ionicons name="close-circle" size={24} color={colors.textSecondary} />
                 </TouchableOpacity>
               )}
             </View>
 
-            {/* Sugerencias */}
             {showSuggestions && suggestions.length > 0 && (
-              <View style={[styles.suggestionsContainer, { backgroundColor: colors.card, borderColor: colors.border, shadowColor: isDark ? '#000' : '#00000033' }]} {...(Platform.OS === 'web' ? { style: [styles.suggestionsContainer, { backgroundColor: colors.card, borderColor: colors.border, position: 'absolute', top: 72, left: 0, right: 0, zIndex: 9999 }] } : {})}>
-                {suggestions.map((item, index) => (
-                  <TouchableOpacity
-                    key={item.id}
-                    style={[styles.suggestionItem, index < suggestions.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border }]}
-                    onPress={() => handleSelectSuggestion(item)}
-                  >
-                    <View style={[styles.suggestionBadge, { backgroundColor: getRecommendationColor(item.recommendation) + '22' }]}>
-                      <Text style={[styles.suggestionTicker, { color: getRecommendationColor(item.recommendation) }]}>
-                        {item.ticker}
-                      </Text>
-                    </View>
-                    <View style={styles.suggestionInfo}>
-                      <Text style={[styles.suggestionName, { color: colors.text }]} numberOfLines={1}>
-                        {item.company_name}
-                      </Text>
-                      <Text style={[styles.suggestionMeta, { color: colors.textSecondary }]}>
-                        {item.recommendation} · {item.favorable_percentage.toFixed(1)}% favorable
-                      </Text>
-                    </View>
-                    <Ionicons name="arrow-forward" size={16} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                ))}
+              <View style={[styles.suggestionsContainer, { backgroundColor: colors.card, borderColor: colors.border, shadowColor: isDark ? '#000' : '#000', elevation: 10 }]}>
+                <FlatList
+                  data={suggestions}
+                  keyExtractor={(item) => item.ticker}
+                  keyboardShouldPersistTaps="always"
+                  renderItem={({ item, index }) => (
+                    <TouchableOpacity
+                      style={[styles.suggestionItem, index < suggestions.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border }]}
+                      onPress={() => handleSelectSuggestion(item)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.suggestionIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                        <Ionicons name={getTypeIcon(item.type)} size={20} color={colors.primary} />
+                      </View>
+                      <View style={styles.suggestionInfo}>
+                        <View style={styles.suggestionRow}>
+                          <Text style={[styles.suggestionTicker, { color: colors.primary }]}>{item.ticker}</Text>
+                          <Text style={[styles.suggestionExchange, { color: colors.textSecondary }]}> · {item.exchange}</Text>
+                        </View>
+                        <Text style={[styles.suggestionName, { color: colors.text }]} numberOfLines={1}>
+                          {item.name}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  )}
+                  style={{ maxHeight: 300 }}
+                />
               </View>
             )}
           </View>
@@ -295,17 +350,18 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     gap: 12,
   },
-  suggestionBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    minWidth: 52,
+  suggestionIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  suggestionTicker: { fontSize: 13, fontWeight: '700' },
   suggestionInfo: { flex: 1 },
-  suggestionName: { fontSize: 14, fontWeight: '500' },
-  suggestionMeta: { fontSize: 12, marginTop: 2 },
+  suggestionRow: { flexDirection: 'row', alignItems: 'center' },
+  suggestionTicker: { fontSize: 14, fontWeight: '700' },
+  suggestionExchange: { fontSize: 12, marginLeft: 4 },
+  suggestionName: { fontSize: 13, marginTop: 2, opacity: 0.8 },
   analyzeButton: {
     borderRadius: 12,
     paddingVertical: 16,
