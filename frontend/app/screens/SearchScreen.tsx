@@ -26,7 +26,7 @@ export default function SearchScreen() {
 
   const handleAnalyze = async () => {
     if (!ticker.trim()) {
-      Alert.alert('Error', 'Por favor ingresa un ticker o código ISIN');
+      Alert.alert('Error', 'Por favor ingresa un ticker o c\u00f3digo ISIN');
       return;
     }
 
@@ -40,7 +40,7 @@ export default function SearchScreen() {
       console.error('Error analyzing stock:', error);
       Alert.alert(
         'Error',
-        error.response?.data?.detail || 'No se pudo analizar la acción. Verifica el ticker e intenta nuevamente.'
+        error.response?.data?.detail || 'No se pudo analizar la acci\u00f3n. Verifica el ticker e intenta nuevamente.'
       );
     } finally {
       setLoading(false);
@@ -58,7 +58,7 @@ export default function SearchScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
@@ -67,17 +67,17 @@ export default function SearchScreen() {
       >
         <View style={styles.headerSection}>
           <Ionicons name="bar-chart" size={80} color={colors.primary} />
-          <Text style={styles.title}>Análisis Financiero</Text>
-          <Text style={styles.subtitle}>
-            Ingresa el ticker o código ISIN de una acción para analizar sus ratios financieros
+          <Text style={[styles.title, { color: colors.text }]}>An\u00e1lisis Financiero</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Ingresa el ticker o c\u00f3digo ISIN de una acci\u00f3n para analizar sus ratios financieros
           </Text>
         </View>
 
         <View style={styles.inputSection}>
-          <View style={styles.inputContainer}>
+          <View style={[styles.inputContainer, { backgroundColor: colors.card }]}>
             <Ionicons name="search" size={24} color={colors.textSecondary} style={styles.inputIcon} />
             <TextInput
-              style={styles.input}
+              style={[styles.input, { color: colors.text }]}
               placeholder="Ej: AAPL, GOOGL, MSFT"
               value={ticker}
               onChangeText={setTicker}
@@ -93,7 +93,7 @@ export default function SearchScreen() {
           </View>
 
           <TouchableOpacity
-            style={[styles.analyzeButton, loading && styles.analyzeButtonDisabled]}
+            style={[styles.analyzeButton, { backgroundColor: colors.primary }, loading && styles.analyzeButtonDisabled]}
             onPress={handleAnalyze}
             disabled={loading}
           >
@@ -102,33 +102,33 @@ export default function SearchScreen() {
             ) : (
               <>
                 <Ionicons name="analytics" size={24} color={colors.text} style={styles.buttonIcon} />
-                <Text style={styles.analyzeButtonText}>Analizar</Text>
+                <Text style={[styles.analyzeButtonText, { color: colors.text }]}>Analizar</Text>
               </>
             )}
           </TouchableOpacity>
         </View>
 
         <View style={styles.examplesSection}>
-          <Text style={styles.examplesTitle}>Ejemplos populares:</Text>
+          <Text style={[styles.examplesTitle, { color: colors.text }]}>Ejemplos populares:</Text>
           <View style={styles.examplesGrid}>
             {['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META'].map((example) => (
               <TouchableOpacity
                 key={example}
-                style={styles.exampleChip}
+                style={[styles.exampleChip, { backgroundColor: colors.card, borderColor: colors.border }]}
                 onPress={() => setTicker(example)}
                 disabled={loading}
               >
-                <Text style={styles.exampleChipText}>{example}</Text>
+                <Text style={[styles.exampleChipText, { color: colors.primary }]}>{example}</Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
 
         <View style={styles.infoSection}>
-          <View style={styles.infoCard}>
+          <View style={[styles.infoCard, { backgroundColor: isDark ? '#1A2A3A' : '#E8F4FF' }]}>
             <Ionicons name="information-circle" size={24} color={colors.primary} />
-            <Text style={styles.infoText}>
-              Esta app analiza más de 100 ratios financieros y proporciona una recomendación basada en métricas clave
+            <Text style={[styles.infoText, { color: colors.text }]}>
+              Esta app analiza m\u00e1s de 50 ratios financieros y proporciona una recomendaci\u00f3n basada en m\u00e9tricas clave
             </Text>
           </View>
         </View>
@@ -138,128 +138,32 @@ export default function SearchScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  scrollContent: {
-    padding: 20,
-    paddingBottom: 40,
-  },
-  headerSection: {
-    alignItems: 'center',
-    marginTop: 20,
-    marginBottom: 40,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: colors.text,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 8,
-    paddingHorizontal: 20,
-    lineHeight: 22,
-  },
-  inputSection: {
-    marginBottom: 32,
-  },
+  container: { flex: 1 },
+  scrollContent: { padding: 20, paddingBottom: 40 },
+  headerSection: { alignItems: 'center', marginTop: 20, marginBottom: 40 },
+  title: { fontSize: 32, fontWeight: 'bold', marginTop: 16, marginBottom: 8 },
+  subtitle: { fontSize: 16, textAlign: 'center', marginTop: 8, paddingHorizontal: 20, lineHeight: 22 },
+  inputSection: { marginBottom: 32 },
   inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    flexDirection: 'row', alignItems: 'center', borderRadius: 12, paddingHorizontal: 16, marginBottom: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3,
   },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    height: 56,
-    fontSize: 18,
-    color: colors.text,
-  },
-  clearButton: {
-    padding: 4,
-  },
+  inputIcon: { marginRight: 12 },
+  input: { flex: 1, height: 56, fontSize: 18 },
+  clearButton: { padding: 4 },
   analyzeButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 12,
-    paddingVertical: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#007AFF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    borderRadius: 12, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#007AFF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  analyzeButtonDisabled: {
-    opacity: 0.6,
-  },
-  buttonIcon: {
-    marginRight: 8,
-  },
-  analyzeButtonText: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  examplesSection: {
-    marginBottom: 32,
-  },
-  examplesTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.text,
-    marginBottom: 12,
-  },
-  examplesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  exampleChip: {
-    backgroundColor: colors.card,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  exampleChipText: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  infoSection: {
-    marginTop: 16,
-  },
-  infoCard: {
-    flexDirection: 'row',
-    backgroundColor: isDark ? '#1A2A3A' : '#E8F4FF',
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  infoText: {
-    flex: 1,
-    marginLeft: 12,
-    fontSize: 14,
-    color: colors.text,
-    lineHeight: 20,
-  },
+  analyzeButtonDisabled: { opacity: 0.6 },
+  buttonIcon: { marginRight: 8 },
+  analyzeButtonText: { fontSize: 18, fontWeight: '600' },
+  examplesSection: { marginBottom: 32 },
+  examplesTitle: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  examplesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  exampleChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
+  exampleChipText: { fontSize: 14, fontWeight: '500' },
+  infoSection: { marginTop: 16 },
+  infoCard: { flexDirection: 'row', padding: 16, borderRadius: 12, alignItems: 'center' },
+  infoText: { flex: 1, marginLeft: 12, fontSize: 14, lineHeight: 20 },
 });

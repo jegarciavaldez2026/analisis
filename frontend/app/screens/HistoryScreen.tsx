@@ -13,7 +13,6 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useTheme } from '../../contexts/ThemeContext';
 
-//const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001';
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? 'http://TU_IP_LOCAL:8001';
 
 type FilterType = 'TODOS' | 'COMPRAR' | 'MANTENER' | 'VENDER';
@@ -37,7 +36,6 @@ const FILTERS: { label: string; value: FilterType }[] = [
   { label: 'VENDER', value: 'VENDER' },
 ];
 
-// FUNCIÓN UTILITARIA - MOVIDA ARRIBA
 const getRecommendationColor = (r: string) => {
   switch (r) {
     case 'COMPRAR': return '#34C759';
@@ -47,23 +45,22 @@ const getRecommendationColor = (r: string) => {
   }
 };
 
-// COMPONENTE HistoryCard - MOVIDO ANTES DE HistoryScreen
 function HistoryCard({ item }: { item: HistoryItem }) {
+  const { colors } = useTheme();
   const isPositive = item.price_change >= 0;
   const color = isPositive ? '#34C759' : '#FF3B30';
-  const arrow = isPositive ? '▲' : '▼';
+  const arrow = isPositive ? '\u25b2' : '\u25bc';
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
       <View style={styles.topRow}>
         <View style={styles.left}>
-          <Text style={styles.ticker}>{item.ticker}</Text>
-          <Text style={styles.companyName}>{item.company_name}</Text>
-          <Text style={styles.date}>
+          <Text style={[styles.ticker, { color: colors.primary }]}>{item.ticker}</Text>
+          <Text style={[styles.companyName, { color: colors.textSecondary }]}>{item.company_name}</Text>
+          <Text style={[styles.date, { color: colors.textSecondary }]}>
             {new Date(item.analysis_date).toLocaleDateString('es-ES')}
           </Text>
         </View>
-
         <View style={styles.priceBlock}>
           <Text style={styles.price}>
             ${item.current_price.toFixed(2)}
@@ -73,9 +70,8 @@ function HistoryCard({ item }: { item: HistoryItem }) {
           </Text>
         </View>
       </View>
-
       <View style={styles.bottomRow}>
-        <Text style={styles.favorable}>
+        <Text style={[styles.favorable, { color: colors.primary }]}>
           {item.favorable_percentage.toFixed(1)}% favorable
         </Text>
         <View style={[styles.badge, { backgroundColor: getRecommendationColor(item.recommendation) }]}>
@@ -97,11 +93,9 @@ export default function HistoryScreen() {
     try {
       setLoading(true);
       let url = `${BACKEND_URL}/api/history/enhanced?limit=50`;
-      
       if (activeFilter !== 'TODOS') {
         url += `&recommendation=${activeFilter}`;
       }
-
       const { data } = await axios.get(url);
       setHistory(data);
     } catch (error) {
@@ -130,23 +124,26 @@ export default function HistoryScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      {/* Filtros */}
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false} 
-        style={styles.filterContainer}
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={[styles.filterContainer, { backgroundColor: colors.card }]}
       >
         {FILTERS.map((f) => (
           <TouchableOpacity
             key={f.value}
             style={[
               styles.filterPill,
-              activeFilter === f.value && styles.filterPillActive,
+              { borderColor: colors.border, backgroundColor: colors.card },
+              activeFilter === f.value && { backgroundColor: colors.primary, borderColor: colors.primary },
             ]}
             onPress={() => setActiveFilter(f.value)}
           >
-            <Text style={activeFilter === f.value ? styles.filterTextActive : styles.filterText}>
+            <Text style={[
+              styles.filterText,
+              { color: activeFilter === f.value ? colors.text : colors.textSecondary },
+            ]}>
               {f.label}
             </Text>
           </TouchableOpacity>
@@ -165,24 +162,18 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  filterContainer: { maxHeight: 70, paddingVertical: 12, backgroundColor: colors.card },
+  filterContainer: { maxHeight: 70, paddingVertical: 12 },
   filterPill: {
     paddingHorizontal: 18,
     paddingVertical: 8,
     marginHorizontal: 6,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
   },
-  filterPillActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  filterText: { fontWeight: '600', color: colors.textSecondary },
-  filterTextActive: { color: colors.text, fontWeight: '600' },
-
+  filterText: { fontWeight: '600' },
   card: {
-    backgroundColor: colors.card,
     margin: 12,
     padding: 16,
     borderRadius: 14,
@@ -194,14 +185,14 @@ const styles = StyleSheet.create({
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between' },
   left: { flex: 1 },
-  ticker: { fontSize: 18, fontWeight: 'bold', color: colors.primary },
-  companyName: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
-  date: { fontSize: 12, color: colors.textSecondary, marginTop: 2 }, // NUEVO
+  ticker: { fontSize: 18, fontWeight: 'bold' },
+  companyName: { fontSize: 13, marginTop: 2 },
+  date: { fontSize: 12, marginTop: 2 },
   priceBlock: { alignItems: 'flex-end' },
   price: { fontSize: 17, fontWeight: '700' },
   change: { fontSize: 13, fontWeight: '600', marginTop: 4 },
   bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, alignItems: 'center' },
-  favorable: { color: colors.primary, fontWeight: '500' },
+  favorable: { fontWeight: '500' },
   badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12 },
   badgeText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
 });
