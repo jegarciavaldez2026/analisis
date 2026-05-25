@@ -50,7 +50,7 @@ from llama_cpp import Llama
 
 # llama-cpp-python model path
 MODEL_DIR = _os.path.join(_os.path.dirname(__file__), "models")
-MODEL_PATH = _os.path.join(MODEL_DIR, "qwen2.5-0.5b-instruct-q4_k_m.gguf")
+MODEL_PATH = _os.path.join(MODEL_DIR, "Qwen3-1.7B-Q4_K_M.gguf")
 
 # Global model instance (loaded once, shared across sessions)
 _llm_model = None
@@ -60,12 +60,12 @@ def get_llm_model():
     if _llm_model is None:
         if not _os.path.exists(MODEL_PATH):
             logging.error(f"Model file not found: {MODEL_PATH}")
-            logging.error("Download: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+            logging.error("Download: https://huggingface.co/unsloth/Qwen3-1.7B-GGUF")
             return None
         try:
             _llm_model = Llama(
                 model_path=MODEL_PATH,
-                n_ctx=2048,
+                n_ctx=4096,
                 n_threads=4,
                 n_gpu_layers=0,
                 verbose=False,
