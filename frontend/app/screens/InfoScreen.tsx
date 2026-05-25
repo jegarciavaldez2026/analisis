@@ -1,8 +1,10 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '../../contexts/ThemeContext';
 
 export default function InfoScreen() {
+  const { colors, isDark } = useTheme();
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -71,7 +73,7 @@ function CategoryItem({ icon, title, description }: { icon: any; title: string; 
   return (
     <View style={styles.categoryItem}>
       <View style={styles.categoryIcon}>
-        <Ionicons name={icon} size={24} color="#007AFF" />
+        <Ionicons name={icon} size={24} color={colors.primary} />
       </View>
       <View style={styles.categoryContent}>
         <Text style={styles.categoryTitle}>{title}</Text>
@@ -106,7 +108,7 @@ function InterpretationItem({ color, label, description }: { color: string; labe
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
+    backgroundColor: colors.background,
   },
   content: {
     padding: 20,
@@ -120,12 +122,12 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#1D1D1F',
+    color: colors.text,
     marginTop: 12,
   },
   subtitle: {
     fontSize: 16,
-    color: '#6E6E73',
+    color: colors.textSecondary,
     marginTop: 4,
   },
   section: {
@@ -134,14 +136,14 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#1D1D1F',
+    color: colors.text,
     marginBottom: 12,
   },
   sectionText: {
     fontSize: 15,
-    color: '#1D1D1F',
+    color: colors.text,
     lineHeight: 22,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.card,
     padding: 16,
     borderRadius: 12,
   },
@@ -150,7 +152,7 @@ const styles = StyleSheet.create({
   },
   categoryItem: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.card,
     padding: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -159,7 +161,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#007AFF15',
+    backgroundColor: colors.primary + '25',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -170,12 +172,12 @@ const styles = StyleSheet.create({
   categoryTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1D1D1F',
+    color: colors.text,
     marginBottom: 2,
   },
   categoryDescription: {
     fontSize: 13,
-    color: '#6E6E73',
+    color: colors.textSecondary,
   },
   stepsList: {
     gap: 12,
@@ -183,7 +185,7 @@ const styles = StyleSheet.create({
   stepItem: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.card,
     padding: 16,
     borderRadius: 12,
   },
@@ -204,7 +206,7 @@ const styles = StyleSheet.create({
   stepText: {
     flex: 1,
     fontSize: 14,
-    color: '#1D1D1F',
+    color: colors.text,
     lineHeight: 20,
     paddingTop: 4,
   },
@@ -214,7 +216,7 @@ const styles = StyleSheet.create({
   interpretationItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.card,
     padding: 16,
     borderRadius: 12,
   },
@@ -234,32 +236,32 @@ const styles = StyleSheet.create({
   interpretationDescription: {
     flex: 1,
     fontSize: 14,
-    color: '#6E6E73',
+    color: colors.textSecondary,
   },
   warningText: {
     fontSize: 14,
-    color: '#1D1D1F',
+    color: colors.text,
     lineHeight: 20,
-    backgroundColor: '#FFF3CD',
+    backgroundColor: isDark ? '#3D3000' : '#FFF3CD',
     padding: 16,
     borderRadius: 12,
     borderLeftWidth: 4,
-    borderLeftColor: '#FF9500',
+    borderLeftColor: colors.warning,
   },
   footer: {
     alignItems: 'center',
     marginTop: 24,
     paddingTop: 24,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
+    borderTopColor: colors.border,
   },
   footerText: {
     fontSize: 14,
-    color: '#6E6E73',
+    color: colors.textSecondary,
     marginBottom: 4,
   },
   versionText: {
     fontSize: 12,
-    color: '#8E8E93',
+    color: colors.textSecondary,
   },
 });

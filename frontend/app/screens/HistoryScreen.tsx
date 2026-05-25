@@ -11,6 +11,7 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useTheme } from '../../contexts/ThemeContext';
 
 //const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001';
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? 'http://TU_IP_LOCAL:8001';
@@ -86,6 +87,7 @@ function HistoryCard({ item }: { item: HistoryItem }) {
 }
 
 export default function HistoryScreen() {
+  const { colors, isDark } = useTheme();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -163,24 +165,24 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F5F7' },
+  container: { flex: 1, backgroundColor: colors.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  filterContainer: { maxHeight: 70, paddingVertical: 12, backgroundColor: '#fff' },
+  filterContainer: { maxHeight: 70, paddingVertical: 12, backgroundColor: colors.card },
   filterPill: {
     paddingHorizontal: 18,
     paddingVertical: 8,
     marginHorizontal: 6,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#ddd',
-    backgroundColor: '#fff',
+    borderColor: colors.border,
+    backgroundColor: colors.card,
   },
   filterPillActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  filterText: { fontWeight: '600', color: '#555' },
-  filterTextActive: { color: '#fff', fontWeight: '600' },
+  filterText: { fontWeight: '600', color: colors.textSecondary },
+  filterTextActive: { color: colors.text, fontWeight: '600' },
 
   card: {
-    backgroundColor: 'white',
+    backgroundColor: colors.card,
     margin: 12,
     padding: 16,
     borderRadius: 14,
@@ -192,14 +194,14 @@ const styles = StyleSheet.create({
   },
   topRow: { flexDirection: 'row', justifyContent: 'space-between' },
   left: { flex: 1 },
-  ticker: { fontSize: 18, fontWeight: 'bold', color: '#007AFF' },
-  companyName: { fontSize: 13, color: '#666', marginTop: 2 },
-  date: { fontSize: 12, color: '#999', marginTop: 2 }, // NUEVO
+  ticker: { fontSize: 18, fontWeight: 'bold', color: colors.primary },
+  companyName: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
+  date: { fontSize: 12, color: colors.textSecondary, marginTop: 2 }, // NUEVO
   priceBlock: { alignItems: 'flex-end' },
   price: { fontSize: 17, fontWeight: '700' },
   change: { fontSize: 13, fontWeight: '600', marginTop: 4 },
   bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, alignItems: 'center' },
-  favorable: { color: '#007AFF', fontWeight: '500' },
+  favorable: { color: colors.primary, fontWeight: '500' },
   badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12 },
   badgeText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
 });
