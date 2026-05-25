@@ -291,6 +291,9 @@ export default function AccountScreen() {
     setRefreshing(true);
     fetchData();
   }, [activeTab]);
+  const handleLogout = () => {
+    logout();
+  };
 
   const handleWatchlistTickerChange = (text: string) => {
     setNewTicker(text);
