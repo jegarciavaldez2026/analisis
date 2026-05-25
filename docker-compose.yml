@@ -11,16 +11,6 @@ services:
       - "27017:27017"
     networks:
       - analisis_net
-  ollama:
-    image: ollama/ollama:latest
-    container_name: analisis_ollama
-    restart: unless-stopped
-    ports:
-      - "11435:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - analisis_net
   backend:
     build:
       context: .
@@ -34,17 +24,13 @@ services:
     environment:
       MONGO_URL: mongodb://mongo:27017/analisis_db
       DB_NAME: analisis_db
-      OLLAMA_URL: http://ollama:11434
       SECRET_KEY: finanalysis-jwt-secret-2026-change-me
-      OLLAMA_MODEL: qwen2.5:0.5b
     networks:
       - analisis_net
     depends_on:
       - mongo
-      - ollama
 volumes:
   mongo_data:
-  ollama_data:
 networks:
   analisis_net:
     driver: bridge

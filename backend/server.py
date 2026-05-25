@@ -46,8 +46,35 @@ def sanitize_float(value, default=0.0):
 import asyncio
 import httpx
 import os as _os
-OLLAMA_BASE_URL = _os.environ.get("OLLAMA_URL", "localhost:11434")
-OLLAMA_MODEL = _os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+from llama_cpp import Llama
+
+# llama-cpp-python model path
+MODEL_DIR = _os.path.join(_os.path.dirname(__file__), "models")
+MODEL_PATH = _os.path.join(MODEL_DIR, "qwen2.5-0.5b-instruct-q4_k_m.gguf")
+
+# Global model instance (loaded once, shared across sessions)
+_llm_model = None
+
+def get_llm_model():
+    global _llm_model
+    if _llm_model is None:
+        if not _os.path.exists(MODEL_PATH):
+            logging.error(f"Model file not found: {MODEL_PATH}")
+            logging.error("Download: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+            return None
+        try:
+            _llm_model = Llama(
+                model_path=MODEL_PATH,
+                n_ctx=2048,
+                n_threads=4,
+                n_gpu_layers=0,
+                verbose=False,
+            )
+            logging.info(f"LLM model loaded: {MODEL_PATH}")
+        except Exception as e:
+            logging.error(f"Error loading LLM model: {e}")
+            return None
+    return _llm_model
 
 class UserMessage:
     def __init__(self, text: str):
@@ -67,18 +94,24 @@ class LlmChat:
     async def send_message(self, user_message) -> str:
         self.history.append({"role": "user", "content": user_message.text})
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/chat",
-                    json={"model": OLLAMA_MODEL, "messages": self.history, "stream": False, "options": {"num_predict": 300, "temperature": 0.1, "top_p": 0.9, "repeat_penalty": 1.1}}
-                )
-                response.raise_for_status()
-                data = response.json()
-                assistant_msg = data["message"]["content"]
-                self.history.append({"role": "assistant", "content": assistant_msg})
-                return assistant_msg
+            model = get_llm_model()
+            if model is None:
+                return "Error: Modelo IA no disponible. Descarga el modelo en backend/models/"
+
+            response = model.create_chat_completion(
+                messages=self.history,
+                max_tokens=500,
+                temperature=0.1,
+                top_p=0.9,
+                repeat_penalty=1.1,
+            )
+            assistant_msg = response["choices"][0]["message"]["content"]
+            self.history.append({"role": "assistant", "content": assistant_msg})
+            return assistant_msg
         except Exception as e:
+            logging.error(f"LLM error: {e}")
             return "Lo siento, el asistente IA no está disponible en este momento."
+
 
 
 ROOT_DIR = Path(__file__).parent
@@ -5382,7 +5415,7 @@ async def init_ai_assistant(request: AIInitRequest):
         # Obtener análisis técnico automáticamente
         technical_data = None
         try:
-            tech_url = f"http://localhost:8000/api/technical/{request.ticker}"
+            tech_url = f"http://backend:8000/api/technical/{request.ticker}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 tech_response = await client.get(tech_url)
                 if tech_response.status_code == 200:
