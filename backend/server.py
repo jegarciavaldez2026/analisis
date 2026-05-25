@@ -4003,13 +4003,12 @@ async def debug_portfolio_raw(current_user: dict = Depends(get_current_user)):
 
 @api_router.get("/portfolio/evolution", response_model=PortfolioEvolution)
 async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)):
-    """Get portfolio value evolution over time - optimized version"""
+    """Get portfolio value evolution over time - uses transaction prices for accuracy"""
     try:
-        # Get all transactions and cash movements
         transactions = await db.portfolio.find({"user_id": current_user["id"]}).sort("transaction_date", 1).to_list(1000)
         cash_movements = await db.cash_movements.find({"user_id": current_user["id"]}).sort("movement_date", 1).to_list(1000)
         
-        if not transactions and not cash_movements:
+        if not transactions:
             return PortfolioEvolution(
                 history=[],
                 current_value=0,
@@ -4017,8 +4016,8 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
                 total_change_percent=0
             )
         
-        # Get all unique tickers and fetch their current prices once
-        tickers = list(set(tx['ticker'] for tx in transactions)) if transactions else []
+        # Get current prices for current value calculation
+        tickers = list(set(tx['ticker'] for tx in transactions))
         current_prices = {}
         for ticker in tickers:
             try:
@@ -4028,115 +4027,132 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
             except:
                 current_prices[ticker] = 0
         
-        # Calculate current state
-        holdings = {}
-        total_invested = 0
-        
+        # Build timeline: collect all event dates (transactions + cash movements)
+        event_dates = set()
         for tx in transactions:
-            ticker = tx['ticker']
-            if ticker not in holdings:
-                holdings[ticker] = {'shares': 0, 'cost': 0}
-            
-            if tx['transaction_type'] == 'buy':
-                holdings[ticker]['shares'] += tx['shares']
-                holdings[ticker]['cost'] += tx['total_amount']
-                total_invested += tx['total_amount']
+            tx_date = tx['transaction_date']
+            if hasattr(tx_date, 'replace'):
+                tx_date = tx_date.replace(tzinfo=None)
+            event_dates.add(tx_date.date())
+        for m in cash_movements:
+            m_date = m['movement_date']
+            if hasattr(m_date, 'replace'):
+                m_date = m_date.replace(tzinfo=None)
+            event_dates.add(m_date.date())
+        
+        # Add monthly snapshots from first event to now
+        sorted_dates = sorted(event_dates)
+        if not sorted_dates:
+            return PortfolioEvolution(history=[], current_value=0, total_change=0, total_change_percent=0)
+        
+        first_date = sorted_dates[0]
+        now = datetime.utcnow().date()
+        
+        # Generate monthly dates from first event
+        timeline_dates = set(sorted_dates)
+        current = first_date.replace(day=1)
+        while current <= now:
+            timeline_dates.add(current)
+            # Move to next month
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
             else:
-                holdings[ticker]['shares'] -= tx['shares']
-                holdings[ticker]['cost'] -= tx['total_amount']
-                total_invested -= tx['total_amount']
+                current = current.replace(month=current.month + 1)
         
-        # Calculate cash balance
-        total_deposits = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'deposit')
-        total_withdrawals = sum(m['amount'] for m in cash_movements if m['movement_type'] == 'withdrawal')
+        timeline_dates.add(now)
+        timeline = sorted(timeline_dates)
         
-        # Cash used in buys and received from sells
-        cash_used = sum(tx['total_amount'] for tx in transactions if tx['transaction_type'] == 'buy')
-        cash_received = sum(tx['total_amount'] for tx in transactions if tx['transaction_type'] == 'sell')
-        cash_available = total_deposits - total_withdrawals - cash_used + cash_received
-        
-        # Calculate current portfolio value
-        current_portfolio_value = cash_available
-        for ticker, data in holdings.items():
-            if data['shares'] > 0:
-                price = current_prices.get(ticker, 0)
-                current_portfolio_value += data['shares'] * price
-        
-        # Generate simplified history (last 12 months only)
+        # Calculate portfolio value at each point in timeline
         history = []
-        now = datetime.utcnow()
+        running_holdings = {}  # ticker -> {'shares': float, 'avg_cost': float}
+        running_cash = 0.0
+        running_invested = 0.0
         
-        # Create monthly snapshots for last 12 months
-        for months_ago in range(11, -1, -1):
-            target_date = now - timedelta(days=months_ago * 30)
-            month_start = target_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        tx_idx = 0
+        cash_idx = 0
+        
+        for point_date in timeline:
+            point_dt = datetime.combine(point_date, datetime.min.time())
             
-            # Calculate holdings at this date
-            month_holdings = {}
-            month_invested = 0
-            
-            for tx in transactions:
+            # Process transactions up to this date
+            while tx_idx < len(transactions):
+                tx = transactions[tx_idx]
                 tx_date = tx['transaction_date']
                 if hasattr(tx_date, 'replace'):
                     tx_date = tx_date.replace(tzinfo=None)
+                if tx_date.date() > point_date:
+                    break
                 
-                if tx_date <= month_start.replace(tzinfo=None):
-                    ticker = tx['ticker']
-                    if ticker not in month_holdings:
-                        month_holdings[ticker] = {'shares': 0, 'cost': 0}
-                    
-                    if tx['transaction_type'] == 'buy':
-                        month_holdings[ticker]['shares'] += tx['shares']
-                        month_holdings[ticker]['cost'] += tx['total_amount']
-                        month_invested += tx['total_amount']
-                    else:
-                        month_holdings[ticker]['shares'] -= tx['shares']
-                        month_holdings[ticker]['cost'] -= tx['total_amount']
-                        month_invested -= tx['total_amount']
+                ticker = tx['ticker']
+                if tx['transaction_type'] == 'buy':
+                    if ticker not in running_holdings:
+                        running_holdings[ticker] = {'shares': 0, 'total_cost': 0}
+                    running_holdings[ticker]['shares'] += tx['shares']
+                    running_holdings[ticker]['total_cost'] += tx['total_amount']
+                    running_invested += tx['total_amount']
+                    running_cash -= tx['total_amount']
+                else:  # sell
+                    if ticker in running_holdings:
+                        running_holdings[ticker]['shares'] -= tx['shares']
+                        # Reduce cost proportionally
+                        if running_holdings[ticker]['shares'] > 0:
+                            ratio = running_holdings[ticker]['shares'] / (running_holdings[ticker]['shares'] + tx['shares'])
+                            running_holdings[ticker]['total_cost'] *= ratio
+                        else:
+                            running_holdings[ticker]['total_cost'] = 0
+                        running_invested -= tx['total_amount']
+                        running_cash += tx['total_amount']
+                tx_idx += 1
             
-            # Calculate cash at this date
-            month_deposits = sum(
-                m['amount'] for m in cash_movements 
-                if m['movement_type'] == 'deposit' and m['movement_date'].replace(tzinfo=None) <= month_start.replace(tzinfo=None)
-            )
-            month_withdrawals = sum(
-                m['amount'] for m in cash_movements 
-                if m['movement_type'] == 'withdrawal' and m['movement_date'].replace(tzinfo=None) <= month_start.replace(tzinfo=None)
-            )
-            month_cash_used = sum(
-                tx['total_amount'] for tx in transactions 
-                if tx['transaction_type'] == 'buy' and tx['transaction_date'].replace(tzinfo=None) <= month_start.replace(tzinfo=None)
-            )
-            month_cash_received = sum(
-                tx['total_amount'] for tx in transactions 
-                if tx['transaction_type'] == 'sell' and tx['transaction_date'].replace(tzinfo=None) <= month_start.replace(tzinfo=None)
-            )
-            month_cash = month_deposits - month_withdrawals - month_cash_used + month_cash_received
+            # Process cash movements up to this date
+            while cash_idx < len(cash_movements):
+                m = cash_movements[cash_idx]
+                m_date = m['movement_date']
+                if hasattr(m_date, 'replace'):
+                    m_date = m_date.replace(tzinfo=None)
+                if m_date.date() > point_date:
+                    break
+                
+                if m['movement_type'] == 'deposit':
+                    running_cash += m['amount']
+                else:
+                    running_cash -= m['amount']
+                cash_idx += 1
             
-            # Calculate portfolio value (use current prices as approximation)
-            month_value = month_cash
-            for ticker, data in month_holdings.items():
+            # Calculate portfolio value at this point
+            # For historical points, use average cost as price approximation
+            # For the last point (now), use current prices
+            is_current = point_date == now or point_date == timeline[-1]
+            
+            portfolio_value = running_cash
+            for ticker, data in running_holdings.items():
                 if data['shares'] > 0:
-                    # Use current price (simplified - for accurate historical would need more API calls)
-                    price = current_prices.get(ticker, 0)
-                    month_value += data['shares'] * price
+                    if is_current:
+                        price = current_prices.get(ticker, 0)
+                    else:
+                        # Use average cost as approximation for historical value
+                        price = data['total_cost'] / data['shares'] if data['shares'] > 0 else 0
+                    portfolio_value += data['shares'] * price
             
-            # Calculate profit/loss
-            total_basis = month_invested + (month_deposits - month_withdrawals)
-            profit_loss = month_value - total_basis if total_basis > 0 else 0
-            profit_loss_pct = (profit_loss / total_basis * 100) if total_basis > 0 else 0
+            # Profit/loss = current value - total invested (cash deposits - withdrawals)
+            total_deposits = sum(m['amount'] for m in cash_movements[:cash_idx] if m['movement_type'] == 'deposit')
+            total_withdrawals = sum(m['amount'] for m in cash_movements[:cash_idx] if m['movement_type'] == 'withdrawal')
+            net_cash_in = total_deposits - total_withdrawals
+            profit_loss = portfolio_value - net_cash_in
+            profit_loss_pct = (profit_loss / net_cash_in * 100) if net_cash_in > 0 else 0
             
             history.append(PortfolioHistoryPoint(
-                date=month_start.strftime('%Y-%m-%d'),
-                total_value=round(month_value, 2),
-                invested_value=round(month_invested, 2),
-                cash_balance=round(month_cash, 2),
+                date=point_date.strftime('%Y-%m-%d'),
+                total_value=round(portfolio_value, 2),
+                invested_value=round(running_invested, 2),
+                cash_balance=round(running_cash, 2),
                 profit_loss=round(profit_loss, 2),
                 profit_loss_percent=round(profit_loss_pct, 2)
             ))
         
         # Calculate total change
         first_value = history[0].total_value if history and history[0].total_value > 0 else 0
+        current_portfolio_value = history[-1].total_value if history else 0
         total_change = current_portfolio_value - first_value if first_value > 0 else 0
         total_change_pct = (total_change / first_value * 100) if first_value > 0 else 0
         
@@ -4149,7 +4165,6 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
         
     except Exception as e:
         logging.error(f"Error getting portfolio evolution: {str(e)}")
-        # Return empty evolution on error instead of failing
         return PortfolioEvolution(
             history=[],
             current_value=0,
