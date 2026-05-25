@@ -336,6 +336,7 @@ export default function AccountScreen() {
       fetchData();
       Platform.OS === 'web' ? window.alert('✅ Watchlist actualizada') : Alert.alert('Éxito', 'Watchlist actualizada');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
     }
   };
@@ -383,6 +384,7 @@ export default function AccountScreen() {
       fetchData();
       Platform.OS === 'web' ? window.alert('✅ Acción agregada a watchlist') : Alert.alert('Éxito', 'Acción agregada a watchlist');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo agregar a watchlist')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo agregar a watchlist');
     } finally {
       setSubmitting(false);
@@ -431,6 +433,7 @@ export default function AccountScreen() {
       fetchData();
       Platform.OS === 'web' ? window.alert('✅ Transacción actualizada') : Alert.alert('Éxito', 'Transacción actualizada');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
     }
   };
@@ -491,6 +494,7 @@ export default function AccountScreen() {
       fetchData();
       Platform.OS === 'web' ? window.alert('✅ Transacción registrada') : Alert.alert('Éxito', 'Transacción registrada');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar la transacción')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar la transacción');
     } finally {
       setSubmitting(false);
@@ -560,6 +564,7 @@ export default function AccountScreen() {
       fetchData();
       Platform.OS === 'web' ? window.alert('✅ ' + (cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado')) : Alert.alert('Éxito', cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar el movimiento')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar el movimiento');
     } finally {
       setSubmitting(false);
