@@ -3630,6 +3630,11 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             # Store for metrics
             weights.append(curr_value_stock)
             betas.append(stock_beta)
+            returns_data.append({
+                'mean_return': mean_ret,
+                'volatility': vol,
+                'max_drawdown': mdd,
+            })
             
             # Aggregate by sector
             if sector not in sector_values:
