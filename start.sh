@@ -1,5 +1,5 @@
 #!/bin/bash
-# Iniciar el frontend Expo
+# Iniciar el frontend Expo en modo web
 set -e
 
 echo "========================================"
@@ -7,10 +7,10 @@ echo "  Analisis - Iniciar Frontend"
 echo "========================================"
 echo ""
 
-cd "$(dirname "$0")/frontend"
+cd ""/bin/frontend"
 
-echo "Backend URL: $EXPO_PUBLIC_BACKEND_URL"
-echo "Iniciando Expo..."
+echo "Backend URL: "
+echo "Iniciando Expo (modo web)..."
 echo ""
 
-npx expo start -c
+npx expo start --web -c

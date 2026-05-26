@@ -5,9 +5,9 @@
 #   start   - Solo inicia el frontend
 #   all     - Reconstruye contenedores e inicia frontend (default)
 
-cd "$(dirname "$0")"
+cd ""/bin"
 
-case "${1:-all}" in
+case "all" in
   rebuild)
     echo ">>> Reconstruyendo contenedores..."
     docker compose down
@@ -21,7 +21,7 @@ case "${1:-all}" in
     ;;
   start)
     echo ">>> Iniciando frontend..."
-    cd frontend && npx expo start -c
+    cd frontend && npx expo start --web -c
     ;;
   all)
     echo ">>> Paso 1: Reconstruyendo contenedores..."
@@ -36,13 +36,13 @@ case "${1:-all}" in
     echo ""
     echo ">>> Paso 2: Iniciando frontend..."
     echo ""
-    cd frontend && npx expo start -c
+    cd frontend && npx expo start --web -c
     ;;
   *)
-    echo "Uso: $0 [rebuild|start|all]"
+    echo "Uso: /bin/bash [rebuild|start|all]"
     echo ""
     echo "  rebuild  - Reconstruye y levanta contenedores Docker"
-    echo "  start    - Inicia solo el frontend Expo"
+    echo "  start    - Inicia solo el frontend Expo (modo web)"
     echo "  all      - Reconstruye contenedores + inicia frontend (por defecto)"
     exit 1
     ;;

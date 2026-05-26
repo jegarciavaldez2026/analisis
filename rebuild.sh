@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reconstruir y levantar todos los contenedores (backend, mongo, ollama)
+# Reconstruir y levantar todos los contenedores (backend, mongo)
 set -e
 
 echo "========================================"
@@ -7,7 +7,7 @@ echo "  Analisis - Reconstruir contenedores"
 echo "========================================"
 echo ""
 
-cd "$(dirname "$0")"
+cd ""/bin"
 
 echo "[1/3] Deteniendo contenedores..."
 docker compose down
@@ -28,7 +28,6 @@ echo ""
 echo "  Backend:  http://localhost:8002"
 echo "  API Docs: http://localhost:8002/docs"
 echo "  Mongo:    localhost:27017"
-echo "  Ollama:   http://localhost:11435"
 echo ""
 echo "  Estado de contenedores:"
 docker compose ps
