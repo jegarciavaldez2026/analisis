@@ -5324,6 +5324,7 @@ class AIAssistantRequest(BaseModel):
     session_id: str
     message: str
     stock_data: Optional[Dict[str, Any]] = None  # Financial data for context
+    context: Optional[str] = None  # Context type: "general", "overton_analysis", etc.
 
 class AIAssistantResponse(BaseModel):
     response: str
@@ -5548,8 +5549,36 @@ async def chat_with_ai_assistant(request: AIAssistantRequest):
         
         # Check if session exists
         if session_id not in ai_chat_sessions:
-            # If no session, create a new one with basic context
-            basic_prompt = """Eres FinBot, un analista financiero experto y amigable. 
+            # Determine system prompt based on context
+            if request.context == "overton_analysis":
+                system_prompt = """Eres FinBot, un analista financiero experto especializado en análisis técnico multifactor (Ventana de Overton).
+
+CONTEXTO: El usuario está viendo un análisis Overton completo con:
+- Score compuesto (0-100) basado en 160 puntos normalizados
+- Indicadores técnicos: WMA-30, Coppock, RSI, ADX, IV Rank
+- Factores macro: VIX, US10Y, POC (Point of Control)
+- Sentimiento: Fear & Greed, Put/Call Ratio, Short Interest
+- Noticias con análisis de sentimiento
+- Microestructura: OFI, VWAP, Gamma Exposure
+
+TU ROL:
+1. Analiza TODOS los indicadores en conjunto, no aisladamente
+2. Identifica convergencias (múltiples indicadores apuntan en misma dirección)
+3. Identifica divergencias (indicadores en conflicto → mayor incertidumbre)
+4. Considera el régimen de mercado (trending/ranging/volatile)
+5. Evalúa la relación riesgo/recompensa
+6. Menciona niveles clave: stop loss, targets, POC
+7. Sé específico con el ticker analizado
+8. Advierte sobre riesgos específicos detectados
+9. Da un nivel de convicción (alto/medio/bajo) basado en la alineación de indicadores
+
+IMPORTANTE:
+- No das asesoría financiera profesional, es análisis educativo
+- Sé honesto sobre incertidumbre cuando haya divergencias
+- Prioriza la gestión de riesgo sobre la búsqueda de ganancias
+- Usa lenguaje claro pero técnicamente preciso"""
+            else:
+                system_prompt = """Eres FinBot, un analista financiero experto y amigable. 
 Responde siempre en español de forma clara y concisa.
 Si no tienes contexto de una acción específica, ofrece información general sobre inversiones y análisis financiero.
 Usa emojis ocasionalmente para hacer la conversación más amena.
@@ -5557,7 +5586,7 @@ Recuerda mencionar que no proporcionas asesoría financiera profesional."""
             
             chat = LlmChat(
                 session_id=session_id,
-                system_message=basic_prompt
+                system_message=system_prompt
             )
             
             ai_chat_sessions[session_id] = chat
@@ -5568,13 +5597,22 @@ Recuerda mencionar que no proporcionas asesoría financiera profesional."""
         user_message = UserMessage(text=request.message)
         response = await chat.send_message(user_message)
         
-        # Generate contextual suggested questions based on the conversation
-        suggestions = [
-            "¿Puedes explicar eso con más detalle?",
-            "¿Qué otros factores debo considerar?",
-            "¿Cómo afecta esto mi decisión de inversión?",
-            "Dame un resumen de los puntos clave"
-        ]
+        # Generate contextual suggested questions based on context type
+        if request.context == "overton_analysis":
+            suggestions = [
+                "¿Qué indicador tiene más peso en esta recomendación?",
+                "¿Cuáles son los principales riesgos identificados?",
+                "¿Qué nivel de convicción tienes en este análisis?",
+                "¿Qué escenario invalidaría esta tesis?",
+                "¿Cómo se compara esto con el análisis técnico tradicional?"
+            ]
+        else:
+            suggestions = [
+                "¿Puedes explicar eso con más detalle?",
+                "¿Qué otros factores debo considerar?",
+                "¿Cómo afecta esto mi decisión de inversión?",
+                "Dame un resumen de los puntos clave"
+            ]
         
         return AIAssistantResponse(
             response=response,
@@ -5635,26 +5673,43 @@ def _calc_wma(prices: list, period: int = 30) -> list:
 
 
 def _calc_coppock(prices: list) -> list:
+    """
+    Coppock Curve para datos semanales.
+    Períodos ajustados: ROC 60 semanas (14 meses), ROC 48 semanas (11 meses), WMA 40 semanas.
+    """
     n = len(prices)
-    roc14 = [None] * n
-    roc11 = [None] * n
+    roc_long = 60    # 14 meses en semanas
+    roc_short = 48   # 11 meses en semanas
+    wma_period = 40  # 10 meses en semanas
+    
+    roc_long_arr = [None] * n
+    roc_short_arr = [None] * n
+    
     for i in range(n):
-        if i >= 14:
-            roc14[i] = (prices[i] - prices[i - 14]) / prices[i - 14] * 100
-        if i >= 11:
-            roc11[i] = (prices[i] - prices[i - 11]) / prices[i - 11] * 100
+        if i >= roc_long:
+            roc_long_arr[i] = (prices[i] - prices[i - roc_long]) / prices[i - roc_long] * 100
+        if i >= roc_short:
+            roc_short_arr[i] = (prices[i] - prices[i - roc_short]) / prices[i - roc_short] * 100
+    
     raw = [None] * n
     for i in range(n):
-        if roc14[i] is not None and roc11[i] is not None:
-            raw[i] = roc14[i] + roc11[i]
-    result = [None] * n
-    ema = None
+        if roc_long_arr[i] is not None and roc_short_arr[i] is not None:
+            raw[i] = roc_long_arr[i] + roc_short_arr[i]
+    
+    # WMA en lugar de EMA para el suavizado final
+    result = []
     for i in range(n):
-        if raw[i] is None:
-            result[i] = None
-            continue
-        ema = raw[i] if ema is None else ema + (raw[i] - ema) / 10
-        result[i] = round(ema, 4)
+        if i < wma_period - 1:
+            result.append(None)
+        else:
+            valid_raw = [raw[j] for j in range(i - wma_period + 1, i + 1) if raw[j] is not None]
+            if len(valid_raw) < wma_period // 2:
+                result.append(None)
+            else:
+                weights = list(range(1, len(valid_raw) + 1))
+                wma = sum(w * v for w, v in zip(weights, valid_raw)) / sum(weights)
+                result.append(round(wma, 4))
+    
     return result
 
 
@@ -5816,22 +5871,629 @@ def _calc_forward_guidance_proxy(info: dict) -> dict:
         return {"score": 0.0, "label": "neutral", "pe_compression": 0.0,
                 "eps_growth_pct": 0.0, "analyst_mean_rec": 3.0}
 
+# =============================================================================
+# NUEVAS FUNCIONES PARA INDICADORES TÉCNICOS AVANZADOS
+# Añadir después de _calc_forward_guidance_proxy (línea ~5874)
+# =============================================================================
+
+def _detect_elliott_wave(prices: list) -> dict:
+    """
+    Detección simplificada de Ondas de Elliott.
+    Basado en patrones de 5 ondas impulsivas + 3 correctivas.
+    Returns: {"wave": int, "phase": str, "score": int, "label": str, "isBull": bool}
+    """
+    if len(prices) < 30:
+        return {"wave": 0, "phase": "unknown", "score": 5, "label": "Datos insuficientes", "isBull": False}
+    
+    # Calcular máximos y mínimos locales
+    peaks = []
+    troughs = []
+    for i in range(2, len(prices) - 2):
+        if prices[i] > prices[i-1] and prices[i] > prices[i+1] and prices[i] > prices[i-2] and prices[i] > prices[i+2]:
+            peaks.append((i, prices[i]))
+        elif prices[i] < prices[i-1] and prices[i] < prices[i+1] and prices[i] < prices[i-2] and prices[i] < prices[i+2]:
+            troughs.append((i, prices[i]))
+    
+    if len(peaks) < 2 or len(troughs) < 2:
+        return {"wave": 0, "phase": "consolidation", "score": 5, "label": "Consolidación", "isBull": False}
+    
+    # Analizar tendencia reciente
+    recent_peaks = peaks[-3:] if len(peaks) >= 3 else peaks
+    recent_troughs = troughs[-3:] if len(troughs) >= 3 else troughs
+    
+    # Determinar fase
+    last_price = prices[-1]
+    last_peak = recent_peaks[-1][1] if recent_peaks else last_price
+    last_trough = recent_troughs[-1][1] if recent_troughs else last_price
+    
+    # Detección de onda
+    if last_price > last_peak:
+        # Posible onda 3 o 5
+        wave = 3 if len(peaks) % 2 == 0 else 5
+        return {"wave": wave, "phase": "impulse", "score": 8, "label": f"Onda {wave} alcista", "isBull": True}
+    elif last_price < last_trough:
+        # Posible onda C correctiva
+        return {"wave": "C", "phase": "correction", "score": 3, "label": "Onda C correctiva", "isBull": False}
+    elif last_price > (last_peak + last_trough) / 2:
+        # Onda 4 o B
+        wave = 4 if len(troughs) % 2 == 0 else "B"
+        return {"wave": wave, "phase": "pullback", "score": 6, "label": f"Onda {wave} retroceso", "isBull": True}
+    else:
+        # Onda 2 o A
+        wave = 2 if len(peaks) % 2 == 0 else "A"
+        return {"wave": wave, "phase": "correction", "score": 4, "label": f"Onda {wave} correctiva", "isBull": False}
+
+
+def _detect_weekly_candle_pattern(daily_closes: list, daily_highs: list, daily_lows: list, daily_opens: list) -> dict:
+    """
+    Detecta patrón de vela semanal y su confiabilidad.
+    Returns: {"pattern": str, "type": "bull|bear|neutral", "reliability": float, "score": int, "label": str}
+    """
+    if len(daily_closes) < 10:
+        return {"pattern": "unknown", "type": "neutral", "reliability": 0.0, "score": 5, "label": "Sin patrón"}
+    
+    # Agrupar por semanas (5 días de trading)
+    weekly_candles = []
+    for i in range(0, len(daily_closes), 5):
+        week_close = daily_closes[i:i+5]
+        week_high = daily_highs[i:i+5] if i+5 <= len(daily_highs) else daily_highs[i:]
+        week_low = daily_lows[i:i+5] if i+5 <= len(daily_lows) else daily_lows[i:]
+        week_open = daily_opens[i:i+5] if i+5 <= len(daily_opens) else daily_opens[i:]
+        
+        if len(week_close) >= 3:
+            weekly_candles.append({
+                "open": week_open[0],
+                "close": week_close[-1],
+                "high": max(week_high) if week_high else week_close[-1],
+                "low": min(week_low) if week_low else week_close[-1],
+            })
+    
+    if len(weekly_candles) < 3:
+        return {"pattern": "unknown", "type": "neutral", "reliability": 0.0, "score": 5, "label": "Datos insuficientes"}
+    
+    # Analizar última vela semanal
+    last = weekly_candles[-1]
+    prev = weekly_candles[-2]
+    
+    body = abs(last["close"] - last["open"])
+    range_hl = last["high"] - last["low"]
+    body_ratio = body / range_hl if range_hl > 0 else 0
+    
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    
+    # Detección de patrones
+    pattern = "unknown"
+    ptype = "neutral"
+    reliability = 0.5
+    score = 5
+    
+    # Martillo (Hammer)
+    if lower_wick > body * 2 and upper_wick < body * 0.5 and last["close"] > last["open"]:
+        pattern = "hammer"
+        ptype = "bull"
+        reliability = 0.72
+        score = 8
+        label = "Martillo alcista"
+    # Hombre colgado (Hanging Man)
+    elif lower_wick > body * 2 and upper_wick < body * 0.5 and last["close"] < last["open"]:
+        pattern = "hanging_man"
+        ptype = "bear"
+        reliability = 0.65
+        score = 3
+        label = "Hombre colgado"
+    # Estrella fugaz (Shooting Star)
+    elif upper_wick > body * 2 and lower_wick < body * 0.5 and last["close"] < last["open"]:
+        pattern = "shooting_star"
+        ptype = "bear"
+        reliability = 0.68
+        score = 3
+        label = "Estrella fugaz"
+    # Martillo invertido
+    elif upper_wick > body * 2 and lower_wick < body * 0.5 and last["close"] > last["open"]:
+        pattern = "inverted_hammer"
+        ptype = "bull"
+        reliability = 0.60
+        score = 7
+        label = "Martillo invertido"
+    # Vela envolvente alcista
+    elif last["open"] < prev["close"] and last["close"] > prev["open"] and last["close"] > last["open"]:
+        pattern = "bullish_engulfing"
+        ptype = "bull"
+        reliability = 0.78
+        score = 8
+        label = "Envolvente alcista"
+    # Vela envolvente bajista
+    elif last["open"] > prev["close"] and last["close"] < prev["open"] and last["close"] < last["open"]:
+        pattern = "bearish_engulfing"
+        ptype = "bear"
+        reliability = 0.75
+        score = 3
+        label = "Envolvente bajista"
+    # Doji
+    elif body_ratio < 0.1:
+        pattern = "doji"
+        ptype = "neutral"
+        reliability = 0.50
+        score = 5
+        label = "Doji (indecisión)"
+    # Vela fuerte alcista
+    elif body_ratio > 0.7 and last["close"] > last["open"]:
+        pattern = "strong_bull"
+        ptype = "bull"
+        reliability = 0.65
+        score = 7
+        label = "Vela alcista fuerte"
+    # Vela fuerte bajista
+    elif body_ratio > 0.7 and last["close"] < last["open"]:
+        pattern = "strong_bear"
+        ptype = "bear"
+        reliability = 0.62
+        score = 3
+        label = "Vela bajista fuerte"
+    else:
+        label = "Patrón neutral"
+    
+    return {"pattern": pattern, "type": ptype, "reliability": reliability, "score": score, "label": label}
+
+
+# =============================================================================
+# FUNCIÓN ICHIMOKU ACTUALIZADA PARA CHART + SCORING
+# Reemplazar la función _calc_ichimoku existente (línea ~6040)
+# =============================================================================
+
+def _calc_ichimoku_full(daily_hist) -> dict:
+    """
+    Calcula Ichimoku Cloud completo con datos históricos para gráfico.
+    Returns: {
+        "current": {...},  # Datos actuales para scoring
+        "historical": [...],  # Array de puntos para gráfico
+        "cloud_zones": [...]  # Zonas de la nube coloreadas
+    }
+    """
+    try:
+        if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
+            close = _safe_close(daily_hist)
+            high = _safe_col(daily_hist, "High")
+            low = _safe_col(daily_hist, "Low")
+            
+            if len(close) < 78:  # 52 + 26 para proyecciones
+                raise ValueError("Datos insuficientes")
+            
+            # Tenkan-sen (9 períodos) - Línea de conversión
+            tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2
+            # Kijun-sen (26 períodos) - Línea base
+            kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2
+            # Senkou Span A - Nube A (proyectada 26 adelante)
+            senkou_a = ((tenkan + kijun) / 2).shift(26)
+            # Senkou Span B - Nube B (proyectada 26 adelante)
+            senkou_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
+            # Chikou Span - Línea de retraso (precio actual desplazado 26 atrás)
+            chikou = close.shift(-26)
+            
+            # Valores actuales
+            current_price = close.iloc[-1]
+            tenkan_val = float(tenkan.iloc[-1])
+            kijun_val = float(kijun.iloc[-1])
+            senkou_a_val = float(senkou_a.iloc[-1])
+            senkou_b_val = float(senkou_b.iloc[-1])
+            
+            # Nube actual (la que el precio enfrenta HOY - valores de hace 26 períodos)
+            cloud_top = max(float(senkou_a.iloc[-26]) if not pd.isna(senkou_a.iloc[-26]) else current_price,
+                           float(senkou_b.iloc[-26]) if not pd.isna(senkou_b.iloc[-26]) else current_price)
+            cloud_bottom = min(float(senkou_a.iloc[-26]) if not pd.isna(senkou_a.iloc[-26]) else current_price,
+                              float(senkou_b.iloc[-26]) if not pd.isna(senkou_b.iloc[-26]) else current_price)
+            
+            # Posición del precio vs nube
+            if current_price > cloud_top:
+                price_vs_cloud = "Sobre nube"
+                price_score = 2.5
+            elif current_price < cloud_bottom:
+                price_vs_cloud = "Bajo nube"
+                price_score = 0.0
+            else:
+                price_vs_cloud = "Dentro nube"
+                price_score = 1.25
+            
+            # TK Cross
+            tk_cross = "Alcista" if tenkan_val > kijun_val else "Bajista" if tenkan_val < kijun_val else "Neutral"
+            tk_score = 2.5 if tenkan_val > kijun_val else 0.0 if tenkan_val < kijun_val else 1.25
+            
+            # Color de la nube
+            cloud_color = "Verde" if senkou_a_val > senkou_b_val else "Roja" if senkou_a_val < senkou_b_val else "Neutral"
+            cloud_score = 2.5 if senkou_a_val > senkou_b_val else 0.0 if senkou_a_val < senkou_b_val else 1.25
+            
+            # Chikou Span
+            price_26_ago = close.iloc[-26] if len(close) >= 26 else close.iloc[-1]
+            chikou_free = bool(current_price > price_26_ago)
+            chikou_status = "Libre" if chikou_free else "Obstruido"
+            chikou_score = 2.5 if chikou_free else 0.0
+            
+            # Score total y señal
+            total_score = round(price_score + tk_score + cloud_score + chikou_score, 1)
+            signal = "bull" if total_score >= 7.5 else "bear" if total_score <= 2.5 else "neutral"
+            
+            # Datos históricos para gráfico (últimos 100 períodos)
+            historical = []
+            dates = close.index[-100:]
+            for i, date in enumerate(dates):
+                idx = close.index.get_loc(date)
+                historical.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "close": round(float(close.iloc[idx]), 2),
+                    "tenkan": round(float(tenkan.iloc[idx]), 2) if not pd.isna(tenkan.iloc[idx]) else None,
+                    "kijun": round(float(kijun.iloc[idx]), 2) if not pd.isna(kijun.iloc[idx]) else None,
+                    "senkou_a": round(float(senkou_a.iloc[idx]), 2) if not pd.isna(senkou_a.iloc[idx]) else None,
+                    "senkou_b": round(float(senkou_b.iloc[idx]), 2) if not pd.isna(senkou_b.iloc[idx]) else None,
+                    "chikou": round(float(chikou.iloc[idx]), 2) if not pd.isna(chikou.iloc[idx]) else None,
+                })
+            
+            # Zonas de la nube para colorear
+            cloud_zones = []
+            for i in range(len(historical) - 1):
+                curr = historical[i]
+                next_p = historical[i + 1]
+                if curr["senkou_a"] and curr["senkou_b"] and next_p["senkou_a"] and next_p["senkou_b"]:
+                    cloud_zones.append({
+                        "x0": i,
+                        "x1": i + 1,
+                        "y_top": max(curr["senkou_a"], curr["senkou_b"]),
+                        "y_bottom": min(curr["senkou_a"], curr["senkou_b"]),
+                        "color": "bull" if curr["senkou_a"] > curr["senkou_b"] else "bear",
+                    })
+            
+            return {
+                "current": {
+                    "signal": signal,
+                    "price_vs_cloud": price_vs_cloud,
+                    "score": total_score,
+                    "tenkan": tenkan_val,
+                    "kijun": kijun_val,
+                    "senkou_a": senkou_a_val,
+                    "senkou_b": senkou_b_val,
+                    "chikou_free": chikou_free,
+                    "chikou_status": chikou_status,
+                    "cloud_color": cloud_color,
+                    "tk_cross": tk_cross,
+                    "score_breakdown": {
+                        "price_vs_cloud": round(price_score, 1),
+                        "tk_cross": round(tk_score, 1),
+                        "cloud_color": round(cloud_score, 1),
+                        "chikou": round(chikou_score, 1),
+                    }
+                },
+                "historical": historical,
+                "cloud_zones": cloud_zones,
+            }
+    except Exception as e:
+        logging.warning(f"Ichimoku error: {e}")
+    
+    return {
+        "current": {"signal": "neutral", "price_vs_cloud": "N/A", "score": 5.0,
+                    "tenkan": 0, "kijun": 0, "senkou_a": 0, "senkou_b": 0,
+                    "chikou_free": False, "chikou_status": "N/A", "cloud_color": "N/A", "tk_cross": "N/A"},
+        "historical": [],
+        "cloud_zones": [],
+    }
+
+
+# =============================================================================
+# NUEVO ENDPOINT: GET /api/ichimoku-chart/{ticker}
+# Añadir antes de app.include_router(api_router)
+# =============================================================================
+
+@api_router.get("/ichimoku-chart/{ticker}")
+async def get_ichimoku_chart(ticker: str):
+    """
+    Retorna datos completos de Ichimoku Cloud para gráfico interactivo.
+    Incluye: Precio, Tenkan, Kijun, Nube (Senkou A/B), Chikou
+    """
+    try:
+        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker)
+        
+        # Cargar historial (necesitamos ~150 días para 52 + 26 proyección)
+        hist = _load_history(ticker, period="1y", interval="1d")
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"No hay datos para {ticker}")
+        
+        # Calcular Ichimoku completo
+        ichimoku_data = _calc_ichimoku_full(hist)
+        
+        # Información adicional
+        current_price = float(_safe_close(hist).iloc[-1])
+        
+        return {
+            "ticker": ticker,
+            "current_price": round(current_price, 2),
+            "ichimoku": ichimoku_data["current"],
+            "chart_data": ichimoku_data["historical"],
+            "cloud_zones": ichimoku_data["cloud_zones"],
+            "veredicto": _get_ichimoku_veredicto(ichimoku_data["current"]),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error en ichimoku-chart {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al calcular Ichimoku: {str(e)}")
+
+
+def _get_ichimoku_veredicto(current: dict) -> dict:
+    """Genera veredicto textual del análisis Ichimoku."""
+    alcistas = []
+    bajistas = []
+    
+    # TK Cross
+    if current["tk_cross"] == "Alcista":
+        alcistas.append(f"TK Cross alcista (Tenkan ${current['tenkan']:.2f} > Kijun ${current['kijun']:.2f})")
+    else:
+        bajistas.append(f"TK Cross bajista (Tenkan ${current['tenkan']:.2f} < Kijun ${current['kijun']:.2f})")
+    
+    # Color de nube
+    if current["cloud_color"] == "Verde":
+        alcistas.append(f"Nube {current['cloud_color']} (contexto alcista)")
+    else:
+        bajistas.append(f"Nube {current['cloud_color']} (contexto bajista)")
+    
+    # Precio vs nube
+    if current["price_vs_cloud"] == "Sobre nube":
+        alcistas.append("Precio sobre la nube (señal fuerte)")
+    elif current["price_vs_cloud"] == "Bajo nube":
+        bajistas.append("Precio bajo la nube (señal débil)")
+    else:
+        bajistas.append("Precio dentro de la nube (consolidación)")
+    
+    # Chikou
+    if current["chikou_free"]:
+        alcistas.append("Chikou libre — sin resistencias")
+    else:
+        bajistas.append("Chikou obstruido — resistencias cercanas")
+    
+    # Determinar veredicto
+    score = current["score"]
+    if score >= 7.5:
+        verdict = "ALCISTA FUERTE"
+        desc = "Todos los componentes confirman tendencia alcista: " + " | ".join(alcistas) + "."
+    elif score >= 5:
+        verdict = "MIXTO CON SESGO ALCISTA"
+        desc = f"{' | '.join(alcistas)} pero {' | '.join(bajistas)}. Esperar confirmación."
+    elif score >= 2.5:
+        verdict = "MIXTO CON SESGO BAJISTA"
+        desc = f"{' | '.join(bajistas)} pero {' | '.join(alcistas)}. Vigilar soporte."
+    else:
+        verdict = "BAJISTA FUERTE"
+        desc = "Todos los componentes confirman tendencia bajista. Considerar reducir exposición."
+    
+    return {
+        "verdict": verdict,
+        "description": desc,
+        "alcistas": alcistas,
+        "bajistas": bajistas,
+        "score": score,
+    }
+def _detect_wolfe_wave(daily_hist) -> dict:
+    """
+    Detecta patrones de Wolfe Waves.
+    Returns: {"detected": bool, "direction": "bull|bear|none", "score": int, 
+              "target": float, "entry": float}
+    """
+    try:
+        if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
+            high = _safe_col(daily_hist, "High")
+            low = _safe_col(daily_hist, "Low")
+            close = _safe_close(daily_hist)
+            
+            if len(high) < 20:
+                raise ValueError("Datos insuficientes")
+            
+            # Buscar máximos y mínimos locales
+            peaks = []
+            troughs = []
+            for i in range(2, len(high) - 2):
+                if high.iloc[i] > high.iloc[i-1] and high.iloc[i] > high.iloc[i+1]:
+                    peaks.append((i, high.iloc[i]))
+                if low.iloc[i] < low.iloc[i-1] and low.iloc[i] < low.iloc[i+1]:
+                    troughs.append((i, low.iloc[i]))
+            
+            if len(peaks) >= 3 and len(troughs) >= 2:
+                # Wolfe alcista: mínimos crecientes + máximos decrecientes
+                last_troughs = troughs[-3:]
+                last_peaks = peaks[-2:]
+                
+                # Check para Wolfe alcista
+                if (last_troughs[2][1] > last_troughs[1][1] > last_troughs[0][1] and
+                    last_peaks[1][1] < last_peaks[0][1]):
+                    target = last_peaks[0][1] + (last_peaks[0][1] - last_troughs[1][1]) * 0.5
+                    return {
+                        "detected": True,
+                        "direction": "bull",
+                        "score": 8,
+                        "target": round(target, 2),
+                        "entry": round(close.iloc[-1], 2),
+                    }
+            
+            if len(peaks) >= 2 and len(troughs) >= 3:
+                # Wolfe bajista: máximos crecientes + mínimos decrecientes
+                last_peaks = peaks[-3:]
+                last_troughs = troughs[-2:]
+                
+                if (last_peaks[2][1] > last_peaks[1][1] > last_peaks[0][1] and
+                    last_troughs[1][1] > last_troughs[0][1]):
+                    target = last_troughs[0][1] - (last_troughs[0][1] - last_peaks[1][1]) * 0.5
+                    return {
+                        "detected": True,
+                        "direction": "bear",
+                        "score": 3,
+                        "target": round(target, 2),
+                        "entry": round(close.iloc[-1], 2),
+                    }
+    except Exception as e:
+        logging.warning(f"Wolfe Wave error: {e}")
+    
+    return {"detected": False, "direction": "none", "score": 5, "target": 0, "entry": 0}
+
+
+def _calc_weis_wave(daily_hist) -> dict:
+    """
+    Calcula ondas de Weis (acumulación de volumen por tendencia).
+    Returns: {"waves": list, "current_wave": str, "score": int, "volume_trend": str}
+    """
+    try:
+        if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
+            close = _safe_close(daily_hist)
+            volume = _safe_col(daily_hist, "Volume")
+            
+            if len(close) < 20:
+                raise ValueError("Datos insuficientes")
+            
+            # Calcular ondas basadas en dirección y volumen
+            waves = []
+            current_wave_start = 0
+            current_direction = 1 if close.iloc[1] > close.iloc[0] else -1
+            
+            for i in range(1, len(close)):
+                direction = 1 if close.iloc[i] > close.iloc[i-1] else -1
+                
+                if direction != current_direction:
+                    # Fin de onda
+                    wave_volume = volume.iloc[current_wave_start:i].sum()
+                    wave_return = (close.iloc[i-1] - close.iloc[current_wave_start]) / close.iloc[current_wave_start] * 100
+                    waves.append({
+                        "direction": "up" if current_direction > 0 else "down",
+                        "volume": round(float(wave_volume), 0),
+                        "return_pct": round(wave_return, 2),
+                    })
+                    current_wave_start = i
+                    current_direction = direction
+            
+            # Onda actual
+            current_wave_volume = volume.iloc[current_wave_start:].sum()
+            current_wave_return = (close.iloc[-1] - close.iloc[current_wave_start]) / close.iloc[current_wave_start] * 100
+            
+            avg_volume = volume.rolling(20).mean().iloc[-1]
+            volume_trend = "high" if current_wave_volume > avg_volume * 1.5 else "low" if current_wave_volume < avg_volume * 0.5 else "normal"
+            
+            # Score basado en volumen y dirección
+            if current_direction > 0 and volume_trend == "high":
+                score = 8
+            elif current_direction > 0:
+                score = 6
+            elif current_direction < 0 and volume_trend == "high":
+                score = 3
+            else:
+                score = 5
+            
+            return {
+                "waves": waves[-5:],  # Últimas 5 ondas
+                "current_wave": "up" if current_direction > 0 else "down",
+                "score": score,
+                "volume_trend": volume_trend,
+                "current_volume": round(float(current_wave_volume), 0),
+                "current_return_pct": round(current_wave_return, 2),
+            }
+    except Exception as e:
+        logging.warning(f"Weis Wave error: {e}")
+    
+    return {"waves": [], "current_wave": "none", "score": 5, "volume_trend": "normal", "current_volume": 0, "current_return_pct": 0}
+
+
+def _detect_wyckoff_phase(daily_hist) -> dict:
+    """
+    Detecta fase de Wyckoff (Accumulation, Markup, Distribution, Markdown).
+    Returns: {"phase": str, "stage": str, "score": int, "confidence": float}
+    """
+    try:
+        if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
+            close = _safe_close(daily_hist)
+            volume = _safe_col(daily_hist, "Volume")
+            
+            if len(close) < 50:
+                raise ValueError("Datos insuficientes")
+            
+            # Calcular tendencia y rango
+            sma20 = close.rolling(20).mean()
+            sma50 = close.rolling(50).mean()
+            
+            current_price = close.iloc[-1]
+            price_vs_sma20 = current_price / sma20.iloc[-1] - 1
+            price_vs_sma50 = current_price / sma50.iloc[-1] - 1
+            
+            # Volumen relativo
+            avg_volume = volume.rolling(50).mean()
+            recent_volume = volume.iloc[-10:].mean()
+            volume_ratio = recent_volume / avg_volume.iloc[-1]
+            
+            # Rango de trading
+            recent_high = close.iloc[-20:].max()
+            recent_low = close.iloc[-20:].min()
+            range_size = (recent_high - recent_low) / recent_low
+            
+            # Determinar fase
+            if range_size < 0.15:  # Rango estrecho
+                if price_vs_sma50 > -0.05 and price_vs_sma50 < 0.1:
+                    phase = "Accumulation"
+                    stage = "Spring o Test" if close.iloc[-1] < sma20.iloc[-1] else "SOS"
+                    score = 7
+                    confidence = 0.65
+                elif price_vs_sma50 > 0.05 and price_vs_sma50 < 0.2:
+                    phase = "Distribution"
+                    stage = "UTAD o Test" if close.iloc[-1] > sma20.iloc[-1] else "SOW"
+                    score = 3
+                    confidence = 0.60
+                else:
+                    phase = "Consolidation"
+                    stage = "Rango lateral"
+                    score = 5
+                    confidence = 0.50
+            elif range_size >= 0.15:
+                if price_vs_sma20 > 0.1 and price_vs_sma50 > 0.15:
+                    phase = "Markup"
+                    stage = "Onda 3" if volume_ratio > 1.2 else "Onda 1 o 5"
+                    score = 9
+                    confidence = 0.75
+                elif price_vs_sma20 < -0.1 and price_vs_sma50 < -0.15:
+                    phase = "Markdown"
+                    stage = "Caída libre" if volume_ratio > 1.2 else "Distribución tardía"
+                    score = 2
+                    confidence = 0.70
+                else:
+                    phase = "Transition"
+                    stage = "Cambio de tendencia"
+                    score = 5
+                    confidence = 0.45
+            else:
+                phase = "Unknown"
+                stage = "Sin patrón claro"
+                score = 5
+                confidence = 0.40
+            
+            return {
+                "phase": phase,
+                "stage": stage,
+                "score": score,
+                "confidence": confidence,
+            }
+    except Exception as e:
+        logging.warning(f"Wyckoff error: {e}")
+    
+    return {"phase": "Unknown", "stage": "N/A", "score": 5, "confidence": 0.4}
 
 def _overton_zone(score: int, news_impact: float) -> tuple:
     sign = '+' if news_impact >= 0 else ''
-    if score >= 75:
+    # Escala actualizada: 160 puntos (75% = 120, 55% = 88, 38% = 61, 20% = 32)
+    if score >= 120:
         return ("Popular — Comprar",
                 f"Narrativa de mercado firmemente alcista. Las noticias recientes ({sign}{news_impact:.1f}%) "
                 "refuerzan el momentum. Flujos institucionales entran. Zona de compra con convicción; gestiona el tamaño de posición.")
-    elif score >= 55:
+    elif score >= 88:
         return ("Aceptable — Vigilar",
                 f"Señales mixtas con ligero sesgo positivo. Las noticias aportan {sign}{news_impact:.1f}% al sesgo "
                 "pero falta confirmación técnica plena. Espera catalizador o cruce WMA para entrar.")
-    elif score >= 38:
+    elif score >= 61:
         return ("Sensible — Esperar",
                 f"Narrativa en disputa. Noticias generan ruido ({sign}{news_impact:.1f}%) sin dirección clara. "
-                "Analistas divididos. Evita nueva exposición hasta que el score supere 55.")
-    elif score >= 20:
+                "Analistas divididos. Evita nueva exposición hasta que el score supere 88.")
+    elif score >= 32:
         return ("Radical — Reducir",
                 f"Sesgo bajista dominante. Noticias en negativo ({news_impact:.1f}%) aceleran la narrativa. "
                 "Reduce exposición y ajusta stops.")
@@ -5839,14 +6501,13 @@ def _overton_zone(score: int, news_impact: float) -> tuple:
         return ("Impensable — Vender",
                 f"Pánico generalizado. Noticias ({news_impact:.1f}%) amplían el deterioro fundamental. "
                 "VIX elevado, Coppock negativo, precio bajo WMA. Sal de posiciones largas.")
-
-
 def _compute_multifactor_score(
     price_vs_wma, coppock_signal, sharpe, cur_vix, cur_yield,
     analyst_ratio, news_impact_total,
     momentum_12_1, fgi, si_pct, zscore_mr,
     pcr, fg_proxy,
     ofi, vwap_info, bas_pct, gex_proxy, mi_proxy, beta,
+    elliott_data, candle_data, ichimoku_data, wolfe_data, weis_data, wyckoff_data,
 ) -> dict:
     # ── FUNDAMENTAL (máx 30) ─────────────────────────────────────────
     f = 0.0
@@ -5890,7 +6551,32 @@ def _compute_multifactor_score(
     u += 3.5 if mi_proxy < 0.05 else 1.5 if mi_proxy < 0.15 else -2.0 if mi_proxy > 0.5 else 0.0
     u = max(0, min(25, u))
 
-    total = max(0, min(100, round(f + m + s + u)))
+    # ── ELLIOTT WAVE (máx 10) ────────────────────────────────────────
+    ew_score = elliott_data.get("score", 5)
+    ew_score = max(0, min(10, ew_score))
+
+    # ── PATRÓN DE VELA (máx 10) ──────────────────────────────────────
+    cv_score = candle_data.get("score", 5)
+    cv_score = max(0, min(10, cv_score))
+
+    # ── ICHIMOKU CLOUD (máx 10) ──────────────────────────────────────
+    ichi_score = ichimoku_data.get("score", 5)
+    ichi_score = max(0, min(10, ichi_score))
+
+    # ── WOLFE WAVES (máx 10) ─────────────────────────────────────────
+    ww_score = wolfe_data.get("score", 5)
+    ww_score = max(0, min(10, ww_score))
+
+    # ── WEIS WAVES (máx 10) ──────────────────────────────────────────
+    weis_score = weis_data.get("score", 5)
+    weis_score = max(0, min(10, weis_score))
+
+    # ── WYCKOFF PHASE (máx 10) ───────────────────────────────────────
+    wyck_score = wyckoff_data.get("score", 5)
+    wyck_score = max(0, min(10, wyck_score))
+
+    # ── SCORE TOTAL (160 puntos) ─────────────────────────────────────
+    total = max(0, min(160, round(f + m + s + u + ew_score + cv_score + ichi_score + ww_score + weis_score + wyck_score)))
     return {
         "score": total,
         "breakdown": {
@@ -5898,6 +6584,12 @@ def _compute_multifactor_score(
             "momentum":    round(m, 1),
             "sentimiento": round(s, 1),
             "microestruc": round(u, 1),
+            "elliott_wave": round(ew_score, 1),
+            "candle_pattern": round(cv_score, 1),
+            "ichimoku": round(ichi_score, 1),
+            "wolfe_waves": round(ww_score, 1),
+            "weis_waves": round(weis_score, 1),
+            "wyckoff": round(wyck_score, 1),
         }
     }
 
@@ -6042,6 +6734,7 @@ async def get_overton_signal(ticker: str):
         rsi_val = 50.0
         adx_val = 22.0
         bb_width_val = 0.05
+        atr_abs = current_price * 0.018  # Default: 1.8% del precio
         atr_pct_val = 1.5
         market_regime = "ranging"
         iv_rank_val = 30.0
@@ -6134,14 +6827,27 @@ async def get_overton_signal(ticker: str):
                     pub_label = datetime.fromtimestamp(pub_ts).strftime("%Y-%m-%d") if pub_ts else "N/A"
 
                 title_lower = title.lower()
-                if any(w in title_lower for w in ["beat", "record", "surge", "jump", "rally", "gain", "strong",
-                                                    "supera", "sube", "impulsa", "superavit", "crece"]):
-                    impact = round(float(np.random.uniform(1.2, 4.0)), 1)
-                elif any(w in title_lower for w in ["miss", "fall", "drop", "cut", "loss", "baja", "cae",
-                                                      "reduce", "warn", "risk", "debt", "lawsuit"]):
-                    impact = round(float(np.random.uniform(-4.0, -1.2)), 1)
+                # Impacto determinístico basado en intensidad de palabras
+                positive_words = ["beat", "record", "surge", "jump", "rally", "gain", "strong",
+                                  "supera", "sube", "impulsa", "superavit", "crece", "disruptive", "breakthrough"]
+                negative_words = ["miss", "fall", "drop", "cut", "loss", "baja", "cae",
+                                  "reduce", "warn", "risk", "debt", "lawsuit", "fraud", "investigation"]
+                
+                pos_count = sum(1 for w in positive_words if w in title_lower)
+                neg_count = sum(1 for w in negative_words if w in title_lower)
+                
+                # Calcular impacto basado en conteo y tipo de palabras
+                if pos_count > neg_count:
+                    # Impacto positivo: base + bonus por palabra extra
+                    impact = round(0.8 + (pos_count * 0.6), 1)
+                    impact = min(4.0, impact)  # Cap en 4.0
+                elif neg_count > pos_count:
+                    # Impacto negativo: base - penalty por palabra extra
+                    impact = round(-0.8 - (neg_count * 0.6), 1)
+                    impact = max(-4.0, impact)  # Floor en -4.0
                 else:
-                    impact = round(float(np.random.uniform(-1.0, 1.0)), 1)
+                    # Neutral: impacto pequeño basado en longitud del título
+                    impact = round((len(title) % 5 - 2) * 0.3, 1)  # Entre -0.6 y +0.9
 
                 news_items.append({
                     "headline":    title,
@@ -6178,6 +6884,20 @@ async def get_overton_signal(ticker: str):
         total_a       = analyst_buy + analyst_hold + analyst_sell or 1
         analyst_ratio = analyst_buy / total_a
 
+        # ── 8b. Indicadores técnicos avanzados (Elliott, Candle, Ichimoku, Wolfe, Weis, Wyckoff) ──
+        elliott_data = _detect_elliott_wave(prices)
+        candle_data = _detect_weekly_candle_pattern(
+            daily_closes,
+            [float(v) for v in _safe_col(hist_daily, "High").values.tolist()],
+            [float(v) for v in _safe_col(hist_daily, "Low").values.tolist()],
+            [float(v) for v in _safe_col(hist_daily, "Open").values.tolist()],
+        )
+        ichimoku_data_full = _calc_ichimoku_full(hist_daily)
+        ichimoku_data = ichimoku_data_full["current"]
+        wolfe_data = _detect_wolfe_wave(hist_daily)
+        weis_data = _calc_weis_wave(hist_daily)
+        wyckoff_data = _detect_wyckoff_phase(hist_daily)
+
         # ── 9. Score multi-factor ─────────────────────────────────────
         score_result = _compute_multifactor_score(
             price_vs_wma=price_vs_wma, coppock_signal=coppock_signal,
@@ -6187,22 +6907,46 @@ async def get_overton_signal(ticker: str):
             zscore_mr=zscore_mr, pcr=pcr, fg_proxy=fg_proxy,
             ofi=ofi, vwap_info=vwap_info, bas_pct=bas_pct,
             gex_proxy=gex_proxy, mi_proxy=mi_proxy, beta=beta,
+            elliott_data=elliott_data, candle_data=candle_data,
+            ichimoku_data=ichimoku_data, wolfe_data=wolfe_data,
+            weis_data=weis_data, wyckoff_data=wyckoff_data,
         )
         score     = score_result["score"]
         breakdown = score_result["breakdown"]
 
         ov_zone, ov_desc = _overton_zone(score, news_impact_total)
 
-        action = "sell"
-        for (lo, hi), act in {(65, 100): "buy", (50, 65): "hold", (35, 50): "watch", (0, 35): "sell"}.items():
-            if lo <= score <= hi:
-                action = act; break
+        if score >= 120:
+            action = "buy"
+        elif score >= 88:
+            action = "hold"
+        elif score >= 61:
+            action = "watch"
+        else:
+            action = "sell"
 
         bias_map = {"buy": "Sesgo alcista confirmado", "hold": "Sin sesgo claro — esperar",
                     "watch": "Sesgo mixto — vigilar",  "sell": "Sesgo bajista dominante"}
 
         # ── 10. Precios objetivo ──────────────────────────────────────
-        atr           = round(current_price * 0.018, 4)
+        # Usar ATR real calculado de los datos históricos (no porcentaje fijo)
+        atr           = max(atr_abs, round(current_price * 0.018, 4))
+        # POC (Point of Control) - precio mediano de las últimas 52 semanas
+        try:
+            if len(daily_close) > 0:
+                median_val = daily_close.median()
+                # Handle pandas Series with MultiIndex
+                if hasattr(median_val, 'iloc'):
+                    poc_price = float(median_val.iloc[0]) if len(median_val) > 0 else current_price
+                else:
+                    poc_price = float(median_val)
+                if math.isnan(poc_price) or math.isinf(poc_price):
+                    poc_price = current_price
+            else:
+                poc_price = current_price
+        except Exception as e:
+            logging.warning(f"POC calculation error: {e}")
+            poc_price = current_price
         news_adj      = round(current_price * (news_impact_total / 100), 4)
         stop_loss     = round(current_price - atr * 2.2, 2)
         entry_optimal = round(cur_wma * 1.003, 2)
@@ -6311,6 +7055,8 @@ async def get_overton_signal(ticker: str):
             "atr_pct":         sanitize_float(atr_pct_val),
             "market_regime":   market_regime,
             "iv_rank":         sanitize_float(iv_rank_val),
+            # Point of Control
+            "poc_price":       sanitize_float(poc_price),
         }
 
     except HTTPException:

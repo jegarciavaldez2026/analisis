@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -46,30 +46,61 @@ export default function AIChatWidget() {
     }
   }, [messages]);
 
-  const initSession = async () => {
-    try {
-      const newSessionId = "chat_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
-      setSessionId(newSessionId);
-      setMessages([
-        {
-          id: "welcome",
-          role: "assistant",
-          content: "\u00a1Hola! Soy FinBot, tu asistente de an\u00e1lisis financiero. \u00bfEn qu\u00e9 puedo ayudarte?",
-          timestamp: new Date(),
-        },
-      ]);
-    } catch (error) {
-      console.error("Error init session:", error);
-    }
-  };
+  // Process chat prompt function
+  const processChatPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    setTimeout(() => {
+      console.log('[ChatWidget] Sending prompt to AI...');
+      sendMessageWithText(prompt);
+    }, 200);
+  }, []);
 
-  const sendMessage = async () => {
-    if (!input.trim() || !sessionId || loading) return;
+  // Escuchar evento de prompt desde Overton u otras pantallas
+  useEffect(() => {
+    const handleChatPrompt = (event: any) => {
+      const { prompt, context } = event.detail || {};
+      console.log('[ChatWidget] Received chat-prompt event:', context, prompt?.substring(0, 50));
+      if (prompt) {
+        processChatPrompt(prompt);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("chat-prompt" as any, handleChatPrompt as any);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("chat-prompt" as any, handleChatPrompt as any);
+      }
+    };
+  }, [processChatPrompt]);
+
+  // Revisar localStorage al abrir el chat
+  useEffect(() => {
+    if (isChatOpen && typeof window !== "undefined") {
+      const stored = localStorage.getItem('chat-prompt');
+      if (stored) {
+        try {
+          const { prompt, context, timestamp } = JSON.parse(stored);
+          if (timestamp && Date.now() - timestamp < 5000) {
+            console.log('[ChatWidget] Found prompt in localStorage:', context);
+            processChatPrompt(prompt);
+            localStorage.removeItem('chat-prompt');
+          }
+        } catch (e) {
+          console.error('[ChatWidget] Error parsing stored prompt:', e);
+        }
+      }
+    }
+  }, [isChatOpen, processChatPrompt]);
+
+  const sendMessageWithText = async (text: string) => {
+    if (!text.trim() || !sessionId || loading) return;
 
     const userMessage: Message = {
       id: "user_" + Date.now(),
       role: "user",
-      content: input.trim(),
+      content: text.trim(),
       timestamp: new Date(),
     };
 
@@ -80,7 +111,8 @@ export default function AIChatWidget() {
     try {
       const { data } = await axios.post(BACKEND_URL + "/api/ai-assistant/chat", {
         session_id: sessionId,
-        message: userMessage.content,
+        message: text.trim(),
+        context: "overton_analysis", // Contexto especial para análisis Overton
       });
 
       const assistantMessage: Message = {
@@ -99,10 +131,30 @@ export default function AIChatWidget() {
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errorMessage]);
-      console.error("Chat error:", error);
     } finally {
       setLoading(false);
     }
+  };
+
+  const initSession = async () => {
+    try {
+      const newSessionId = "chat_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+      setSessionId(newSessionId);
+      setMessages([
+        {
+          id: "welcome",
+          role: "assistant",
+          content: "\u00a1Hola! Soy FinBot, tu asistente de an\u00e1lisis financiero. \u00bfEn qu\u00e9 puedo ayudarte?",
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (error) {
+      console.error("Error init session:", error);
+    }
+  };
+
+  const sendMessage = async () => {
+    await sendMessageWithText(input.trim());
   };
 
   const handleClose = () => {

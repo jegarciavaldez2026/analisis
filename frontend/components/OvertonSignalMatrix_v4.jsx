@@ -20,6 +20,10 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useChat } from "../contexts/ChatContext";
+import { useTheme } from "../contexts/ThemeContext";
+import IchimokuCloudChart from "./IchimokuCloudChart";
+
 
 const API_BASE = typeof process !== "undefined" && process.env?.EXPO_PUBLIC_BACKEND_URL
   ? `${process.env.EXPO_PUBLIC_BACKEND_URL}/api`
@@ -473,12 +477,12 @@ function useSeededRand(seed) {
 // SCORE COMPUESTO MULTIFACTOR EXPANDIDO
 // ════════════════════════════════════════════════════════════════════════════════
 function ScoreGauge({ score }) {
-  const angle = (score / 100) * 180 - 90;
+  const angle = (score / 160) * 180 - 90;
   const toRad = (d) => (d * Math.PI) / 180;
   const nX = 60 + 42 * Math.cos(toRad(angle - 90));
   const nY = 60 + 42 * Math.sin(toRad(angle - 90));
-  const color = score >= 65 ? T.bull : score <= 35 ? T.bear : T.warn;
-  const label = score >= 65 ? "COMPRAR" : score <= 35 ? "VENDER" : "MANTENER";
+  const color = score >= 104 ? T.bull : score <= 56 ? T.bear : T.warn;
+  const label = score >= 104 ? "COMPRAR" : score <= 56 ? "VENDER" : "MANTENER";
   const zones = [
     { s: 180, e: 144, c: T.bear }, { s: 144, e: 108, c: "#e07040" },
     { s: 108, e: 72, c: T.warn }, { s: 72, e: 36, c: "#4ade80" }, { s: 36, e: 0, c: T.bull },
@@ -520,7 +524,7 @@ function ScoreGauge({ score }) {
  *
  * 4. En el SectionTitle del score, cambia el texto:
  *    ANTES: "Score Compuesto Multi-Factor (100 pts)"
- *    DESPUÉS: "Score Compuesto Multi-Factor — Elliott + Vela (120→100)"
+ *    DESPUÉS: "Score Compuesto Multi-Factor — Elliott + Vela (160 pts)"
  *
  * 5. Añade los badges Elliott ✓ y Vela 1W ✓ junto al score:
  *    ANTES:
@@ -585,6 +589,31 @@ function detectCandlePatternLight(c0, c1, c2, atr) {
 }
 
 // ── Función principal — reemplaza a ScoreBreakdownExpanded ───────────────────
+function WaveSignal({ label, value, positive, neutral, T }) {
+  const bgColor = neutral 
+    ? `${T.muted}15`
+    : (positive ? `${T.bull}15` : `${T.bear}15`);
+  const textColor = neutral
+    ? T.muted
+    : (positive ? T.bull : T.bear);
+  
+  return (
+    <div style={{
+      padding: "4px 8px",
+      background: bgColor,
+      border: `1px solid ${textColor}40`,
+      borderRadius: 5,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      minWidth: 65,
+    }}>
+      <div style={{ fontSize: 7, color: T.muted, fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: textColor }}>{value || "—"}</div>
+    </div>
+  );
+}
+
 function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
   const r = useSeededRand(tickerSeed);
 
@@ -598,6 +627,9 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
   const fgi     = sf(d?.fear_greed, 50);
   const zscore  = sf(d?.zscore_mean_rev, 0);
   const bbWidth = sf(d?.bb_width, 0.05);
+  const atrPct  = sf(d?.atr_pct, 1.5);
+  const ivRank  = sf(d?.iv_rank, 30);
+  const regime  = d?.market_regime || "ranging";
   const vwapAbove = d?.vwap?.price_vs_vwap === "above";
 
   // ── Generar 52 velas semanales deterministas ─────────────────
@@ -651,7 +683,14 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
     return { score, label, isBull, max: 10 };
   }, [tickerSeed, r]);
 
-  // ── Definición de factores (100 pts base + 20 pts nuevos = 120) ─
+  // ── Variables para nuevos factores ─────────────────────────────
+  const wolfe = d?.wolfe_waves || { detected: false };
+  const ichi = d?.ichimoku || { signal: "neutral" };
+  const weis = d?.weis_waves || [];
+  const wyckoff = d?.wyckoff_phase || "Unknown";
+  const wyckoffStage = d?.wyckoff_stage || "—";
+
+  // ── Definición de factores (160 pts → normalizado a 100) ─
   const factors = [
     {
       cat: "Fundamental", color: T.accent, max: 30,
@@ -662,11 +701,12 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       ],
     },
     {
-      cat: "Momentum", color: T.bull, max: 25,
+      cat: "Momentum", color: T.bull, max: 30,
       items: [
         { label: "Momentum 12-1",  score: clamp((mom + 30) / 60 * 10, 0, 10), max: 10, detail: `${mom >= 0 ? "+" : ""}${mom.toFixed(1)}%` },
         { label: "RSI (14)",       score: clamp(rsi / 100 * 8 + 1, 0, 8),     max: 8,  detail: `${rsi.toFixed(0)} — ${rsi > 70 ? "Sobrecompra" : rsi < 30 ? "Sobreventa" : "Normal"}` },
-        { label: "ADX Tendencia",  score: clamp(adx / 60 * 7, 0, 7),          max: 7,  detail: `ADX ${adx.toFixed(0)}` },
+        { label: "ADX Tendencia",  score: clamp(adx / 60 * 7, 0, 7),          max: 7,  detail: `ADX ${adx.toFixed(0)} — ${regime.toUpperCase()}` },
+        { label: "IV Rank",        score: clamp((100 - ivRank) / 100 * 5, 0, 5), max: 5, detail: `${ivRank.toFixed(0)}% — ${ivRank > 50 ? "Alta vol" : "Baja vol"}` },
       ],
     },
     {
@@ -711,11 +751,56 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
         },
       ],
     },
+    // ── NUEVOS: Ichimoku, Wolfe Wave, Weis Wave, Wyckoff ──────────────────
+    {
+      cat: "Ichimoku Cloud", color: T.teal, max: 10, isNew: true,
+      items: [
+        {
+          label: `Señal: ${ichi.signal || "Neutral"}`,
+          score: ichi.signal === "bull" ? 8 : d?.ichimoku?.signal === "bear" ? 3 : 5,
+          max: 10,
+          detail: ichi.price_vs_cloud ? `Precio ${d.ichimoku.price_vs_cloud}` : "N/A",
+        },
+      ],
+    },
+    {
+      cat: "Wolfe Waves", color: T.indigo, max: 10, isNew: true,
+      items: [
+        {
+          label: wolfe.detected ? "Patrón Detectado" : "Sin patrón",
+          score: wolfe.detected ? (wolfe.direction === "bull" ? 8 : 3) : 5,
+          max: 10,
+          detail: wolfe.direction ? `${wolfe.direction === "bull" ? "▲" : "▼"} ${wolfe.direction}` : "—",
+        },
+      ],
+    },
+    {
+      cat: "Weis Wave", color: T.purple, max: 10, isNew: true,
+      items: [
+        {
+          label: weis.length > 0 ? "Ondas activas" : "Sin datos",
+          score: weis.length > 0 ? 7 : 5,
+          max: 10,
+          detail: weis.length > 0 ? `${d.weis_waves.length} ondas` : "—",
+        },
+      ],
+    },
+    {
+      cat: "Fase Wyckoff", color: T.gold, max: 10, isNew: true,
+      items: [
+        {
+          label: wyckoff || "Desconocida",
+          score: d?.wyckoff_phase === "Markup" ? 9 : d?.wyckoff_phase === "Accumulation" ? 7 : d?.wyckoff_phase === "Distribution" ? 3 : d?.wyckoff_phase === "Markdown" ? 2 : 5,
+          max: 10,
+          detail: d?.wyckoff_stage || "—",
+        },
+      ],
+    },
   ];
 
-  // ── Normalización: 120 pts → 100 ─────────────────────────────
+  // ── Normalización: 160 pts → 100 ─────────────────────────────
   const rawTotal = factors.reduce((s, cat) => s + cat.items.reduce((cs, i) => cs + i.score, 0), 0);
-  const rawMax   = factors.reduce((s, cat) => s + cat.max, 0); // 120
+  const rawMax   = factors.reduce((s, cat) => s + cat.max, 0); // 160
   const normScore = Math.round((rawTotal / rawMax) * 100);
 
   // ── Render ────────────────────────────────────────────────────
@@ -724,7 +809,7 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
 
       {/* Cabecera de normalización */}
       <div style={{ fontSize: 9, color: T.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-        Desglose por categoría (120 pts → normalizado a 100)
+        Desglose por categoría (160 pts → normalizado a 100)
       </div>
       <div style={{
         marginBottom: 8,
@@ -829,9 +914,68 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
           </div>
         </div>
       </div>
+
+      {/* Señales por Onda */}
+      <div style={{ marginTop: 12, padding: "10px", background: T.card2, borderRadius: 8, border: `1px solid ${T.border}` }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: T.muted, marginBottom: 8, textTransform: "uppercase" }}>Señales por Onda/Factor</div>
+        
+        {/* Onda Técnica */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: T.accent, marginBottom: 4 }}>📊 Onda Técnica</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <WaveSignal label="WMA-30" value={d.price_vs_wma === "above" ? "▲ Sobre" : "▼ Bajo"} positive={d.price_vs_wma === "above"} T={T} />
+            <WaveSignal label="Coppock" value={d.coppock_signal === "bull" ? "▲ Alcista" : "▼ Bajista"} positive={d.coppock_signal === "bull"} T={T} />
+            <WaveSignal label="RSI" value={`${rsi.toFixed(0)}`} neutral T={T} />
+            <WaveSignal label="ADX" value={`${adx.toFixed(0)}`} positive={adx > 25} T={T} />
+            <WaveSignal label="Régimen" value={regime.toUpperCase()} neutral T={T} />
+          </div>
+        </div>
+        
+        {/* Onda Macro */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: T.purple, marginBottom: 4 }}>🌍 Onda Macro</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <WaveSignal label="VIX" value={d.vix?.toFixed(1)} positive={d.vix < 20} T={T} />
+            <WaveSignal label="US10Y" value={`${(d.us10y || 4.5).toFixed(2)}%`} positive={d.us10y < 4.5} T={T} />
+            <WaveSignal label="IV Rank" value={`${ivRank.toFixed(0)}%`} positive={ivRank < 50} T={T} />
+          </div>
+        </div>
+        
+        {/* Onda Sentimiento */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: T.gold, marginBottom: 4 }}>💭 Onda Sentimiento</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <WaveSignal label="PCR" value={(d.put_call_ratio || 1).toFixed(2)} positive={d.put_call_ratio > 0.9} T={T} />
+            <WaveSignal label="Short Int" value={`${(d.short_interest || 0).toFixed(1)}%`} positive={d.short_interest < 10} T={T} />
+            <WaveSignal label="F&G" value={`${fgi.toFixed(0)}`} neutral T={T} />
+          </div>
+        </div>
+        
+        {/* Onda Noticias */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: T.cyan, marginBottom: 4 }}>📰 Onda Noticias</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <WaveSignal label="Sentimiento" value={d.news_sentiment === "bull" ? "▲ Bull" : d.news_sentiment === "bear" ? "▼ Bear" : "Neutral"} positive={d.news_sentiment === "bull"} T={T} />
+            <WaveSignal label="Impacto" value={`${(d.news_impact_total || 0) >= 0 ? "+" : ""}${(d.news_impact_total || 0).toFixed(1)}%`} positive={d.news_impact_total > 0} T={T} />
+          </div>
+        </div>
+        
+        {/* Onda Microestructura */}
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: T.teal, marginBottom: 4 }}>⚡ Onda Microestructura</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <WaveSignal label="OFI" value={(d.ofi || 0).toFixed(2)} positive={d.ofi > 0} T={T} />
+            <WaveSignal label="VWAP" value={vwapAbove ? "▲ Sobre" : "▼ Bajo"} positive={vwapAbove} T={T} />
+            <WaveSignal label="GEX" value={(d.gamma_exposure || 0).toFixed(0)} positive={d.gamma_exposure > 0} T={T} />
+            <WaveSignal label="Bid-Ask" value={`${(d.bid_ask_spread || 0).toFixed(2)}%`} positive={d.bid_ask_spread < 1} T={T} />
+            <WaveSignal label="Beta" value={(d.beta || 1).toFixed(2)} neutral T={T} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
 
 /*
 ─────────────────────────────────────────────────────────────────────────────
@@ -839,7 +983,7 @@ RESUMEN DE CAMBIOS EN EL JSX DEL COMPONENTE PRINCIPAL:
 
 1. SectionTitle del score — cambia el texto:
    ANTES:  Score Compuesto Multi-Factor (100 pts)
-   DESPUÉS: Score Compuesto Multi-Factor — Elliott + Vela (120→100)
+   DESPUÉS: Score Compuesto Multi-Factor — Elliott + Vela (160 pts)
 
 2. Junto al ScoreGauge, en el div derecho añade los badges:
    <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
@@ -3755,7 +3899,7 @@ function AdaptiveEntryScorer({ d }) {
   const w2 = weights[regime] || weights.ranging;
   const normMom = clamp((mom + 30) / 60, 0, 1);
   const normOfi = clamp((ofi + 0.5) / 1, 0, 1);
-  const normScore = score / 100;
+  const normScore = score / 160;
   const normFgi = fgi / 100;
   const normZscore = clamp(1 - Math.abs(zscore) / 3, 0, 1);
   const normVwap = vwapPos > 0 ? 0.7 : 0.3;
@@ -4110,6 +4254,9 @@ function CoppockChart({ coppock }) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
+  const { isDark } = useTheme();
+  const T = isDark ? THEMES.dark : THEMES.light;
+  const { openChat } = useChat();
   const [ticker, setTicker] = useState(propTicker || "SPY");
   const [inputVal, setInputVal] = useState(propTicker || "SPY");
   const [activeTab, setActiveTab] = useState("overview");
@@ -4130,6 +4277,61 @@ export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
 
   // Seed por ticker — recalcula en cada cambio de ticker
   const tickerSeed = useTickerHash(ticker);
+
+  // Generar prompt de análisis Overton para IA
+  const generateOvertonPrompt = useCallback(() => {
+    const d = data || {};
+    const prompt = `Analiza la Ventana de Overton para ${d.ticker || ticker}:
+
+📊 SCORE: ${d.score || 0}/100 — ${d.bias || "Sin sesgo"}
+🪟 ZONA: ${d.overton_zone || "N/A"}
+🎯 ACCIÓN: ${d.overton_action || "N/A"}
+
+INDICADORES TÉCNICOS:
+• WMA-30: ${d.price_vs_wma === "above" ? "▲ Sobre" : "▼ Bajo"} (${d.wma30 ? `$${d.wma30}` : "N/A"})
+• Coppock: ${d.coppock_signal === "bull" ? "▲ Alcista" : "▼ Bajista"} (${d.coppock?.toFixed(2) || "N/A"})
+• RSI: ${d.rsi?.toFixed(1) || "N/A"} — ${d.rsi > 70 ? "Sobrecompra" : d.rsi < 30 ? "Sobreventa" : "Neutral"}
+• ADX: ${d.adx?.toFixed(1) || "N/A"} — Régimen: ${(d.market_regime || "N/A").toUpperCase()}
+• IV Rank: ${d.iv_rank?.toFixed(1) || "N/A"}%
+
+MACRO:
+• VIX: ${d.vix?.toFixed(1) || "N/A"} — ${d.vix < 20 ? "Calma" : d.vix > 28 ? "Miedo" : "Neutral"}
+• US10Y: ${d.us10y?.toFixed(2) || "N/A"}%
+• POC: ${d.poc_price ? `$${d.poc_price.toFixed(2)}` : "N/A"} — Precio ${d.current_price > (d.poc_price || 0) ? "▲ Sobre" : "▼ Bajo"} POC
+
+SENTIMIENTO:
+• Fear & Greed: ${d.fear_greed?.toFixed(0) || "N/A"}/100
+• Put/Call: ${d.put_call_ratio?.toFixed(2) || "N/A"}
+• Short Interest: ${d.short_interest?.toFixed(1) || "0"}%
+
+NOTICIAS: ${d.news_sentiment === "bull" ? "▲ Positivas" : d.news_sentiment === "bear" ? "▼ Negativas" : "Neutras"}
+• Impacto: ${d.news_impact_total >= 0 ? "+" : ""}${d.news_impact_total?.toFixed(1) || "0"}%
+
+MICROESTRUCTURA:
+• OFI: ${d.ofi?.toFixed(3) || "0"} — ${d.ofi > 0 ? "Flujo comprador" : "Flujo vendedor"}
+• VWAP: ${d.vwap?.price_vs_vwap === "above" ? "▲ Sobre" : "▼ Bajo"}
+
+Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves? ¿Qué nivel de convicción tienes?`;
+    return prompt;
+  }, [data, ticker]);
+
+  const handleAskAI = useCallback(() => {
+    const prompt = generateOvertonPrompt();
+    console.log('[Overton] Opening chat with prompt:', prompt.substring(0, 100) + '...');
+    
+    // Guardar en localStorage para que el chat lo pueda leer
+    if (typeof window !== "undefined") {
+      localStorage.setItem('chat-prompt', JSON.stringify({ prompt, context: 'overton', timestamp: Date.now() }));
+    }
+    
+    // Abrir chat
+    openChat();
+    
+    // Dispatch event por si el chat está escuchando
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("chat-prompt", { detail: { prompt, context: "overton" } }));
+    }
+  }, [generateOvertonPrompt, openChat]);
 
   const d = data || {};
   const isAbove = d.price_vs_wma === "above";
@@ -4215,6 +4417,7 @@ export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
               { label: "WMA-30", value: usd(d.wma30), sub: isAbove ? "↑ sobre WMA" : "↓ bajo WMA", color: isAbove ? T.bull : T.bear },
               { label: "Adaptive", value: `${sf(d.score, 50).toFixed(0)}/100`, sub: "Score ponderado", color: T.accent },
               { label: "Régimen", value: (d.market_regime || "—").toUpperCase(), sub: `ADX ${sf(d.adx, 0).toFixed(0)}`, color: T.regime[d.market_regime] || T.muted },
+              { label: "POC", value: d.poc_price ? `$${d.poc_price.toFixed(2)}` : "—", sub: d.current_price > (d.poc_price || 0) ? "▲ Sobre POC" : "▼ Bajo POC", color: d.current_price > (d.poc_price || 0) ? T.bull : T.bear },
               { label: "VIX", value: sf(d.vix, 0).toFixed(1), sub: sf(d.vix) < 18 ? "Calma" : sf(d.vix) < 25 ? "Moderado" : "Miedo", color: sf(d.vix) < 18 ? T.bull : sf(d.vix) < 25 ? T.warn : T.bear },
               { label: "US 10Y", value: `${sf(d.us10y, 0).toFixed(2)}%`, sub: sf(d.us10y) < 4.2 ? "Favorable" : sf(d.us10y) > 4.8 ? "Restrictivo" : "Neutro", color: sf(d.us10y) < 4.2 ? T.bull : sf(d.us10y) > 4.8 ? T.bear : T.warn },
             ].map(({ label, value, sub, color }) => (
@@ -4231,7 +4434,7 @@ export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
               {/* Score expandido */}
               <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...card, flex: 1.4, minWidth: 280, marginBottom: 0 }}>
-                  <SectionTitle icon="⚡">Score Compuesto Multi-Factor — Elliott + Vela (120→100)</SectionTitle>
+                  <SectionTitle icon="⚡">Score Compuesto Multi-Factor — Elliott + Vela (160 pts)</SectionTitle>
                   <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
                     <ScoreGauge score={sf(d.score, 50)} />
                     <div style={{ flex: 1 }}>
@@ -4249,7 +4452,38 @@ export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
                 <div style={{ ...card, flex: 1, minWidth: 200, marginBottom: 0 }}>
                   <SectionTitle icon="🪟">Ventana de Overton</SectionTitle>
                  <OvertonWindow zone={d.overton_zone} />
-                  <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.65 }}>{d.overton_description}</div>
+                  <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.65, marginBottom: 10 }}>{d.overton_description}</div>
+                  
+                  {/* Botón Análisis IA */}
+                  <button onClick={handleAskAI} style={{
+                    width: "100%",
+                    padding: "9px 14px",
+                    background: `linear-gradient(135deg, ${T.accent}, ${T.purple})`,
+                    border: "none",
+                    borderRadius: 8,
+                    color: "#fff",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 7,
+                    boxShadow: "0 4px 12px rgba(37, 99, 235, 0.25)",
+                    transition: "transform 0.2s, box-shadow 0.2s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = "translateY(-2px)";
+                    e.currentTarget.style.boxShadow = "0 6px 16px rgba(37, 99, 235, 0.35)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = "translateY(0)";
+                    e.currentTarget.style.boxShadow = "0 4px 12px rgba(37, 99, 235, 0.25)";
+                  }}
+                  >
+                    <span style={{ fontSize: 14 }}>🤖</span>
+                    <span>Análisis IA con todos los indicadores</span>
+                  </button>
                 </div>
               </div>
        
@@ -4380,7 +4614,9 @@ export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
               <WolfeWavesPanel d={d} />
               <VolatilitySurface d={d} tickerSeed={tickerSeed} />
               <div style={{ height: 10 }} />
-              <IchimokuPanel d={d} tickerSeed={tickerSeed} />
+              <div style={{ height: 400, marginTop: 12 }}>
+                <IchimokuCloudChart ticker={ticker} />
+              </div>
             </>
           )}
 

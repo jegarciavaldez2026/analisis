@@ -1,6 +1,8 @@
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { ChatProvider } from '../contexts/ChatContext';
+import AIChatWidget from '../components/AIChatWidget';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { ActivityIndicator, View } from 'react-native';
@@ -50,8 +52,11 @@ export default function RootLayout() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <AuthGuard />
-        <Stack screenOptions={{ headerShown: false }} />
+        <ChatProvider>
+          <AuthGuard />
+          <Stack screenOptions={{ headerShown: false }} />
+          <AIChatWidget />
+        </ChatProvider>
       </AuthProvider>
     </ThemeProvider>
   );
