@@ -7040,8 +7040,15 @@ async def get_overton_signal(ticker: str):
             poc_price = current_price
         news_adj      = round(current_price * (news_impact_total / 100), 4)
         stop_loss     = round(current_price - atr * 2.2, 2)
-        entry_optimal = round(cur_wma * 1.003, 2)
-        entry_agg     = round(current_price - atr * 0.5, 2)
+        
+        # Entrada Óptima: WMA-30 con validación de coherencia
+        # Debe estar ENTRE el stop loss y el precio actual
+        wma_entry = round(cur_wma * 1.003, 2)
+        entry_optimal = max(stop_loss + atr * 0.3, min(wma_entry, current_price - atr * 0.2))
+        entry_optimal = round(entry_optimal, 2)
+        
+        # Entrada Agresiva: Pullback superficial (siempre sobre el stop loss)
+        entry_agg = round(max(stop_loss + atr * 0.5, current_price - atr * 0.5), 2)
         target1       = round(current_price + atr * 2.5 + abs(news_adj), 2)
         target2       = round(current_price + atr * 5.0 + abs(news_adj) * 1.5, 2)
         target3       = round(current_price + atr * 9.0 + abs(news_adj) * 2.0, 2)
