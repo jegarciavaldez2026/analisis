@@ -6794,9 +6794,11 @@ async def get_overton_signal(ticker: str):
 
         # ── 5. Indicadores base ───────────────────────────────────────
         wma_series  = _calc_wma(prices, 30)
+        wma20_series = _calc_wma(prices, 20)
         copp_series = _calc_coppock(prices)
         sharpe      = _calc_sharpe_from_prices(prices, rf_annual=cur_yield / 100)
         cur_wma     = next((v for v in reversed(wma_series)  if v is not None), current_price)
+        cur_wma20   = next((v for v in reversed(wma20_series) if v is not None), current_price)
         cur_copp    = next((v for v in reversed(copp_series) if v is not None), 0.0)
         price_vs_wma   = "above" if current_price > cur_wma  else "below"
         coppock_signal = "bull"  if cur_copp > 0             else "bear"
@@ -7041,10 +7043,10 @@ async def get_overton_signal(ticker: str):
         news_adj      = round(current_price * (news_impact_total / 100), 4)
         stop_loss     = round(current_price - atr * 2.2, 2)
         
-        # Entrada Óptima: WMA-30 con validación de coherencia
+        # Entrada Óptima: WMA-20 para pullback más alcanzable
         # Debe estar ENTRE el stop loss y el precio actual
-        wma_entry = round(cur_wma * 1.003, 2)
-        entry_optimal = max(stop_loss + atr * 0.3, min(wma_entry, current_price - atr * 0.2))
+        wma20_entry = round(cur_wma20 * 1.003, 2)
+        entry_optimal = max(stop_loss + atr * 0.3, min(wma20_entry, current_price - atr * 0.2))
         entry_optimal = round(entry_optimal, 2)
         
         # Entrada Agresiva: Pullback superficial (siempre sobre el stop loss)
@@ -7091,6 +7093,7 @@ async def get_overton_signal(ticker: str):
             "current_price":   round(current_price, 2),
             "pct_change":      pct_change,
             "wma30":           round(cur_wma, 2),
+            "wma20":           round(cur_wma20, 2),
             "price_vs_wma":    price_vs_wma,
             "coppock":         round(cur_copp, 4),
             "coppock_signal":  coppock_signal,

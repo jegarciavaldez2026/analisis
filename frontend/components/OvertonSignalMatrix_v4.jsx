@@ -4591,7 +4591,7 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
                 <SectionTitle icon="💰">Rangos de Entrada / Salida</SectionTitle>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <PriceLevel label="Stop Loss" price={d.stop_loss} sub="2.2 ATR bajo precio" color={T.bear} />
-                  <PriceLevel label="Entrada Óptima" price={d.entry_optimal} sub="Rebote WMA-30" color={T.bull} />
+                  <PriceLevel label="Entrada Óptima" price={d.entry_optimal} sub="Rebote WMA-20" color={T.bull} />
                   <PriceLevel label="Entrada Agresiva" price={d.entry_aggressive} sub="Pullback 0.5 ATR" color={T.warn} />
                   <PriceLevel label="Objetivo 1" price={d.target1} sub="+ATR news" color={T.accent} rr={d.rr1} />
                   <PriceLevel label="Objetivo 2" price={d.target2} sub="R/R extensión" color={T.cyan} rr={d.rr2} />
