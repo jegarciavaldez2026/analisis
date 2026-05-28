@@ -23,6 +23,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useChat } from "../contexts/ChatContext";
 import { useTheme } from "../contexts/ThemeContext";
 import IchimokuCloudChart from "./IchimokuCloudChart";
+import VolumeDeltaTable from "./VolumeDeltaTable";
 
 
 const API_BASE = typeof process !== "undefined" && process.env?.EXPO_PUBLIC_BACKEND_URL
@@ -477,12 +478,13 @@ function useSeededRand(seed) {
 // SCORE COMPUESTO MULTIFACTOR EXPANDIDO
 // ════════════════════════════════════════════════════════════════════════════════
 function ScoreGauge({ score }) {
-  const angle = (score / 160) * 180 - 90;
+  // Escala: 165 pts (45% = 74 COMPRAR, 40% = 66 VENDER)
+  const angle = (score / 165) * 180 - 90;
   const toRad = (d) => (d * Math.PI) / 180;
   const nX = 60 + 42 * Math.cos(toRad(angle - 90));
   const nY = 60 + 42 * Math.sin(toRad(angle - 90));
-  const color = score >= 104 ? T.bull : score <= 56 ? T.bear : T.warn;
-  const label = score >= 104 ? "COMPRAR" : score <= 56 ? "VENDER" : "MANTENER";
+  const color = score >= 74 ? T.bull : score <= 66 ? T.bear : T.warn;
+  const label = score >= 74 ? "COMPRAR" : score <= 66 ? "VENDER" : "MANTENER";
   const zones = [
     { s: 180, e: 144, c: T.bear }, { s: 144, e: 108, c: "#e07040" },
     { s: 108, e: 72, c: T.warn }, { s: 72, e: 36, c: "#4ade80" }, { s: 36, e: 0, c: T.bull },
@@ -665,32 +667,18 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
     return { score: final, label: pattern.name, isBull: isBullPat, reliability: rel };
   }, [pattern]);
 
-  // ── Señal Elliott Wave (determinista por ticker) ─────────────
-  const elliottSignal = useMemo(() => {
-    const isImpulse     = r(0) > 0.35;
-    const isBull        = r(1) > 0.4;
-    const currentWave   = Math.min(Math.floor(r(7) * 5) + 1, 5); // 1-5
-    let score = 5;
-    if (isImpulse) {
-      score = isBull
-        ? [0, 5, 9, 6, 8, 2][currentWave]   // ondas 1→5 alcistas
-        : [0, 7, 2, 5, 3, 8][currentWave];  // ondas 1→5 bajistas
-    } else {
-      const abc = Math.floor(r(4) * 3); // 0=A, 1=B, 2=C
-      score = [2, 4, 8][abc];
-    }
-    const label = isImpulse ? `Onda ${currentWave}` : ["A", "B", "C"][Math.floor(r(4) * 3)];
-    return { score, label, isBull, max: 10 };
-  }, [tickerSeed, r]);
+  // ── Señal Elliott Wave (datos del backend) ─────────────
+  const elliottSignal = d?.elliott || { score: 5, label: "N/A", isBull: false };
 
   // ── Variables para nuevos factores ─────────────────────────────
   const wolfe = d?.wolfe_waves || { detected: false };
-  const ichi = d?.ichimoku || { signal: "neutral" };
+  const ichi = d?.ichimoku || { signal: "neutral", price_vs_cloud: "N/A", score: 5 };
   const weis = d?.weis_waves || [];
-  const wyckoff = d?.wyckoff_phase || "Unknown";
-  const wyckoffStage = d?.wyckoff_stage || "—";
+  const wyckoffData = d?.wyckoff || { phase: "Unknown", stage: "—" };
+  const wyckoff = wyckoffData.phase;
+  const wyckoffStage = wyckoffData.stage;
 
-  // ── Definición de factores (160 pts → normalizado a 100) ─
+  // ── Definición de factores (165 pts → normalizado a 100) ─
   const factors = [
     {
       cat: "Fundamental", color: T.accent, max: 30,
@@ -731,10 +719,10 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Elliott Wave", color: T.gold, max: 10, isNew: true,
       items: [
         {
-          label: `Onda actual: ${elliottSignal.label}`,
-          score: elliottSignal.score,
+          label: elliottSignal.label || "N/A",
+          score: elliottSignal.score || 5,
           max: 10,
-          detail: elliottSignal.isBull ? "Sesgo alcista" : "Sesgo bajista",
+          detail: elliottSignal.isBull === true ? "Sesgo alcista" : elliottSignal.isBull === false ? "Sesgo bajista" : "Neutral",
         },
       ],
     },
@@ -742,12 +730,10 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Patrón de Vela (1W)", color: T.pink, max: 10, isNew: true,
       items: [
         {
-          label: candleScore.label,
-          score: candleScore.score,
+          label: candleScore.label || "Sin patrón",
+          score: candleScore.score || 5,
           max: 10,
-          detail: pattern
-            ? `Fiab. ${Math.round((pattern.reliability || 0) * 100)}% · ${pattern.type === "bull" ? "▲" : pattern.type === "bear" ? "▼" : "—"}`
-            : "Sin señal",
+          detail: candleScore.reliability ? `Fiab. ${Math.round(candleScore.reliability * 100)}%` : "Sin patrón",
         },
       ],
     },
@@ -756,10 +742,10 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Ichimoku Cloud", color: T.teal, max: 10, isNew: true,
       items: [
         {
-          label: `Señal: ${ichi.signal || "Neutral"}`,
-          score: ichi.signal === "bull" ? 8 : d?.ichimoku?.signal === "bear" ? 3 : 5,
+          label: `TK: ${ichi.tk_cross || "N/A"} · Nube: ${ichi.cloud_color || "N/A"}`,
+          score: ichi.score || 5,
           max: 10,
-          detail: ichi.price_vs_cloud ? `Precio ${d.ichimoku.price_vs_cloud}` : "N/A",
+          detail: ichi.price_vs_cloud ? `${ichi.price_vs_cloud} · Chikou: ${ichi.chikou_status || "N/A"}` : "N/A",
         },
       ],
     },
@@ -767,10 +753,12 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Wolfe Waves", color: T.indigo, max: 10, isNew: true,
       items: [
         {
-          label: wolfe.detected ? "Patrón Detectado" : "Sin patrón",
-          score: wolfe.detected ? (wolfe.direction === "bull" ? 8 : 3) : 5,
+          label: wolfe.detected ? (wolfe.direction === "bull" ? "▲ COMPRA" : "▼ VENTA") : "Sin patrón",
+          score: wolfe.score || 5,
           max: 10,
-          detail: wolfe.direction ? `${wolfe.direction === "bull" ? "▲" : "▼"} ${wolfe.direction}` : "—",
+          detail: wolfe.detected 
+            ? `Target: $${wolfe.target} · Entrada: $${wolfe.entry}`
+            : `Score: ${wolfe.score || 5}/10 — ${wolfe.score >= 7 ? "Acumulación (sesgo alcista)" : wolfe.score <= 3 ? "Distribución (sesgo bajista)" : "Neutral"}`,
         },
       ],
     },
@@ -778,10 +766,10 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Weis Wave", color: T.purple, max: 10, isNew: true,
       items: [
         {
-          label: weis.length > 0 ? "Ondas activas" : "Sin datos",
-          score: weis.length > 0 ? 7 : 5,
+          label: weis.current_wave ? `Onda ${weis.current_wave}` : "Sin datos",
+          score: weis.score || 5,
           max: 10,
-          detail: weis.length > 0 ? `${d.weis_waves.length} ondas` : "—",
+          detail: weis.volume_trend ? `Volumen: ${weis.volume_trend}` : "—",
         },
       ],
     },
@@ -789,16 +777,16 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
       cat: "Fase Wyckoff", color: T.gold, max: 10, isNew: true,
       items: [
         {
-          label: wyckoff || "Desconocida",
-          score: d?.wyckoff_phase === "Markup" ? 9 : d?.wyckoff_phase === "Accumulation" ? 7 : d?.wyckoff_phase === "Distribution" ? 3 : d?.wyckoff_phase === "Markdown" ? 2 : 5,
+          label: wyckoffData.phase || "Desconocida",
+          score: wyckoffData.score || 5,
           max: 10,
-          detail: d?.wyckoff_stage || "—",
+          detail: `${wyckoffData.stage || "—"} · Conf: ${Math.round((wyckoffData.confidence || 0) * 100)}%`,
         },
       ],
     },
   ];
 
-  // ── Normalización: 160 pts → 100 ─────────────────────────────
+  // ── Normalización: 165 pts → 100 ─────────────────────────────
   const rawTotal = factors.reduce((s, cat) => s + cat.items.reduce((cs, i) => cs + i.score, 0), 0);
   const rawMax   = factors.reduce((s, cat) => s + cat.max, 0); // 160
   const normScore = Math.round((rawTotal / rawMax) * 100);
@@ -3182,13 +3170,13 @@ function MTFPanel({ d, tickerSeed }) {
     const volumeBase = clamp((adx - 25) / 25, -1, 1);
     const biasBase = (trendBase + rsiBase + macdBase) / 3;
 
-    const noiseMap = { "1m": 0.88, "5m": 0.68, "15m": 0.48, "1h": 0.28, "4h": 0.14, "1d": 0.05 };
+    const noiseMap = { "1m": 0.88, "5m": 0.68, "15m": 0.48, "1h": 0.28, "4h": 0.14, "1d": 0.05, "1w": 0.02 };
     const toSignal = (base, noiseLevel, seed) => {
       const noisy = base * (1 - noiseLevel) + (r(seed) * 2 - 1) * noiseLevel;
       return noisy > 0.15 ? "bull" : noisy < -0.15 ? "bear" : "neutral";
     };
     const result = {};
-    ["1m", "5m", "15m", "1h", "4h", "1d"].forEach((tf, i) => {
+    ["1m", "5m", "15m", "1h", "4h", "1d", "1w"].forEach((tf, i) => {
       const n2 = noiseMap[tf];
       result[tf] = {
         trend: toSignal(trendBase, n2, i + 500),
@@ -3209,6 +3197,7 @@ function MTFPanel({ d, tickerSeed }) {
     { tf: "1H", label: "1 Hora", data: mtf["1h"] || {} },
     { tf: "4H", label: "4 Horas", data: mtf["4h"] || {} },
     { tf: "1D", label: "Diario", data: mtf["1d"] || {} },
+    { tf: "1W", label: "Semanal", data: mtf["1w"] || {} },
   ];
   const signalIcons = { bull: "▲", bear: "▼", neutral: "─" };
   const signalColors = { bull: T.bull, bear: T.bear, neutral: T.muted };
@@ -4612,6 +4601,13 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
               <WeisWavePanel d={d} />
               <div style={{ height: 10 }} />
               <WolfeWavesPanel d={d} />
+              <div style={{ height: 10 }} />
+              {d?.volume_delta_mtf && (
+                <div>
+                  <VolumeDeltaTable ticker={ticker} data={d.volume_delta_mtf} />
+                </div>
+              )}
+              <div style={{ height: 10 }} />
               <VolatilitySurface d={d} tickerSeed={tickerSeed} />
               <div style={{ height: 10 }} />
               <div style={{ height: 400, marginTop: 12 }}>

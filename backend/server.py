@@ -6395,6 +6395,67 @@ def _calc_weis_wave(daily_hist) -> dict:
         logging.warning(f"Weis Wave error: {e}")
     
     return {"waves": [], "current_wave": "none", "score": 5, "volume_trend": "normal", "current_volume": 0, "current_return_pct": 0}
+def _calc_volume_delta(df: pd.DataFrame) -> dict:
+    if df is None or len(df) < 2:
+        return {'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True}
+    row = df.iloc[-2]
+    high = float(row.get('High', 0))
+    low = float(row.get('Low', 0))
+    close = float(row.get('Close', 0))
+    vol = float(row.get('Volume', 0))
+    range_ = high - low
+    if range_ == 0 or math.isnan(range_) or vol == 0:
+        return {'buy_pct': None, 'sell_pct': None, 'vol': vol, 'no_range': True}
+    buy_vol = vol * (close - low) / range_
+    sell_vol = vol * (high - close) / range_
+    total = buy_vol + sell_vol
+    buy_pct = round((buy_vol / total) * 100) if total > 0 else 50
+    sell_pct = 100 - buy_pct
+    return {'buy_pct': buy_pct, 'sell_pct': sell_pct, 'vol': round(vol, 0), 'no_range': False}
+
+def _calc_countdown(tf_label: str) -> str:
+    import time
+    now = time.time()
+    tf_seconds = {'1m': 60, '5m': 300, '15m': 900, '1H': 3600, '4H': 14400, '1D': 86400, '1W': 604800}
+    tf_sec = tf_seconds.get(tf_label, 60)
+    remain = int(tf_sec - (now % tf_sec))
+    if tf_label == '1m': return f'{remain:02d}s'
+    elif tf_label in ('5m', '15m'):
+        m, s = divmod(remain, 60)
+        return f'{m:02d}:{s:02d}'
+    elif tf_label in ('1H', '4H', '1D'):
+        h, rem = divmod(remain, 3600)
+        m, s = divmod(rem, 60)
+        return f'{h:02d}:{m:02d}:{s:02d}'
+    else:
+        d = remain // 86400
+        rem = remain % 86400
+        h, rem2 = divmod(rem, 3600)
+        m = rem2 // 60
+        return f'{d}d {h:02d}h'
+
+def _fmt_volume(vol: float) -> str:
+    if vol is None or vol == 0: return '-'
+    if vol >= 1_000_000: return f'{vol / 1_000_000:.1f}M'
+    if vol >= 1_000: return f'{vol / 1_000:.0f}k'
+    return f'{vol:.0f}'
+
+def _get_volume_delta_mtf(ticker: str) -> list:
+    timeframes = [('1m', '1m', '1d'), ('5m', '5m', '5d'), ('15m', '15m', '5d'), ('1H', '1h', '30d'), ('4H', '4h', '60d'), ('1D', '1d', '1y'), ('1W', '1wk', '5y')]
+    results = []
+    for tf_label, interval, period in timeframes:
+        try:
+            df = _load_history(ticker, period=period, interval=interval)
+            if df is None or df.empty:
+                results.append({'tf': tf_label, 'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True, 'countdown': _calc_countdown(tf_label)})
+                continue
+            data = _calc_volume_delta(df)
+            results.append({'tf': tf_label, 'buy_pct': data.get('buy_pct'), 'sell_pct': data.get('sell_pct'), 'vol': data.get('vol', 0), 'no_range': data.get('no_range', True), 'countdown': _calc_countdown(tf_label)})
+        except Exception as e:
+            logging.warning(f'Volume Delta error {ticker} {tf_label}: {e}')
+            results.append({'tf': tf_label, 'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True, 'countdown': _calc_countdown(tf_label)})
+    return results
+
 
 
 def _detect_wyckoff_phase(daily_hist) -> dict:
@@ -6480,26 +6541,26 @@ def _detect_wyckoff_phase(daily_hist) -> dict:
 
 def _overton_zone(score: int, news_impact: float) -> tuple:
     sign = '+' if news_impact >= 0 else ''
-    # Escala actualizada: 160 puntos (75% = 120, 55% = 88, 38% = 61, 20% = 32)
-    if score >= 120:
+    # Escala actualizada: 165 puntos (45% = 74 COMPRAR, 40% = 66 VENDER)
+    if score >= 74:  # 45%
         return ("Popular — Comprar",
                 f"Narrativa de mercado firmemente alcista. Las noticias recientes ({sign}{news_impact:.1f}%) "
-                "refuerzan el momentum. Flujos institucionales entran. Zona de compra con convicción; gestiona el tamaño de posición.")
-    elif score >= 88:
+                f"refuerzan el momentum. Score >= 45% ({score}/165 = {score/1.65:.0f}%). Zona de compra con convicción; gestiona el tamaño de posición.")
+    elif score >= 66:  # 40%
         return ("Aceptable — Vigilar",
-                f"Señales mixtas con ligero sesgo positivo. Las noticias aportan {sign}{news_impact:.1f}% al sesgo "
+                f"Señales mixtas con ligero sesgo positivo. Score {score}/165 ({score/1.65:.0f}%). Las noticias aportan {sign}{news_impact:.1f}% al sesgo "
                 "pero falta confirmación técnica plena. Espera catalizador o cruce WMA para entrar.")
-    elif score >= 61:
+    elif score >= 33:  # 20%
         return ("Sensible — Esperar",
-                f"Narrativa en disputa. Noticias generan ruido ({sign}{news_impact:.1f}%) sin dirección clara. "
-                "Analistas divididos. Evita nueva exposición hasta que el score supere 88.")
-    elif score >= 32:
+                f"Narrativa en disputa. Score {score}/165 ({score/1.65:.0f}%). Noticias generan ruido ({sign}{news_impact:.1f}%) sin dirección clara. "
+                "Analistas divididos. Evita nueva exposición hasta que el score supere 74.")
+    elif score >= 33:
         return ("Radical — Reducir",
-                f"Sesgo bajista dominante. Noticias en negativo ({news_impact:.1f}%) aceleran la narrativa. "
+                f"Sesgo bajista dominante. Score {score}/165 ({score/1.65:.0f}%). Noticias en negativo ({news_impact:.1f}%) aceleran la narrativa. "
                 "Reduce exposición y ajusta stops.")
     else:
         return ("Impensable — Vender",
-                f"Pánico generalizado. Noticias ({news_impact:.1f}%) amplían el deterioro fundamental. "
+                f"Pánico generalizado. Score {score}/165 ({score/1.65:.0f}%). Noticias ({news_impact:.1f}%) amplían el deterioro fundamental. "
                 "VIX elevado, Coppock negativo, precio bajo WMA. Sal de posiciones largas.")
 def _compute_multifactor_score(
     price_vs_wma, coppock_signal, sharpe, cur_vix, cur_yield,
@@ -6575,8 +6636,8 @@ def _compute_multifactor_score(
     wyck_score = wyckoff_data.get("score", 5)
     wyck_score = max(0, min(10, wyck_score))
 
-    # ── SCORE TOTAL (160 puntos) ─────────────────────────────────────
-    total = max(0, min(160, round(f + m + s + u + ew_score + cv_score + ichi_score + ww_score + weis_score + wyck_score)))
+    # ── SCORE TOTAL (165 puntos) ─────────────────────────────────────
+    total = max(0, min(165, round(f + m + s + u + ew_score + cv_score + ichi_score + ww_score + weis_score + wyck_score)))
     return {
         "score": total,
         "breakdown": {
@@ -6897,6 +6958,7 @@ async def get_overton_signal(ticker: str):
         wolfe_data = _detect_wolfe_wave(hist_daily)
         weis_data = _calc_weis_wave(hist_daily)
         wyckoff_data = _detect_wyckoff_phase(hist_daily)
+        volume_delta_mtf = _get_volume_delta_mtf(ticker)
 
         # ── 9. Score multi-factor ─────────────────────────────────────
         score_result = _compute_multifactor_score(
@@ -6916,11 +6978,12 @@ async def get_overton_signal(ticker: str):
 
         ov_zone, ov_desc = _overton_zone(score, news_impact_total)
 
-        if score >= 120:
+        # Umbrales actualizados: 165 puntos (45% = 74 COMPRAR, 40% = 66 VENDER)
+        if score >= 74:  # >= 45%
             action = "buy"
-        elif score >= 88:
+        elif score >= 66:  # >= 40%
             action = "hold"
-        elif score >= 61:
+        elif score >= 33:
             action = "watch"
         else:
             action = "sell"
@@ -7055,8 +7118,16 @@ async def get_overton_signal(ticker: str):
             "atr_pct":         sanitize_float(atr_pct_val),
             "market_regime":   market_regime,
             "iv_rank":         sanitize_float(iv_rank_val),
+            # Indicadores técnicos avanzados (datos completos para Score Breakdown)
+            "elliott":         elliott_data,
+            "candle_pattern":  candle_data,
+            "ichimoku":        ichimoku_data,
+            "wolfe_waves":     wolfe_data,
+            "weis_waves":      weis_data,
+            "wyckoff":         wyckoff_data,
             # Point of Control
             "poc_price":       sanitize_float(poc_price),
+            "volume_delta_mtf": volume_delta_mtf,
         }
 
     except HTTPException:
