@@ -2378,7 +2378,8 @@ function PriceChart({ d, height = 240 }) {
   }, []);
 
   const prices = d.price_history || [];
-  const wma = d.wma_history || [];
+  const wma20 = d.wma20_history || [];
+  const wma30 = d.wma_history || [];
   const buys = d.buy_signals || [];
   const sells = d.sell_signals || [];
 
@@ -2386,7 +2387,7 @@ function PriceChart({ d, height = 240 }) {
     <div style={{ color: T.muted, fontSize: 11, padding: 12, textAlign: "center" }}>Sin datos de precio histórico</div>
   );
 
-  const allV = [...prices, ...wma.filter(Boolean)];
+  const allV = [...prices, ...wma20.filter(Boolean), ...wma30.filter(Boolean)];
   const mn = Math.min(...allV), mx = Math.max(...allV), range = mx - mn || 1;
   const pad = { t: 18, b: 36, l: 52, r: 12 };
   const W = w - pad.l - pad.r, H = height - pad.t - pad.b;
@@ -2398,7 +2399,11 @@ function PriceChart({ d, height = 240 }) {
   const pricePath = prices.map((v, i) => `${i === 0 ? "M" : "L"}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(" ");
   const areaPath = prices.map((v, i) => `${i === 0 ? "M" : "L"}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(" ")
     + ` L${px(n - 1)},${pad.t + H} L${px(0)},${pad.t + H} Z`;
-  const wmaPath = wma.reduce((acc, v, i) => {
+  const wma20Path = wma20.reduce((acc, v, i) => {
+    if (v === null) return acc;
+    return acc + (acc === "" ? `M${px(i).toFixed(1)},${py(v).toFixed(1)}` : `L${px(i).toFixed(1)},${py(v).toFixed(1)}`);
+  }, "");
+  const wma30Path = wma30.reduce((acc, v, i) => {
     if (v === null) return acc;
     return acc + (acc === "" ? `M${px(i).toFixed(1)},${py(v).toFixed(1)}` : `L${px(i).toFixed(1)},${py(v).toFixed(1)}`);
   }, "");
@@ -2411,7 +2416,7 @@ function PriceChart({ d, height = 240 }) {
     if (!rect) return;
     const xi = e.clientX - rect.left - pad.l;
     const idx = Math.max(0, Math.min(n - 1, Math.round((xi / W) * (n - 1))));
-    setTip({ idx, x: px(idx), y: py(prices[idx]), price: prices[idx], wmaV: wma[idx] });
+    setTip({ idx, x: px(idx), y: py(prices[idx]), price: prices[idx], wma20V: wma20[idx], wma30V: wma30[idx] });
   };
 
   const legendY = height - 14;
@@ -2441,7 +2446,8 @@ function PriceChart({ d, height = 240 }) {
         <path d={areaPath} fill="url(#priceAreaGrad)" />
         <path d={pricePath} fill="none" stroke={lineColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
 
-        {wmaPath && <path d={wmaPath} fill="none" stroke={T.warn} strokeWidth="1.5" strokeDasharray="5,3" />}
+        {wma20Path && <path d={wma20Path} fill="none" stroke={T.cyan} strokeWidth="1.5" strokeDasharray="4,2" opacity="0.9" />}
+        {wma30Path && <path d={wma30Path} fill="none" stroke={T.warn} strokeWidth="1.5" strokeDasharray="5,3" opacity="0.7" />}
 
         {buys.map(i => <polygon key={`b${i}`} points={`${px(i)},${py(prices[i]) + 10} ${px(i) - 6},${py(prices[i]) + 22} ${px(i) + 6},${py(prices[i]) + 22}`} fill={T.bull} opacity="0.9" />)}
         {sells.map(i => <polygon key={`s${i}`} points={`${px(i)},${py(prices[i]) - 10} ${px(i) - 6},${py(prices[i]) - 22} ${px(i) + 6},${py(prices[i]) - 22}`} fill={T.bear} opacity="0.9" />)}
@@ -2457,22 +2463,27 @@ function PriceChart({ d, height = 240 }) {
           <line x1={pad.l} y1={legendY} x2={pad.l + 20} y2={legendY} stroke={lineColor} strokeWidth="2" />
           <text x={pad.l + 24} y={legendY + 3} fontSize="9" fill={lineColor} fontWeight="700">Precio</text>
 
-          {/* WMA */}
-          {wmaPath && <>
-            <line x1={pad.l + 70} y1={legendY} x2={pad.l + 90} y2={legendY} stroke={T.warn} strokeWidth="1.5" strokeDasharray="5,3" />
-            <text x={pad.l + 94} y={legendY + 3} fontSize="9" fill={T.warn} fontWeight="700">WMA-30</text>
+          {/* WMA-20 */}
+          {wma20Path && <>
+            <line x1={pad.l + 70} y1={legendY} x2={pad.l + 90} y2={legendY} stroke={T.cyan} strokeWidth="1.5" strokeDasharray="4,2" />
+            <text x={pad.l + 94} y={legendY + 3} fontSize="9" fill={T.cyan} fontWeight="700">WMA-20</text>
+          </>}
+          {/* WMA-30 */}
+          {wma30Path && <>
+            <line x1={pad.l + 148} y1={legendY} x2={pad.l + 168} y2={legendY} stroke={T.warn} strokeWidth="1.5" strokeDasharray="5,3" />
+            <text x={pad.l + 172} y={legendY + 3} fontSize="9" fill={T.warn} fontWeight="700">WMA-30</text>
           </>}
 
           {/* VWAP */}
           {vwapPrice && <>
-            <line x1={pad.l + 148} y1={legendY} x2={pad.l + 168} y2={legendY} stroke={T.gold} strokeWidth="1.2" strokeDasharray="4,3" />
-            <text x={pad.l + 172} y={legendY + 3} fontSize="9" fill={T.gold} fontWeight="700">VWAP</text>
+            <line x1={pad.l + 226} y1={legendY} x2={pad.l + 246} y2={legendY} stroke={T.gold} strokeWidth="1.2" strokeDasharray="4,3" />
+            <text x={pad.l + 250} y={legendY + 3} fontSize="9" fill={T.gold} fontWeight="700">VWAP</text>
           </>}
 
           {/* Buy signal */}
           {buys.length > 0 && <>
-            <polygon points={`${pad.l + 228},${legendY - 4} ${pad.l + 222},${legendY + 5} ${pad.l + 234},${legendY + 5}`} fill={T.bull} />
-            <text x={pad.l + 238} y={legendY + 3} fontSize="9" fill={T.bull} fontWeight="700">Buy</text>
+            <polygon points={`${pad.l + 304},${legendY - 4} ${pad.l + 298},${legendY + 5} ${pad.l + 310},${legendY + 5}`} fill={T.bull} />
+            <text x={pad.l + 314} y={legendY + 3} fontSize="9" fill={T.bull} fontWeight="700">Buy</text>
           </>}
 
           {/* Sell signal */}
@@ -4449,7 +4460,8 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
             {[
               { label: "Precio", value: usd(d.current_price), sub: pct(d.pct_change), color: priceClr },
-              { label: "WMA-30", value: usd(d.wma30), sub: isAbove ? "↑ sobre WMA" : "↓ bajo WMA", color: isAbove ? T.bull : T.bear },
+              { label: "WMA-20", value: usd(d.wma20), sub: isAbove ? "↑ sobre WMA-20" : "↓ bajo WMA-20", color: isAbove ? T.bull : T.bear },
+              { label: "WMA-30", value: usd(d.wma30), sub: isAbove ? "↑ sobre WMA-30" : "↓ bajo WMA-30", color: isAbove ? T.bull : T.bear },
               { label: "Adaptive", value: `${sf(d.score, 50).toFixed(0)}/100`, sub: "Score ponderado", color: T.accent },
               { label: "Régimen", value: (d.market_regime || "—").toUpperCase(), sub: `ADX ${sf(d.adx, 0).toFixed(0)}`, color: T.regime[d.market_regime] || T.muted },
               { label: "POC", value: d.poc_price ? `$${d.poc_price.toFixed(2)}` : "—", sub: d.current_price > (d.poc_price || 0) ? "▲ Sobre POC" : "▼ Bajo POC", color: d.current_price > (d.poc_price || 0) ? T.bull : T.bear },
@@ -4557,7 +4569,7 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
 
               {/* Gráfico de precio con leyendas */}
               <div style={card}>
-                <SectionTitle icon="📈">Precio + WMA-30 + VWAP · Señales y Noticias</SectionTitle>
+                <SectionTitle icon="📈">Precio + WMA-20/30 + VWAP · Señales y Noticias</SectionTitle>
                 <PriceChart d={d} height={240} />
               </div>
 

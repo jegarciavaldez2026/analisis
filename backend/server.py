@@ -7143,6 +7143,7 @@ async def get_overton_signal(ticker: str):
             # Series históricas
             "price_history":   [round(p, 2) for p in prices],
             "wma_history":     [round(v, 2) if v is not None else None for v in wma_series],
+            "wma20_history":   [round(v, 2) if v is not None else None for v in wma20_series],
             "coppock_history": [round(v, 4) if v is not None else None for v in copp_series],
             "vix_history":     [sanitize_float(v) for v in vix_series],
             "yield_history":   [sanitize_float(v) for v in yield_series],
