@@ -3853,16 +3853,16 @@ function WolfeWavesPanel({ d }) {
     const avgAmp = (ampP2P3 + ampP4P5) / 2;
     
     return {
-      points: pts,
+      points: pts,  // Array para el gráfico
       epa: { x: totalX, y: epaY },
       apex: { x: apexX, y: apexY },
       type: isBullPattern ? "bull" : "bear",
       quality,
       totalX,
-      // Extensiones para demo
+      // Extensiones para demo (usar wavePoints para no sobreescribir)
       detected: true,
       direction: isBullPattern ? "bull" : "bear",
-      points: { p1, p2, p3, p4, p5, epa: epaY },
+      wavePoints: { p1, p2, p3, p4, p5, epa: epaY },  // Objeto con puntos nombrados
       extensions: {
         fib_100: p5 + moveBase * 1.0,
         fib_127: p5 + moveBase * 1.272,
@@ -3961,8 +3961,9 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>📍 Datos del patrón actual</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
               {["P1", "P2", "P3", "P4", "P5", "EPA"].map((lbl, i) => {
-                const pts = d.wolfe_waves?.points || pattern.points || {};
-                const val = lbl === "EPA" ? (pts.epa || pattern.epa?.y) : (pts[lbl.toLowerCase()] || pts[lbl.toLowerCase()]);
+                const realPts = d.wolfe_waves?.points || {};
+                const demoPts = pattern.wavePoints || {};
+                const val = lbl === "EPA" ? (realPts.epa || pattern.epa?.y || demoPts.epa) : (realPts[lbl.toLowerCase()] || demoPts[lbl.toLowerCase()]);
                 const roles = { P1: "Base", P2: "Techo", P3: "Suelo", P4: "Techo bajo", P5: "Entrada", EPA: "Objetivo" };
                 return (
                   <div key={lbl} style={{ textAlign: "center" }}>
@@ -4018,8 +4019,8 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>🗺️ Mapa de precios completo</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {[
-                { lbl: "P5 ENTRADA", val: d.wolfe_waves?.points?.p5 || pattern.points?.p5, color: T.bear, icon: "←" },
-                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves?.points?.epa || pattern.epa?.y, color: T.purple, icon: "⇒" },
+                { lbl: "P5 ENTRADA", val: d.wolfe_waves?.points?.p5 || pattern.wavePoints?.p5, color: T.bear, icon: "←" },
+                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves?.points?.epa || pattern.epa?.y || pattern.wavePoints?.epa, color: T.purple, icon: "⇒" },
                 { lbl: "Fib 127.2% (primera resistencia)", val: d.wolfe_waves?.extensions?.fib_127 || pattern.extensions?.fib_127, color: T.bull, icon: "↑" },
                 { lbl: "Fib 161.8% (objetivo medio)", val: d.wolfe_waves?.extensions?.fib_161 || pattern.extensions?.fib_161, color: T.warn, icon: "↑" },
                 { lbl: "Simetría de onda", val: d.wolfe_waves?.extensions?.symmetry || pattern.extensions?.symmetry, color: T.cyan, icon: "↑" },
