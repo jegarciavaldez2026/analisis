@@ -3923,6 +3923,107 @@ function WolfeWavesPanel({ d }) {
           })}
         </svg>
       </div>
+
+      {/* ── EXTENSIONES EPA — Onda de Wolfe ───────────────────────────────── */}
+      {d?.wolfe_waves?.detected && d.wolfe_waves?.extensions && (
+        <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+          <SectionTitle icon="📐" badge={pill(T.purple, "3 Métodos")}>Extensiones EPA — Onda de Wolfe</SectionTitle>
+          
+          {/* Datos del patrón actual */}
+          <div style={{ background: `${T.accent}08`, border: `1px solid ${T.accent}20`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>📍 Datos del patrón actual</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
+              {["P1", "P2", "P3", "P4", "P5", "EPA"].map((lbl, i) => {
+                const pts = d.wolfe_waves.points || {};
+                const val = lbl === "EPA" ? pts.epa : pts[lbl.toLowerCase()];
+                const roles = { P1: "Base", P2: "Techo", P3: "Suelo", P4: "Techo bajo", P5: "Entrada", EPA: "Objetivo" };
+                return (
+                  <div key={lbl} style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>{lbl} — {roles[lbl]}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: lbl === "EPA" ? T.purple : T.text, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Método 1: Fibonacci */}
+          <div style={{ background: T.card2, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: T.warn, textTransform: "uppercase", marginBottom: 6 }}>📐 Método 1: Extensiones Fibonacci desde P5</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {[
+                { lbl: "100% (EPA)", fib: 1.0, color: T.purple },
+                { lbl: "127.2%", fib: 1.272, color: T.bull },
+                { lbl: "161.8%", fib: 1.618, color: T.warn },
+                { lbl: "200%", fib: 2.0, color: T.bear },
+              ].map(({ lbl, fib, color }) => {
+                const exts = d.wolfe_waves.extensions || {};
+                const key = fib === 1.0 ? "fib_100" : fib === 1.272 ? "fib_127" : fib === 1.618 ? "fib_161" : "fib_200";
+                const val = exts[key];
+                return (
+                  <div key={lbl} style={{ background: `${color}08`, border: `1px solid ${color}30`, borderRadius: 6, padding: 8, textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: color, fontWeight: 700, marginBottom: 3 }}>{lbl}</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: color, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
+                    {fib === 1.618 && <div style={{ fontSize: 8, color: T.muted, marginTop: 2 }}>⭐ Más respetado</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Método 2: Simetría */}
+          <div style={{ background: T.card2, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: T.cyan, textTransform: "uppercase", marginBottom: 6 }}>📐 Método 2: Simetría de Onda</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 9, color: T.muted, marginBottom: 3 }}>Amplitud P2→P3: <span style={{ fontWeight: 700, color: T.text }}>${(d.wolfe_waves.amplitudes?.p2_p3 || 0).toFixed(2)}</span></div>
+                <div style={{ fontSize: 9, color: T.muted }}>Amplitud P4→P5: <span style={{ fontWeight: 700, color: T.text }}>${(d.wolfe_waves.amplitudes?.p4_p5 || 0).toFixed(2)}</span></div>
+              </div>
+              <div style={{ background: `${T.cyan}08`, border: `1px solid ${T.cyan}30`, borderRadius: 6, padding: "8px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: 9, color: T.cyan, fontWeight: 700, marginBottom: 2 }}>Ext. Simétrica</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: T.cyan, fontFamily: "monospace" }}>${(d.wolfe_waves.extensions?.symmetry || 0).toFixed(2)}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Mapa de precios */}
+          <div style={{ background: `${T.accent}08`, border: `1px solid ${T.accent}20`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>🗺️ Mapa de precios completo</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {[
+                { lbl: "P5 ENTRADA", val: d.wolfe_waves.points?.p5, color: T.bear, icon: "←" },
+                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves.points?.epa, color: T.purple, icon: "⇒" },
+                { lbl: "Fib 127.2% (primera resistencia)", val: d.wolfe_waves.extensions?.fib_127, color: T.bull, icon: "↑" },
+                { lbl: "Fib 161.8% (objetivo medio)", val: d.wolfe_waves.extensions?.fib_161, color: T.warn, icon: "↑" },
+                { lbl: "Simetría de onda", val: d.wolfe_waves.extensions?.symmetry, color: T.cyan, icon: "↑" },
+                { lbl: "Fib 200% (techo máximo)", val: d.wolfe_waves.extensions?.fib_200, color: T.bear, icon: "⊤" },
+              ].map(({ lbl, val, color, icon }) => (
+                <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${color}05`, borderRadius: 4 }}>
+                  <div style={{ fontSize: 11, color: color, fontWeight: 700, width: 16 }}>{icon}</div>
+                  <div style={{ flex: 1, fontSize: 10, color: T.textSec }}>{lbl}</div>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: color, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Consideraciones */}
+          <div style={{ background: `${T.warn}08`, border: `1px solid ${T.warn}30`, borderRadius: 8, padding: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: T.warn, textTransform: "uppercase", marginBottom: 6 }}>⚠️ Consideraciones importantes</div>
+            <div style={{ fontSize: 10, color: T.textSec, lineHeight: 1.6 }}>
+              <div style={{ marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, color: T.text }}>1. Calidad {d.wolfe_waves.quality || 75}%:</span> Hay un {100 - (d.wolfe_waves.quality || 75)}% de probabilidad de fallo del patrón.
+              </div>
+              <div style={{ marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, color: T.text }}>2. Después del EPA:</span> {d.wolfe_waves.direction === "bull" ? "El precio puede continuar hacia las extensiones si rompe con fuerza." : "El precio puede caer hacia las extensiones si rompe el EPA."}
+              </div>
+              <div>
+                <span style={{ fontWeight: 700, color: T.text }}>3. El EPA no es el techo absoluto:</span> Es el primer punto de decisión. Las extensiones Fibonacci dan un mapa de hasta dónde puede llegar.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

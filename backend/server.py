@@ -6273,9 +6273,9 @@ def _get_ichimoku_veredicto(current: dict) -> dict:
     }
 def _detect_wolfe_wave(daily_hist) -> dict:
     """
-    Detecta patrones de Wolfe Waves.
+    Detecta patrones de Wolfe Waves con extensiones EPA.
     Returns: {"detected": bool, "direction": "bull|bear|none", "score": int, 
-              "target": float, "entry": float}
+              "target": float, "entry": float, "points": dict, "extensions": dict}
     """
     try:
         if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
@@ -6291,25 +6291,61 @@ def _detect_wolfe_wave(daily_hist) -> dict:
             troughs = []
             for i in range(2, len(high) - 2):
                 if high.iloc[i] > high.iloc[i-1] and high.iloc[i] > high.iloc[i+1]:
-                    peaks.append((i, high.iloc[i]))
+                    peaks.append((i, float(high.iloc[i])))
                 if low.iloc[i] < low.iloc[i-1] and low.iloc[i] < low.iloc[i+1]:
-                    troughs.append((i, low.iloc[i]))
+                    troughs.append((i, float(low.iloc[i])))
+            
+            current_price = float(close.iloc[-1])
             
             if len(peaks) >= 3 and len(troughs) >= 2:
                 # Wolfe alcista: mínimos crecientes + máximos decrecientes
                 last_troughs = troughs[-3:]
                 last_peaks = peaks[-2:]
                 
-                # Check para Wolfe alcista
                 if (last_troughs[2][1] > last_troughs[1][1] > last_troughs[0][1] and
                     last_peaks[1][1] < last_peaks[0][1]):
-                    target = last_peaks[0][1] + (last_peaks[0][1] - last_troughs[1][1]) * 0.5
+                    # P1-P5 para Wolfe alcista
+                    p1 = last_peaks[0][1]  # Base inicial
+                    p2 = last_troughs[0][1]  # Techo
+                    p3 = last_troughs[1][1]  # Suelo
+                    p4 = last_peaks[1][1]  # Techo bajo
+                    p5 = last_troughs[2][1]  # Entrada (más reciente)
+                    
+                    # EPA: proyección de la línea 1-4
+                    slope_14 = (p4 - p1) / (last_peaks[1][0] - last_peaks[0][0]) if last_peaks[1][0] != last_peaks[0][0] else 0
+                    epa = p1 + slope_14 * (last_troughs[2][0] - last_peaks[0][0])
+                    
+                    # Calcular extensiones Fibonacci desde P5 hacia EPA
+                    move_base = epa - p5
+                    
+                    # Simetría de onda
+                    amp_p2p3 = abs(p2 - p3)
+                    amp_p4p5 = abs(p4 - p5)
+                    avg_amplitude = (amp_p2p3 + amp_p4p5) / 2
+                    
                     return {
                         "detected": True,
                         "direction": "bull",
                         "score": 8,
-                        "target": round(target, 2),
-                        "entry": round(close.iloc[-1], 2),
+                        "target": round(epa, 2),
+                        "entry": round(current_price, 2),
+                        "points": {
+                            "p1": round(p1, 2), "p2": round(p2, 2), "p3": round(p3, 2),
+                            "p4": round(p4, 2), "p5": round(p5, 2), "epa": round(epa, 2),
+                        },
+                        "extensions": {
+                            "fib_100": round(p5 + move_base * 1.0, 2),  # EPA
+                            "fib_127": round(p5 + move_base * 1.272, 2),
+                            "fib_161": round(p5 + move_base * 1.618, 2),
+                            "fib_200": round(p5 + move_base * 2.0, 2),
+                            "symmetry": round(epa + avg_amplitude, 2),
+                        },
+                        "amplitudes": {
+                            "p2_p3": round(amp_p2p3, 2),
+                            "p4_p5": round(amp_p4p5, 2),
+                            "avg": round(avg_amplitude, 2),
+                        },
+                        "quality": 75,
                     }
             
             if len(peaks) >= 2 and len(troughs) >= 3:
@@ -6319,18 +6355,54 @@ def _detect_wolfe_wave(daily_hist) -> dict:
                 
                 if (last_peaks[2][1] > last_peaks[1][1] > last_peaks[0][1] and
                     last_troughs[1][1] > last_troughs[0][1]):
-                    target = last_troughs[0][1] - (last_troughs[0][1] - last_peaks[1][1]) * 0.5
+                    # P1-P5 para Wolfe bajista
+                    p1 = last_troughs[0][1]  # Base inicial
+                    p2 = last_peaks[0][1]  # Techo
+                    p3 = last_peaks[1][1]  # Suelo
+                    p4 = last_troughs[1][1]  # Techo bajo
+                    p5 = last_peaks[2][1]  # Entrada (más reciente)
+                    
+                    # EPA: proyección de la línea 1-4
+                    slope_14 = (p4 - p1) / (last_troughs[1][0] - last_troughs[0][0]) if last_troughs[1][0] != last_troughs[0][0] else 0
+                    epa = p1 + slope_14 * (last_peaks[2][0] - last_troughs[0][0])
+                    
+                    # Calcular extensiones Fibonacci desde P5 hacia EPA
+                    move_base = p5 - epa  # En bajista, P5 > EPA
+                    
+                    # Simetría de onda
+                    amp_p2p3 = abs(p2 - p3)
+                    amp_p4p5 = abs(p4 - p5)
+                    avg_amplitude = (amp_p2p3 + amp_p4p5) / 2
+                    
                     return {
                         "detected": True,
                         "direction": "bear",
                         "score": 3,
-                        "target": round(target, 2),
-                        "entry": round(close.iloc[-1], 2),
+                        "target": round(epa, 2),
+                        "entry": round(current_price, 2),
+                        "points": {
+                            "p1": round(p1, 2), "p2": round(p2, 2), "p3": round(p3, 2),
+                            "p4": round(p4, 2), "p5": round(p5, 2), "epa": round(epa, 2),
+                        },
+                        "extensions": {
+                            "fib_100": round(p5 - move_base * 1.0, 2),  # EPA
+                            "fib_127": round(p5 - move_base * 1.272, 2),
+                            "fib_161": round(p5 - move_base * 1.618, 2),
+                            "fib_200": round(p5 - move_base * 2.0, 2),
+                            "symmetry": round(epa - avg_amplitude, 2),
+                        },
+                        "amplitudes": {
+                            "p2_p3": round(amp_p2p3, 2),
+                            "p4_p5": round(amp_p4p5, 2),
+                            "avg": round(avg_amplitude, 2),
+                        },
+                        "quality": 75,
                     }
     except Exception as e:
         logging.warning(f"Wolfe Wave error: {e}")
     
-    return {"detected": False, "direction": "none", "score": 5, "target": 0, "entry": 0}
+    return {"detected": False, "direction": "none", "score": 5, "target": 0, "entry": 0, 
+            "points": {}, "extensions": {}, "amplitudes": {}, "quality": 0}
 
 
 def _calc_weis_wave(daily_hist) -> dict:
