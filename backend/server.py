@@ -6569,6 +6569,7 @@ def _compute_multifactor_score(
     pcr, fg_proxy,
     ofi, vwap_info, bas_pct, gex_proxy, mi_proxy, beta,
     elliott_data, candle_data, ichimoku_data, wolfe_data, weis_data, wyckoff_data,
+    volume_delta_mtf=None,
 ) -> dict:
     # ── FUNDAMENTAL (máx 30) ─────────────────────────────────────────
     f = 0.0
@@ -6636,7 +6637,32 @@ def _compute_multifactor_score(
     wyck_score = wyckoff_data.get("score", 5)
     wyck_score = max(0, min(10, wyck_score))
 
-    # ── SCORE TOTAL (165 puntos) ─────────────────────────────────────
+    # ── VOLUME DELTA SIGNAL (máx 5) ──────────────────────────────────
+    vd_score = 2.5  # Base neutral
+    if volume_delta_mtf and len(volume_delta_mtf) >= 7:
+        # Obtener señales de 1D y 1W (mayor peso)
+        tf1d = next((t for t in volume_delta_mtf if t.get("tf") == "1D"), None)
+        tf1w = next((t for t in volume_delta_mtf if t.get("tf") == "1W"), None)
+        
+        buy_1d = tf1d.get("buy_pct", 50) if tf1d else 50
+        buy_1w = tf1w.get("buy_pct", 50) if tf1w else 50
+        
+        # Score basado en confluencia 1D + 1W
+        avg_buy = (buy_1d + buy_1w) / 2
+        if avg_buy >= 70:
+            vd_score = 5.0  # Compra fuerte en ambos
+        elif avg_buy >= 60:
+            vd_score = 4.0  # Compra moderada
+        elif avg_buy >= 45:
+            vd_score = 2.5  # Neutral
+        elif avg_buy >= 35:
+            vd_score = 1.5  # Venta moderada
+        else:
+            vd_score = 0.0  # Venta fuerte
+    
+    vd_score = max(0, min(5, vd_score))
+
+    # ── SCORE TOTAL (170 puntos) ─────────────────────────────────────
     total = max(0, min(165, round(f + m + s + u + ew_score + cv_score + ichi_score + ww_score + weis_score + wyck_score)))
     return {
         "score": total,
@@ -6651,6 +6677,7 @@ def _compute_multifactor_score(
             "wolfe_waves": round(ww_score, 1),
             "weis_waves": round(weis_score, 1),
             "wyckoff": round(wyck_score, 1),
+            "volume_delta": round(vd_score, 1),
         }
     }
 
@@ -6972,6 +6999,7 @@ async def get_overton_signal(ticker: str):
             elliott_data=elliott_data, candle_data=candle_data,
             ichimoku_data=ichimoku_data, wolfe_data=wolfe_data,
             weis_data=weis_data, wyckoff_data=wyckoff_data,
+            volume_delta_mtf=volume_delta_mtf,
         )
         score     = score_result["score"]
         breakdown = score_result["breakdown"]

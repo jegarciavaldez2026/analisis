@@ -107,13 +107,13 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
               <Text style={[styles.signalPillText, { color: signalColor(analysis.macro.signal) }]}>{signalIcon(analysis.macro.signal)}</Text>
             </View>
           </View>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>Estructura macro</Text>
-          <Text style={[styles.cardSub, { color: colors.textSecondary }]}>1D + 1W</Text>
+          <Text style={[styles.cardTitle, { color: colors.text, textAlign: "center" }]}>Estructura macro</Text>
+          <Text style={[styles.cardSub, { color: colors.textSecondary, textAlign: "center" }]}>1D + 1W</Text>
           <View style={styles.cardStats}>
-            <Text style={[styles.statValue, { color: colors.text }]}>{analysis.macroWeight}{"%"} volumen</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>{(analysis.macro.vol / 1000).toFixed(0)}k total</Text>
+            <Text style={[styles.statValue, { color: colors.text, textAlign: "center" }]}>{analysis.macro.weight}{"%"} volumen</Text>
+            <Text style={[styles.statLabel, { color: colors.textSecondary, textAlign: "center" }]}>{(analysis.macro.vol / 1000).toFixed(0)}k total</Text>
           </View>
-          <Text style={[styles.cardInsight, { color: analysis.macro.signal === "bull" ? colors.bull : analysis.macro.signal === "bear" ? colors.bear : colors.muted }]}>
+          <Text style={[styles.cardInsight, { color: analysis.macro.signal === "bull" ? colors.bull : analysis.macro.signal === "bear" ? colors.bear : colors.muted, textAlign: "center" }]}>
             {analysis.macro.signal === "bull" ? "✅ Institucional comprando" : analysis.macro.signal === "bear" ? "⚠️ Institucional vendiendo" : "⚪ Sin dirección clara"}
           </Text>
         </View>
@@ -126,13 +126,13 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
               <Text style={[styles.signalPillText, { color: signalColor(analysis.mid.signal) }]}>{signalIcon(analysis.mid.signal)}</Text>
             </View>
           </View>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>Timeframe medio</Text>
-          <Text style={[styles.cardSub, { color: colors.textSecondary }]}>1H + 4H</Text>
+          <Text style={[styles.cardTitle, { color: colors.text, textAlign: "center" }]}>Timeframe medio</Text>
+          <Text style={[styles.cardSub, { color: colors.textSecondary, textAlign: "center" }]}>1H + 4H</Text>
           <View style={styles.cardStats}>
-            <Text style={[styles.statValue, { color: colors.text }]}>{analysis.mid.weight}{"%"} volumen</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>{(analysis.mid.vol / 1000).toFixed(0)}k total</Text>
+            <Text style={[styles.statValue, { color: colors.text, textAlign: "center" }]}>{analysis.mid.weight}{"%"} volumen</Text>
+            <Text style={[styles.statLabel, { color: colors.textSecondary, textAlign: "center" }]}>{(analysis.mid.vol / 1000).toFixed(0)}k total</Text>
           </View>
-          <Text style={[styles.cardInsight, { color: analysis.mid.signal === "bull" ? colors.bull : analysis.mid.signal === "bear" ? colors.bear : colors.muted }]}>
+          <Text style={[styles.cardInsight, { color: analysis.mid.signal === "bull" ? colors.bull : analysis.mid.signal === "bear" ? colors.bear : colors.muted, textAlign: "center" }]}>
             {analysis.mid.signal === "bull" ? "⬆️ Momentum comprador" : analysis.mid.signal === "bear" ? "⬇️ Corrección en curso" : "⚪ Batalla compradores/vendedores"}
           </Text>
         </View>
@@ -146,56 +146,58 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
             <Text style={[styles.signalPillText, { color: signalColor(analysis.short.signal) }]}>{signalIcon(analysis.short.signal)}</Text>
           </View>
         </View>
-        <Text style={[styles.cardTitle, { color: colors.text }]}>Timeframe corto</Text>
-        <Text style={[styles.cardSub, { color: colors.textSecondary }]}>1m + 5m + 15m</Text>
+        <Text style={[styles.cardTitle, { color: colors.text, textAlign: "center" }]}>Timeframe corto</Text>
+        <Text style={[styles.cardSub, { color: colors.textSecondary, textAlign: "center" }]}>1m + 5m + 15m</Text>
         <View style={styles.cardStatsRow}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{analysis.short.weight}{"%"} volumen</Text>
+          <Text style={[styles.statValue, { color: colors.text, textAlign: "center" }]}>{analysis.short.weight}{"%"} volumen</Text>
           <Text style={[styles.statLabel, { color: colors.textSecondary }]}>•</Text>
-          <Text style={[styles.statValue, { color: colors.text }]}>{(analysis.short.vol / 1000).toFixed(0)}k total</Text>
+          <Text style={[styles.statValue, { color: colors.text, textAlign: "center" }]}>{(analysis.short.vol / 1000).toFixed(0)}k total</Text>
         </View>
-        <Text style={[styles.cardInsight, { color: analysis.short.signal === "bull" ? colors.bull : analysis.short.signal === "bear" ? colors.bear : colors.muted }]}>
+        <Text style={[styles.cardInsight, { color: analysis.short.signal === "bull" ? colors.bull : analysis.short.signal === "bear" ? colors.bear : colors.muted, textAlign: "center" }]}>
           {analysis.short.signal === "bull" ? "📈 Posible rebote inmediato" : analysis.short.signal === "bear" ? "📉 Presión vendedora" : "⚪ Ruido intradiario"}
         </Text>
       </View>
 
       {/* Conclusión */}
       <View style={[styles.conclusionCard, { backgroundColor: `${colors.accent}08`, borderColor: colors.accent, borderWidth: 2, borderRadius: 10, padding: 14, marginTop: 10 }]}>
-        <Text style={[styles.conclusionTitle, { color: colors.accent }]}>🎯 Conclusión</Text>
+        <Text style={[styles.conclusionTitle, { color: colors.accent, textAlign: "center" }]}>🎯 Conclusión</Text>
         <View style={styles.conclusionGrid}>
           <View style={styles.conclusionItem}>
-            <Text style={[styles.conclusionLabel, { color: colors.textSecondary }]}>Tendencia principal</Text>
-            <Text style={[styles.conclusionValue, { color: signalColor(analysis.macro.signal), fontWeight: "800" }]}>{analysis.mainTrend}</Text>
+            <Text style={[styles.conclusionLabel, { color: colors.textSecondary, textAlign: "center" }]}>Tendencia</Text>
+            <Text style={[styles.conclusionValue, { color: signalColor(analysis.macro.signal), fontWeight: "800", textAlign: "center" }]}>{analysis.mainTrend}</Text>
           </View>
+          <View style={styles.conclusionDivider} />
           <View style={styles.conclusionItem}>
-            <Text style={[styles.conclusionLabel, { color: colors.textSecondary }]}>Momento actual</Text>
-            <Text style={[styles.conclusionValue, { color: signalColor(analysis.mid.signal), fontWeight: "700" }]}>{analysis.momentum}</Text>
+            <Text style={[styles.conclusionLabel, { color: colors.textSecondary, textAlign: "center" }]}>Momento</Text>
+            <Text style={[styles.conclusionValue, { color: signalColor(analysis.mid.signal), fontWeight: "700", textAlign: "center" }]}>{analysis.momentum}</Text>
           </View>
+          <View style={styles.conclusionDivider} />
           <View style={styles.conclusionItem}>
-            <Text style={[styles.conclusionLabel, { color: colors.textSecondary }]}>Señal inmediata</Text>
-            <Text style={[styles.conclusionValue, { color: signalColor(analysis.short.signal), fontWeight: "700" }]}>{analysis.immediate}</Text>
+            <Text style={[styles.conclusionLabel, { color: colors.textSecondary, textAlign: "center" }]}>Señal</Text>
+            <Text style={[styles.conclusionValue, { color: signalColor(analysis.short.signal), fontWeight: "700", textAlign: "center" }]}>{analysis.immediate}</Text>
           </View>
         </View>
-        <Text style={[styles.scenarioText, { color: colors.text }]}>{analysis.scenario}</Text>
+        <Text style={[styles.scenarioText, { color: colors.text, textAlign: "center" }]}>{analysis.scenario}</Text>
       </View>
 
       {/* Recomendaciones */}
-      <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 12 }]}>💡 ¿Qué hacer?</Text>
+      <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 12, textAlign: "center" }]}>💡 ¿Qué hacer?</Text>
       <View style={styles.recGrid}>
         <View style={[styles.recCard, { backgroundColor: `${colors.bull}08`, borderColor: colors.bull, borderWidth: 1, borderRadius: 8, padding: 10, flex: 1, marginRight: 5 }]}>
-          <Text style={[styles.recTitle, { color: colors.bull, fontWeight: "800", fontSize: 10 }]}>Swing/Largo</Text>
-          <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11 }]}>🟢 Buscar entrada</Text>
-          <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9 }]}>tendencia alcista</Text>
+          <Text style={[styles.recTitle, { color: colors.bull, fontWeight: "800", fontSize: 10, textAlign: "center" }]}>Swing/Largo</Text>
+          <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11, textAlign: "center" }]}>🟢 Buscar entrada</Text>
+          <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9, textAlign: "center" }]}>tendencia alcista</Text>
         </View>
         <View style={[styles.recCard, { backgroundColor: `${colors.warn}08`, borderColor: colors.warn, borderWidth: 1, borderRadius: 8, padding: 10, flex: 1, marginLeft: 5 }]}>
-          <Text style={[styles.recTitle, { color: colors.warn, fontWeight: "800", fontSize: 10 }]}>Intradía</Text>
-          <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11 }]}>🟢 Operar en dirección</Text>
-          <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9 }]}>alineación TF</Text>
+          <Text style={[styles.recTitle, { color: colors.warn, fontWeight: "800", fontSize: 10, textAlign: "center" }]}>Intradía</Text>
+          <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11, textAlign: "center" }]}>🟢 Operar en dirección</Text>
+          <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9, textAlign: "center" }]}>alineación TF</Text>
         </View>
       </View>
       <View style={[styles.recCard, { backgroundColor: `${colors.purple}08`, borderColor: colors.purple, borderWidth: 1, borderRadius: 8, padding: 10, marginTop: 6 }]}>
-        <Text style={[styles.recTitle, { color: colors.purple, fontWeight: "800", fontSize: 10 }]}>Scalper</Text>
-        <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11 }]}>🟢 Scalp largo</Text>
-        <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9 }]}>momentum corto favorable</Text>
+        <Text style={[styles.recTitle, { color: colors.purple, fontWeight: "800", fontSize: 10, textAlign: "center" }]}>Scalper</Text>
+        <Text style={[styles.recAction, { color: colors.text, fontWeight: "700", fontSize: 11, textAlign: "center" }]}>🟢 Scalp largo</Text>
+        <Text style={[styles.recReason, { color: colors.textSecondary, fontSize: 9, textAlign: "center" }]}>momentum corto favorable</Text>
       </View>
     </View>
   );
@@ -224,7 +226,8 @@ const styles = StyleSheet.create({
   conclusionCard: { padding: 14 },
   conclusionTitle: { fontSize: 12, fontWeight: "800", marginBottom: 10, textTransform: "uppercase" },
   conclusionGrid: { flexDirection: "row", marginBottom: 10 },
-  conclusionItem: { flex: 1 },
+  conclusionItem: { flex: 1, alignItems: "center" },
+  conclusionDivider: { width: 1, backgroundColor: "rgba(128,128,128,0.3)", marginHorizontal: 4 },
   conclusionLabel: { fontSize: 9, marginBottom: 3, textTransform: "uppercase" },
   conclusionValue: { fontSize: 12 },
   scenarioText: { fontSize: 11, lineHeight: 1.5, fontStyle: "italic" },
