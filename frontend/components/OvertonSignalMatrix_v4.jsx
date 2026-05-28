@@ -3844,7 +3844,34 @@ function WolfeWavesPanel({ d }) {
     const apexY = pts[0].y + s13 * (apexX - pts[0].x);
     const isBullPattern = v[5] > 0.4;
     const quality = Math.round(68 + v[6] * 27);
-    return { points: pts, epa: { x: totalX, y: epaY }, apex: { x: apexX, y: apexY }, type: isBullPattern ? "bull" : "bear", quality, totalX };
+    
+    // Calcular extensiones para demo
+    const p1 = pts[0].y, p2 = pts[1].y, p3 = pts[2].y, p4 = pts[3].y, p5 = pts[4].y;
+    const moveBase = epaY - p5;
+    const ampP2P3 = Math.abs(p2 - p3);
+    const ampP4P5 = Math.abs(p4 - p5);
+    const avgAmp = (ampP2P3 + ampP4P5) / 2;
+    
+    return {
+      points: pts,
+      epa: { x: totalX, y: epaY },
+      apex: { x: apexX, y: apexY },
+      type: isBullPattern ? "bull" : "bear",
+      quality,
+      totalX,
+      // Extensiones para demo
+      detected: true,
+      direction: isBullPattern ? "bull" : "bear",
+      points: { p1, p2, p3, p4, p5, epa: epaY },
+      extensions: {
+        fib_100: p5 + moveBase * 1.0,
+        fib_127: p5 + moveBase * 1.272,
+        fib_161: p5 + moveBase * 1.618,
+        fib_200: p5 + moveBase * 2.0,
+        symmetry: epaY + avgAmp,
+      },
+      amplitudes: { p2_p3: ampP2P3, p4_p5: ampP4P5, avg: avgAmp },
+    };
   }, [price, atr, seededRand]);
   const wolfe = d?.wolfe_waves;
   const hasReal = wolfe && wolfe.points && wolfe.points.length === 5;
@@ -3925,7 +3952,7 @@ function WolfeWavesPanel({ d }) {
       </div>
 
       {/* ── EXTENSIONES EPA — Onda de Wolfe ───────────────────────────────── */}
-      {d?.wolfe_waves?.detected && d.wolfe_waves?.extensions && (
+      {(d?.wolfe_waves?.detected || isDemo) && (d.wolfe_waves?.extensions || pattern.extensions) && (
         <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
           <SectionTitle icon="📐" badge={pill(T.purple, "3 Métodos")}>Extensiones EPA — Onda de Wolfe</SectionTitle>
           
@@ -3934,8 +3961,8 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>📍 Datos del patrón actual</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
               {["P1", "P2", "P3", "P4", "P5", "EPA"].map((lbl, i) => {
-                const pts = d.wolfe_waves.points || {};
-                const val = lbl === "EPA" ? pts.epa : pts[lbl.toLowerCase()];
+                const pts = d.wolfe_waves?.points || pattern.points || {};
+                const val = lbl === "EPA" ? (pts.epa || pattern.epa?.y) : (pts[lbl.toLowerCase()] || pts[lbl.toLowerCase()]);
                 const roles = { P1: "Base", P2: "Techo", P3: "Suelo", P4: "Techo bajo", P5: "Entrada", EPA: "Objetivo" };
                 return (
                   <div key={lbl} style={{ textAlign: "center" }}>
@@ -3957,7 +3984,7 @@ function WolfeWavesPanel({ d }) {
                 { lbl: "161.8%", fib: 1.618, color: T.warn },
                 { lbl: "200%", fib: 2.0, color: T.bear },
               ].map(({ lbl, fib, color }) => {
-                const exts = d.wolfe_waves.extensions || {};
+                const exts = d.wolfe_waves?.extensions || pattern.extensions || {};
                 const key = fib === 1.0 ? "fib_100" : fib === 1.272 ? "fib_127" : fib === 1.618 ? "fib_161" : "fib_200";
                 const val = exts[key];
                 return (
@@ -3976,12 +4003,12 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.cyan, textTransform: "uppercase", marginBottom: 6 }}>📐 Método 2: Simetría de Onda</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 9, color: T.muted, marginBottom: 3 }}>Amplitud P2→P3: <span style={{ fontWeight: 700, color: T.text }}>${(d.wolfe_waves.amplitudes?.p2_p3 || 0).toFixed(2)}</span></div>
-                <div style={{ fontSize: 9, color: T.muted }}>Amplitud P4→P5: <span style={{ fontWeight: 700, color: T.text }}>${(d.wolfe_waves.amplitudes?.p4_p5 || 0).toFixed(2)}</span></div>
+                <div style={{ fontSize: 9, color: T.muted, marginBottom: 3 }}>Amplitud P2→P3: <span style={{ fontWeight: 700, color: T.text }}>${((d.wolfe_waves?.amplitudes?.p2_p3 || pattern.amplitudes?.p2_p3) || 0).toFixed(2)}</span></div>
+                <div style={{ fontSize: 9, color: T.muted }}>Amplitud P4→P5: <span style={{ fontWeight: 700, color: T.text }}>${((d.wolfe_waves?.amplitudes?.p4_p5 || pattern.amplitudes?.p4_p5) || 0).toFixed(2)}</span></div>
               </div>
               <div style={{ background: `${T.cyan}08`, border: `1px solid ${T.cyan}30`, borderRadius: 6, padding: "8px 14px", textAlign: "center" }}>
                 <div style={{ fontSize: 9, color: T.cyan, fontWeight: 700, marginBottom: 2 }}>Ext. Simétrica</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: T.cyan, fontFamily: "monospace" }}>${(d.wolfe_waves.extensions?.symmetry || 0).toFixed(2)}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: T.cyan, fontFamily: "monospace" }}>${((d.wolfe_waves?.extensions?.symmetry || pattern.extensions?.symmetry) || 0).toFixed(2)}</div>
               </div>
             </div>
           </div>
@@ -3991,12 +4018,12 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>🗺️ Mapa de precios completo</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {[
-                { lbl: "P5 ENTRADA", val: d.wolfe_waves.points?.p5, color: T.bear, icon: "←" },
-                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves.points?.epa, color: T.purple, icon: "⇒" },
-                { lbl: "Fib 127.2% (primera resistencia)", val: d.wolfe_waves.extensions?.fib_127, color: T.bull, icon: "↑" },
-                { lbl: "Fib 161.8% (objetivo medio)", val: d.wolfe_waves.extensions?.fib_161, color: T.warn, icon: "↑" },
-                { lbl: "Simetría de onda", val: d.wolfe_waves.extensions?.symmetry, color: T.cyan, icon: "↑" },
-                { lbl: "Fib 200% (techo máximo)", val: d.wolfe_waves.extensions?.fib_200, color: T.bear, icon: "⊤" },
+                { lbl: "P5 ENTRADA", val: d.wolfe_waves?.points?.p5 || pattern.points?.p5, color: T.bear, icon: "←" },
+                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves?.points?.epa || pattern.epa?.y, color: T.purple, icon: "⇒" },
+                { lbl: "Fib 127.2% (primera resistencia)", val: d.wolfe_waves?.extensions?.fib_127 || pattern.extensions?.fib_127, color: T.bull, icon: "↑" },
+                { lbl: "Fib 161.8% (objetivo medio)", val: d.wolfe_waves?.extensions?.fib_161 || pattern.extensions?.fib_161, color: T.warn, icon: "↑" },
+                { lbl: "Simetría de onda", val: d.wolfe_waves?.extensions?.symmetry || pattern.extensions?.symmetry, color: T.cyan, icon: "↑" },
+                { lbl: "Fib 200% (techo máximo)", val: d.wolfe_waves?.extensions?.fib_200 || pattern.extensions?.fib_200, color: T.bear, icon: "⊤" },
               ].map(({ lbl, val, color, icon }) => (
                 <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${color}05`, borderRadius: 4 }}>
                   <div style={{ fontSize: 11, color: color, fontWeight: 700, width: 16 }}>{icon}</div>
@@ -4012,10 +4039,10 @@ function WolfeWavesPanel({ d }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: T.warn, textTransform: "uppercase", marginBottom: 6 }}>⚠️ Consideraciones importantes</div>
             <div style={{ fontSize: 10, color: T.textSec, lineHeight: 1.6 }}>
               <div style={{ marginBottom: 4 }}>
-                <span style={{ fontWeight: 700, color: T.text }}>1. Calidad {d.wolfe_waves.quality || 75}%:</span> Hay un {100 - (d.wolfe_waves.quality || 75)}% de probabilidad de fallo del patrón.
+                <span style={{ fontWeight: 700, color: T.text }}>1. Calidad {(d.wolfe_waves?.quality || pattern.quality || 75)}%:</span> Hay un {100 - (d.wolfe_waves.quality || 75)}% de probabilidad de fallo del patrón.
               </div>
               <div style={{ marginBottom: 4 }}>
-                <span style={{ fontWeight: 700, color: T.text }}>2. Después del EPA:</span> {d.wolfe_waves.direction === "bull" ? "El precio puede continuar hacia las extensiones si rompe con fuerza." : "El precio puede caer hacia las extensiones si rompe el EPA."}
+                <span style={{ fontWeight: 700, color: T.text }}>2. Después del EPA:</span> {(d.wolfe_waves?.direction || pattern.direction) === "bull" ? "El precio puede continuar hacia las extensiones si rompe con fuerza." : "El precio puede caer hacia las extensiones si rompe el EPA."}
               </div>
               <div>
                 <span style={{ fontWeight: 700, color: T.text }}>3. El EPA no es el techo absoluto:</span> Es el primer punto de decisión. Las extensiones Fibonacci dan un mapa de hasta dónde puede llegar.
