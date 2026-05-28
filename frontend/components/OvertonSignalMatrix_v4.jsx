@@ -24,6 +24,7 @@ import { useChat } from "../contexts/ChatContext";
 import { useTheme } from "../contexts/ThemeContext";
 import IchimokuCloudChart from "./IchimokuCloudChart";
 import VolumeDeltaTable from "./VolumeDeltaTable";
+import VolumeDeltaAnalysis from "./VolumeDeltaAnalysis";
 
 
 const API_BASE = typeof process !== "undefined" && process.env?.EXPO_PUBLIC_BACKEND_URL
@@ -784,11 +785,56 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
         },
       ],
     },
+    // ── NUEVO: Volume Delta Signal ──────────────────────────────────
+    {
+      cat: "Volume Delta", color: T.orange || "#f97316", max: 5, isNew: true,
+      items: [
+        {
+          label: (() => {
+            const vd = d?.volume_delta_mtf || [];
+            const tf1d = vd.find(t => t.tf === "1D");
+            const tf1w = vd.find(t => t.tf === "1W");
+            const buy1d = tf1d?.buy_pct || 50;
+            const buy1w = tf1w?.buy_pct || 50;
+            const avg = (buy1d + buy1w) / 2;
+            if (avg >= 70) return "🟢 Compra fuerte";
+            if (avg >= 60) return "🟢 Compra";
+            if (avg >= 45) return "⚪ Neutral";
+            if (avg >= 35) return "🔴 Venta";
+            return "🔴 Venta fuerte";
+          })(),
+          score: (() => {
+            const vd = d?.volume_delta_mtf || [];
+            const tf1d = vd.find(t => t.tf === "1D");
+            const tf1w = vd.find(t => t.tf === "1W");
+            const buy1d = tf1d?.buy_pct || 50;
+            const buy1w = tf1w?.buy_pct || 50;
+            const avg = (buy1d + buy1w) / 2;
+            if (avg >= 70) return 5;
+            if (avg >= 60) return 4;
+            if (avg >= 45) return 2.5;
+            if (avg >= 35) return 1.5;
+            return 0;
+          })(),
+          max: 5,
+          detail: (() => {
+            const vd = d?.volume_delta_mtf || [];
+            const tf1d = vd.find(t => t.tf === "1D");
+            const tf1w = vd.find(t => t.tf === "1W");
+            const buy1d = tf1d?.buy_pct || 50;
+            const buy1w = tf1w?.buy_pct || 50;
+            const vol1d = tf1d?.vol || 0;
+            const vol1w = tf1w?.vol || 0;
+            return `1D: ${buy1d.toFixed(0)}% (${(vol1d/1000).toFixed(0)}k) · 1W: ${buy1w.toFixed(0)}% (${(vol1w/1000).toFixed(0)}k)`;
+          })(),
+        },
+      ],
+    },
   ];
 
   // ── Normalización: 165 pts → 100 ─────────────────────────────
   const rawTotal = factors.reduce((s, cat) => s + cat.items.reduce((cs, i) => cs + i.score, 0), 0);
-  const rawMax   = factors.reduce((s, cat) => s + cat.max, 0); // 160
+  const rawMax   = factors.reduce((s, cat) => s + cat.max, 0); // 170
   const normScore = Math.round((rawTotal / rawMax) * 100);
 
   // ── Render ────────────────────────────────────────────────────
@@ -4604,7 +4650,9 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
               <div style={{ height: 10 }} />
               {d?.volume_delta_mtf && (
                 <div>
-                  <VolumeDeltaTable ticker={ticker} data={d.volume_delta_mtf} />
+                  <VolumeDeltaTable data={d.volume_delta_mtf} />
+                  <div style={{ height: 10 }} />
+                  <VolumeDeltaAnalysis data={d.volume_delta_mtf} />
                 </div>
               )}
               <div style={{ height: 10 }} />
