@@ -28,11 +28,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useTheme } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const IS_WEB = Platform.OS === 'web';
 
 /* ─── Paleta ─────────────────────────────────────────────── */
+// Paleta base - colores fijos para señales
 const C = {
   green:    '#2E7D32',
   greenBg:  '#E8F5E9',
@@ -44,16 +46,14 @@ const C = {
   blueBg:   '#E3F2FD',
   gray:     '#546E7A',
   grayBg:   '#ECEFF1',
-  border:   '#E0E0E0',
-  text:     '#212121',
-  sub:      '#757575',
-  white:    '#FFFFFF',
   chartBlue:'#2196F3',
   chartRed: '#EF5350',
   chartGreen:'#4CAF50',
   chartOrange:'#FF7043',
   chartPurple:'#9C27B0',
 };
+
+// Colores dinámicos según tema (se asignan en el componente)
 
 const OVERTON_ZONES = [
   { label: 'Impensable\nVender',       bg: '#EF9A9A', textC: '#B71C1C' },
@@ -87,7 +87,20 @@ function loadChartJs(cb) {
    COMPONENTE PRINCIPAL
 ═══════════════════════════════════════════════════════════ */
 export default function OvertonSignalMatrix({ ticker }) {
+  const { colors, isDark } = useTheme();
   const [data,    setData]    = useState(null);
+
+  // Colores dinámicos según tema
+  const themeColors = {
+    border:   isDark ? '#3A3A3C' : '#E0E0E0',
+    text:     isDark ? '#FFFFFF' : '#212121',
+    textSec:  isDark ? '#A1A1AA' : '#757575',
+    card:     isDark ? '#1C1C1E' : '#FFFFFF',
+    cardAlt:  isDark ? '#2C2C2E' : themeColors.bg,
+    bg:       isDark ? '#000000' : themeColors.bg,
+    chartBg:  isDark ? '#1C1C1E' : '#FFFFFF',
+    gridLine: isDark ? '#3A3A3C' : '#F0F0F0',
+  };
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
   const [chartReady, setChartReady] = useState(false);
@@ -210,19 +223,19 @@ export default function OvertonSignalMatrix({ ticker }) {
               display: true,
               position: 'top',
               align: 'end',
-              labels: { boxWidth: 12, font: { size: 11 }, color: C.text },
+              labels: { boxWidth: 12, font: { size: 11 }, color: themeColors.text },
             },
             tooltip: { mode: 'index', intersect: false },
           },
           scales: {
             x: {
-              grid: { color: '#F0F0F0' },
-              ticks: { color: C.sub, font: { size: 10 }, maxRotation: 0 },
+              grid: { color: themeColors.gridLine },
+              ticks: { color: themeColors.textSec, font: { size: 10 }, maxRotation: 0 },
             },
             y: {
-              grid: { color: '#F0F0F0' },
+              grid: { color: themeColors.gridLine },
               ticks: {
-                color: C.sub,
+                color: themeColors.textSec,
                 font: { size: 10 },
                 callback: v => `$${v.toFixed(0)}`,
               },
@@ -254,10 +267,10 @@ export default function OvertonSignalMatrix({ ticker }) {
           maintainAspectRatio: false,
           plugins: { legend: { display: false }, tooltip: { mode: 'index' } },
           scales: {
-            x: { grid: { display: false }, ticks: { color: C.sub, font: { size: 9 } } },
+            x: { grid: { display: false }, ticks: { color: themeColors.textSec, font: { size: 9 } } },
             y: {
-              grid: { color: '#F0F0F0' },
-              ticks: { color: C.sub, font: { size: 9 } },
+              grid: { color: themeColors.gridLine },
+              ticks: { color: themeColors.textSec, font: { size: 9 } },
             },
           },
         },
@@ -304,11 +317,11 @@ export default function OvertonSignalMatrix({ ticker }) {
               display: true,
               position: 'top',
               align: 'end',
-              labels: { boxWidth: 10, font: { size: 10 }, color: C.text },
+              labels: { boxWidth: 10, font: { size: 10 }, color: themeColors.text },
             },
           },
           scales: {
-            x: { grid: { display: false }, ticks: { color: C.sub, font: { size: 9 } } },
+            x: { grid: { display: false }, ticks: { color: themeColors.textSec, font: { size: 9 } } },
             yVix: {
               type: 'linear',
               position: 'left',
@@ -350,7 +363,7 @@ export default function OvertonSignalMatrix({ ticker }) {
   if (error || !data) {
     return (
       <View style={s.center}>
-        <Ionicons name="alert-circle-outline" size={36} color={C.sub} />
+        <Ionicons name="alert-circle-outline" size={36} color={themeColors.textSec} />
         <Text style={s.errTxt}>{error ?? 'Error desconocido'}</Text>
         <TouchableOpacity style={s.retryBtn} onPress={fetchData}>
           <Text style={s.retryTxt}>Reintentar</Text>
@@ -362,8 +375,14 @@ export default function OvertonSignalMatrix({ ticker }) {
   const ac     = ACTION[data.overton_action] ?? ACTION.hold;
   const pctPos = data.pct_change >= 0;
 
-  /* zona activa (0-4) */
-  const zoneIdx = Math.min(4, Math.floor((data.score / 100) * 5));
+  /* zona activa (0-4) - Alinear con backend _overton_zone */
+  /* Backend: 75+=Popular(3), 55-74=Aceptable(2), 38-54=Sensible(2), 20-37=Radical(1), <20=Impensable(0) */
+  let zoneIdx = 0;
+  if (data.score >= 75) zoneIdx = 3;      // Popular - Comprar
+  else if (data.score >= 55) zoneIdx = 2; // Aceptable - Vigilar
+  else if (data.score >= 38) zoneIdx = 2; // Sensible - Esperar (comparte zona visual con Aceptable)
+  else if (data.score >= 20) zoneIdx = 1; // Radical - Reducir
+  else zoneIdx = 0;                        // Impensable - Vender
 
   /* consenso analistas */
   const totalA = (data.analyst_buy + data.analyst_hold + data.analyst_sell) || 1;
@@ -449,6 +468,24 @@ export default function OvertonSignalMatrix({ ticker }) {
           main={`${data.us10y.toFixed(2)}%`}
           sub={yieldLabel}
           subColor={yieldColor}
+        />
+        <MetricCard
+          title="ADX"
+          main={data.adx?.toFixed(1) ?? '—'}
+          sub={data.market_regime ?? '—'}
+          subColor={themeColors.textSec}
+        />
+        <MetricCard
+          title="RSI"
+          main={data.rsi?.toFixed(1) ?? '—'}
+          sub={data.rsi > 70 ? 'Sobrecompra' : data.rsi < 30 ? 'Sobreventa' : 'Neutral'}
+          subColor={data.rsi > 70 ? C.red : data.rsi < 30 ? C.green : themeColors.textSec}
+        />
+        <MetricCard
+          title="IV Rank"
+          main={`${data.iv_rank?.toFixed(1) ?? '—'}%`}
+          sub={data.iv_rank > 50 ? 'Alta vol' : 'Baja vol'}
+          subColor={data.iv_rank > 50 ? C.amber : themeColors.textSec}
         />
       </View>
 
@@ -540,7 +577,7 @@ export default function OvertonSignalMatrix({ ticker }) {
           <View style={s.scoreBox}>
             <Text style={s.scoreBoxTitle}>Score compuesto</Text>
             <View style={s.scoreInner}>
-              <ScoreRing score={data.score} color={ac.color} />
+              <ScoreRing score={data.score} color={ac.color} isDark={isDark} />
               <View style={s.scoreDetails}>
                 <Text style={[s.scoreBigLabel, { color: ac.color }]}>{ac.label}</Text>
                 <Text style={s.scoreTypeTxt}>Swing Trade · Score: {data.score}/100</Text>
@@ -549,6 +586,107 @@ export default function OvertonSignalMatrix({ ticker }) {
                   Noticias aportan: {totalImpact >= 0 ? '+' : ''}{totalImpact.toFixed(1)}% al sesgo
                 </Text>
               </View>
+            </View>
+            
+            {/* Desglose por categoría (120 pts → normalizado a 100) */}
+            <View style={s.breakdownSection}>
+              <Text style={s.breakdownTitle}>Desglose por categoría (120 pts → normalizado a 100)</Text>
+              <View style={s.breakdownGrid}>
+                <BreakdownItem 
+                  label="Fundamental" 
+                  value={data.score_breakdown?.fundamental ?? 0} 
+                  max={30} 
+                  color={C.green}
+                  isDark={isDark}
+                />
+                <BreakdownItem 
+                  label="Momentum" 
+                  value={data.score_breakdown?.momentum ?? 0} 
+                  max={25} 
+                  color={C.chartBlue}
+                  isDark={isDark}
+                />
+                <BreakdownItem 
+                  label="Sentimiento" 
+                  value={data.score_breakdown?.sentimiento ?? 0} 
+                  max={20} 
+                  color={C.chartPurple}
+                  isDark={isDark}
+                />
+                <BreakdownItem 
+                  label="Microestructura" 
+                  value={data.score_breakdown?.microestruc ?? 0} 
+                  max={25} 
+                  color={C.chartOrange}
+                  isDark={isDark}
+                />
+              </View>
+              
+              {/* Señales detalladas por onda */}
+              <View style={s.signalsSection}>
+                <Text style={s.signalsTitle}>Señales por onda/factor</Text>
+                
+                {/* Onda Técnica */}
+                <View style={s.waveGroup}>
+                  <Text style={s.waveLabel}>📊 Onda Técnica</Text>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="WMA-30" value={data.price_vs_wma === 'above' ? '▲ Sobre' : '▼ Bajo'} positive={data.price_vs_wma === 'above'} isDark={isDark} />
+                    <SignalBadge label="Coppock" value={data.coppock_signal === 'bull' ? '▲ Alcista' : '▼ Bajista'} positive={data.coppock_signal === 'bull'} isDark={isDark} />
+                    <SignalBadge label="RSI" value={data.rsi?.toFixed(0)} positive={data.rsi < 70 && data.rsi > 30} isDark={isDark} neutral />
+                  </View>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="ADX" value={data.adx?.toFixed(0)} positive={data.adx > 25} isDark={isDark} />
+                    <SignalBadge label="Regimen" value={data.market_regime?.toUpperCase()} positive={data.market_regime === 'trending'} isDark={isDark} neutral />
+                  </View>
+                </View>
+                
+                {/* Onda Macro */}
+                <View style={s.waveGroup}>
+                  <Text style={s.waveLabel}>🌍 Onda Macro</Text>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="VIX" value={data.vix?.toFixed(1)} positive={data.vix < 20} isDark={isDark} />
+                    <SignalBadge label="US10Y" value={`${data.us10y?.toFixed(2)}%`} positive={data.us10y < 4.5} isDark={isDark} />
+                    <SignalBadge label="IV Rank" value={`${data.iv_rank?.toFixed(0)}%`} positive={data.iv_rank < 50} isDark={isDark} />
+                  </View>
+                </View>
+                
+                {/* Onda Sentimiento */}
+                <View style={s.waveGroup}>
+                  <Text style={s.waveLabel}>💭 Onda Sentimiento</Text>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="PCR" value={data.put_call_ratio?.toFixed(2)} positive={data.put_call_ratio > 0.9} isDark={isDark} />
+                    <SignalBadge label="Short Int" value={`${data.short_interest?.toFixed(1)}%`} positive={data.short_interest < 10} isDark={isDark} />
+                    <SignalBadge label="F&G" value={data.fear_greed?.toFixed(0)} positive={data.fear_greed > 50} isDark={isDark} neutral />
+                  </View>
+                </View>
+                
+                {/* Onda Noticias */}
+                <View style={s.waveGroup}>
+                  <Text style={s.waveLabel}>📰 Onda Noticias</Text>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="Sentimiento" value={data.news_sentiment === 'bull' ? '▲ Bull' : data.news_sentiment === 'bear' ? '▼ Bear' : 'Neutral'} positive={data.news_sentiment === 'bull'} isDark={isDark} />
+                    <SignalBadge label="Impacto" value={`${totalImpact >= 0 ? '+' : ''}${totalImpact.toFixed(1)}%`} positive={totalImpact > 0} isDark={isDark} />
+                  </View>
+                </View>
+                
+                {/* Onda Microestructura */}
+                <View style={s.waveGroup}>
+                  <Text style={s.waveLabel}>⚡ Onda Microestructura</Text>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="OFI" value={data.ofi?.toFixed(2)} positive={data.ofi > 0} isDark={isDark} />
+                    <SignalBadge label="VWAP" value={data.vwap?.price_vs_vwap === 'above' ? '▲ Sobre' : '▼ Bajo'} positive={data.vwap?.price_vs_vwap === 'above'} isDark={isDark} />
+                    <SignalBadge label="GEX" value={data.gamma_exposure?.toFixed(0)} positive={data.gamma_exposure > 0} isDark={isDark} />
+                  </View>
+                  <View style={s.signalRow}>
+                    <SignalBadge label="Bid-Ask" value={`${data.bid_ask_spread?.toFixed(2)}%`} positive={data.bid_ask_spread < 1} isDark={isDark} />
+                    <SignalBadge label="Beta" value={data.beta?.toFixed(2)} positive={data.beta < 1.5} isDark={isDark} neutral />
+                  </View>
+                </View>
+              </View>
+              
+              <Text style={s.normalizationNote}>
+                Score final = (Fundamental + Momentum + Sentimiento + Microestruc) × (100/120) = {data.score}/100
+              </Text>
             </View>
           </View>
           {/* Analistas */}
@@ -631,13 +769,44 @@ export default function OvertonSignalMatrix({ ticker }) {
    SUB-COMPONENTES
 ═══════════════════════════════════════════════════════════ */
 
+function BreakdownItem({ label, value, max, color, isDark }) {
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  return (
+    <View style={s.breakdownItem}>
+      <View style={s.breakdownHeader}>
+        <Text style={[s.breakdownLabel, { color: isDark ? '#A1A1AA' : '#757575' }]}>{label}</Text>
+        <Text style={[s.breakdownValue, { color }]}>{value}/{max}</Text>
+      </View>
+      <View style={[s.breakdownTrack, { backgroundColor: isDark ? '#3A3A3C' : '#E0E0E0' }]}>
+        <View style={[s.breakdownFill, { width: `${pct}%`, backgroundColor: color }]} />
+      </View>
+    </View>
+  );
+}
+
+function SignalBadge({ label, value, positive, isDark, neutral }) {
+  const bgColor = neutral 
+    ? (isDark ? '#3A3A3C' : '#E0E0E0')
+    : (positive ? (isDark ? '#1B5E2040' : '#E8F5E9') : (isDark ? '#B71C1C40' : '#FFEBEE'));
+  const textColor = neutral
+    ? (isDark ? '#A1A1AA' : '#757575')
+    : (positive ? (isDark ? '#81C784' : '#2E7D32') : (isDark ? '#E57373' : '#C62828'));
+  
+  return (
+    <View style={[s.signalBadge, { backgroundColor: bgColor }]}>
+      <Text style={[s.signalBadgeLabel, { color: isDark ? '#A1A1AA' : '#757575' }]}>{label}</Text>
+      <Text style={[s.signalBadgeValue, { color: textColor }]}>{value}</Text>
+    </View>
+  );
+}
+
 function Section({ title, children, rightLabel, rightColor }) {
   return (
     <View style={s.section}>
       <View style={s.sectionHeader}>
         <Text style={s.sectionTitle}>{title}</Text>
         {rightLabel && (
-          <Text style={[s.sectionRight, { color: rightColor ?? C.sub }]}>
+          <Text style={[s.sectionRight, { color: rightColor ?? themeColors.textSec }]}>
             {rightLabel}
           </Text>
         )}
@@ -679,11 +848,12 @@ function AnalystBar({ label, pct, color }) {
   );
 }
 
-function ScoreRing({ score, color }) {
+function ScoreRing({ score, color, isDark }) {
   const size = 64;
   const r    = 26;
   const circ = 2 * Math.PI * r;
   const fill = circ * (1 - score / 100);
+  const bgStroke = isDark ? '#3A3A3C' : '#E0E0E0';
 
   if (!IS_WEB) {
     return (
@@ -695,7 +865,7 @@ function ScoreRing({ score, color }) {
 
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#E0E0E0" strokeWidth="5" />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={bgStroke} strokeWidth="5" />
       <circle
         cx={size/2} cy={size/2} r={r}
         fill="none"
@@ -738,7 +908,7 @@ function MiniSparkline({ values, color, label }) {
 
   return (
     <View style={{ marginBottom: 10 }}>
-      <Text style={{ fontSize: 11, color: C.sub, marginBottom: 3 }}>{label}</Text>
+      <Text style={{ fontSize: 11, color: themeColors.textSec, marginBottom: 3 }}>{label}</Text>
       {IS_WEB ? (
         <svg width={w} height={h}>
           <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
@@ -754,40 +924,40 @@ function MiniSparkline({ values, color, label }) {
    ESTILOS
 ═══════════════════════════════════════════════════════════ */
 const s = StyleSheet.create({
-  root:      { flex: 1, backgroundColor: '#FAFAFA' },
+  root:      { flex: 1, backgroundColor: themeColors.bg },
   rootInner: { padding: 16, paddingBottom: 40 },
   center:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, minHeight: 200 },
-  loadTxt:   { marginTop: 12, fontSize: 14, color: C.sub },
-  errTxt:    { marginTop: 8, fontSize: 14, color: C.sub, textAlign: 'center' },
+  loadTxt:   { marginTop: 12, fontSize: 14, color: themeColors.textSec },
+  errTxt:    { marginTop: 8, fontSize: 14, color: themeColors.textSec, textAlign: 'center' },
   retryBtn:  { marginTop: 14, paddingHorizontal: 20, paddingVertical: 8, backgroundColor: C.chartBlue, borderRadius: 16 },
-  retryTxt:  { color: C.white, fontWeight: '600', fontSize: 13 },
+  retryTxt:  { color: themeColors.card, fontWeight: '600', fontSize: 13 },
 
   /* topbar */
   topBar:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 },
-  topTitle:    { fontSize: 18, fontWeight: '700', color: C.text },
-  topSub:      { fontSize: 11, color: C.sub, marginTop: 2 },
+  topTitle:    { fontSize: 18, fontWeight: '700', color: themeColors.text },
+  topSub:      { fontSize: 11, color: themeColors.textSec, marginTop: 2 },
   topRight:    { flexDirection: 'row', alignItems: 'center', gap: 8 },
   badge:       { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   badgeTxt:    { fontSize: 12, fontWeight: '700' },
   refreshBtn:  { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10,
-                 paddingVertical: 5, borderRadius: 8, borderWidth: 1, borderColor: C.border },
+                 paddingVertical: 5, borderRadius: 8, borderWidth: 1, borderColor: themeColors.border },
   refreshTxt:  { fontSize: 12, color: C.blue },
 
   /* métricas */
   metricsRow:  { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
-  metricCard:  { flex: 1, minWidth: 100, backgroundColor: C.white, borderRadius: 10,
-                 padding: 12, borderWidth: 1, borderColor: C.border },
-  metricTitle: { fontSize: 10, fontWeight: '700', color: C.sub, letterSpacing: 0.5, marginBottom: 4 },
-  metricMain:  { fontSize: 22, fontWeight: '700', color: C.text, marginBottom: 2 },
+  metricCard:  { flex: 1, minWidth: 100, backgroundColor: themeColors.card, borderRadius: 10,
+                 padding: 12, borderWidth: 1, borderColor: themeColors.border },
+  metricTitle: { fontSize: 10, fontWeight: '700', color: themeColors.textSec, letterSpacing: 0.5, marginBottom: 4 },
+  metricMain:  { fontSize: 22, fontWeight: '700', color: themeColors.text, marginBottom: 2 },
   metricSub:   { fontSize: 12 },
 
   /* secciones */
-  section:       { backgroundColor: C.white, borderRadius: 10, borderWidth: 1,
-                   borderColor: C.border, marginBottom: 12, overflow: 'hidden' },
+  section:       { backgroundColor: themeColors.card, borderRadius: 10, borderWidth: 1,
+                   borderColor: themeColors.border, marginBottom: 12, overflow: 'hidden' },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
                    paddingHorizontal: 14, paddingVertical: 10,
-                   borderBottomWidth: 1, borderBottomColor: C.border },
-  sectionTitle:  { fontSize: 13, fontWeight: '600', color: C.text },
+                   borderBottomWidth: 1, borderBottomColor: themeColors.border },
+  sectionTitle:  { fontSize: 13, fontWeight: '600', color: themeColors.text },
   sectionRight:  { fontSize: 12, fontWeight: '600' },
   sectionBody:   { padding: 14 },
 
@@ -798,14 +968,14 @@ const s = StyleSheet.create({
   newsHeadline: { fontSize: 13, fontWeight: '600', marginBottom: 3 },
   posText:      { color: '#1B5E20' },
   negText:      { color: '#B71C1C' },
-  newsDesc:     { fontSize: 11, color: C.sub, lineHeight: 15 },
+  newsDesc:     { fontSize: 11, color: themeColors.textSec, lineHeight: 15 },
   newsImpact:   { fontSize: 13, fontWeight: '700', flexShrink: 0 },
-  impactTotal:  { fontSize: 12, color: C.sub, marginTop: 8 },
+  impactTotal:  { fontSize: 12, color: themeColors.textSec, marginTop: 8 },
 
   /* overton */
   overtonBar:        { flexDirection: 'row', borderRadius: 6, overflow: 'hidden', height: 50, marginBottom: 4 },
   overtonZone:       { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 4 },
-  overtonZoneActive: { borderWidth: 2, borderColor: '#212121' },
+  overtonZoneActive: { borderWidth: 2, borderColor: themeColors.text },
   overtonZoneTxt:    { fontSize: 10, fontWeight: '700', textAlign: 'center' },
   overtonZoneSubTxt: { fontSize: 9, textAlign: 'center', marginTop: 1 },
   overtonMarkerRow:  { flexDirection: 'row', height: 24, marginBottom: 4 },
@@ -814,29 +984,51 @@ const s = StyleSheet.create({
                        borderRadius: 5, alignSelf: 'center' },
   overtonMarkerTxt:  { fontSize: 9, fontWeight: '700' },
   overtonFooter:     { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  overtonFooterTxt:  { fontSize: 10, color: C.sub },
+  overtonFooterTxt:  { fontSize: 10, color: themeColors.textSec },
   overtonDesc:       { fontSize: 12, color: '#424242', lineHeight: 18, marginBottom: 14,
                        paddingLeft: 8, borderLeftWidth: 3, borderLeftColor: '#BDBDBD' },
 
   /* score + analistas */
   scoreAnalystRow: { flexDirection: 'row', gap: 12 },
-  scoreBox:        { flex: 1, backgroundColor: '#FAFAFA', borderRadius: 8,
-                     padding: 12, borderWidth: 1, borderColor: C.border },
-  analystBox:      { flex: 1, backgroundColor: '#FAFAFA', borderRadius: 8,
-                     padding: 12, borderWidth: 1, borderColor: C.border },
-  scoreBoxTitle:   { fontSize: 12, fontWeight: '600', color: C.sub, marginBottom: 10 },
+  scoreBox:        { flex: 1, backgroundColor: themeColors.bg, borderRadius: 8,
+                     padding: 12, borderWidth: 1, borderColor: themeColors.border },
+  analystBox:      { flex: 1, backgroundColor: themeColors.bg, borderRadius: 8,
+                     padding: 12, borderWidth: 1, borderColor: themeColors.border },
+  scoreBoxTitle:   { fontSize: 12, fontWeight: '600', color: themeColors.textSec, marginBottom: 10 },
   scoreInner:      { flexDirection: 'row', alignItems: 'center', gap: 12 },
   scoreDetails:    { flex: 1 },
   scoreBigLabel:   { fontSize: 15, fontWeight: '700', marginBottom: 2 },
-  scoreTypeTxt:    { fontSize: 11, color: C.sub },
-  scoreBiasTxt:    { fontSize: 11, color: C.sub, marginTop: 2 },
-  scoreNewsTxt:    { fontSize: 11, color: C.sub, marginTop: 2 },
+  scoreTypeTxt:    { fontSize: 11, color: themeColors.textSec },
+  scoreBiasTxt:    { fontSize: 11, color: themeColors.textSec, marginTop: 2 },
+  scoreNewsTxt:    { fontSize: 11, color: themeColors.textSec, marginTop: 2 },
   scoreRingFallback: { width: 56, height: 56, borderRadius: 28, borderWidth: 4,
                        alignItems: 'center', justifyContent: 'center' },
   scoreRingNum:    { fontSize: 16, fontWeight: '700' },
+  
+  /* Breakdown section */
+  breakdownSection: { marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: themeColors.border },
+  breakdownTitle:   { fontSize: 11, fontWeight: '700', color: themeColors.textSec, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
+  breakdownGrid:    { gap: 8, marginBottom: 12 },
+  breakdownItem:    { marginBottom: 6 },
+  breakdownHeader:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 },
+  breakdownLabel:   { fontSize: 11, fontWeight: '500' },
+  breakdownValue:   { fontSize: 11, fontWeight: '700' },
+  breakdownTrack:   { height: 6, borderRadius: 3, overflow: 'hidden' },
+  breakdownFill:    { height: '100%', borderRadius: 3 },
+  
+  /* Signals section */
+  signalsSection:   { marginTop: 8 },
+  signalsTitle:     { fontSize: 11, fontWeight: '700', color: themeColors.textSec, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
+  waveGroup:        { marginBottom: 10, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: isDark ? '#2C2C2E' : '#F5F5F5' },
+  waveLabel:        { fontSize: 10, fontWeight: '700', color: themeColors.text, marginBottom: 6 },
+  signalRow:        { flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 4 },
+  signalBadge:      { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, minWidth: 70, alignItems: 'center' },
+  signalBadgeLabel: { fontSize: 8, fontWeight: '600', marginBottom: 2, textTransform: 'uppercase' },
+  signalBadgeValue: { fontSize: 10, fontWeight: '700' },
+  normalizationNote: { fontSize: 9, color: themeColors.textSec, marginTop: 8, fontStyle: 'italic' },
   analystRow:      { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 6 },
-  analystLabel:    { fontSize: 11, color: C.sub, width: 72 },
-  analystTrack:    { flex: 1, height: 8, backgroundColor: '#E0E0E0', borderRadius: 4, overflow: 'hidden' },
+  analystLabel:    { fontSize: 11, color: themeColors.textSec, width: 72 },
+  analystTrack:    { flex: 1, height: 8, backgroundColor: isDark ? '#3A3A3C' : '#E0E0E0', borderRadius: 4, overflow: 'hidden' },
   analystFill:     { height: '100%', borderRadius: 4 },
   analystPct:      { fontSize: 11, fontWeight: '700', width: 32, textAlign: 'right' },
 
@@ -846,20 +1038,20 @@ const s = StyleSheet.create({
   levelLabel:   { fontSize: 9, fontWeight: '700', letterSpacing: 0.5, marginBottom: 5 },
   levelValue:   { fontSize: 20, fontWeight: '700', marginBottom: 3 },
   levelSub:     { fontSize: 10, opacity: 0.8 },
-  atrNote:      { fontSize: 11, color: C.sub, marginTop: 10 },
+  atrNote:      { fontSize: 11, color: themeColors.textSec, marginTop: 10 },
 
   /* gráficos */
   chartWrap:     { height: 240, width: '100%', position: 'relative' },
   chartDualRow:  { flexDirection: 'row', gap: 0, marginBottom: 12 },
-  chartHalf:     { flex: 1, backgroundColor: C.white, borderRadius: 10,
-                   borderWidth: 1, borderColor: C.border, padding: 12 },
-  chartTitle:    { fontSize: 12, fontWeight: '600', color: C.sub, marginBottom: 8 },
+  chartHalf:     { flex: 1, backgroundColor: themeColors.card, borderRadius: 10,
+                   borderWidth: 1, borderColor: themeColors.border, padding: 12 },
+  chartTitle:    { fontSize: 12, fontWeight: '600', color: themeColors.textSec, marginBottom: 8 },
   chartWrapSm:   { height: 160, width: '100%', position: 'relative' },
 
   /* setup */
   setupGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 0 },
   setupCell: { width: '33.33%', paddingVertical: 10, paddingHorizontal: 4,
-               borderBottomWidth: 1, borderBottomColor: C.border },
-  setupLabel:{ fontSize: 10, fontWeight: '700', color: C.sub, letterSpacing: 0.4, marginBottom: 3 },
-  setupValue:{ fontSize: 13, color: C.text },
+               borderBottomWidth: 1, borderBottomColor: themeColors.border },
+  setupLabel:{ fontSize: 10, fontWeight: '700', color: themeColors.textSec, letterSpacing: 0.4, marginBottom: 3 },
+  setupValue:{ fontSize: 13, color: themeColors.text },
 });

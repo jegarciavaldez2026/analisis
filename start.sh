@@ -2,15 +2,21 @@
 # Iniciar el frontend Expo en modo web
 set -e
 
-echo "========================================"
+echo "================================"
 echo "  Analisis - Iniciar Frontend"
-echo "========================================"
-echo ""
+echo "================================"
 
-cd ""/bin/frontend"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 
-echo "Backend URL: "
-echo "Iniciando Expo (modo web)..."
-echo ""
+if [ ! -d "frontend" ]; then
+    echo "Error: No se encuentra la carpeta frontend en $SCRIPT_DIR"
+    exit 1
+fi
+
+cd frontend
+
+echo "Brkend URL: $EXPO_PUBLIC_BACKEND_URL"
+echo "Iniciando Expo en modo web..."
 
 npx expo start --web -c

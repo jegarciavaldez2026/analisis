@@ -24,9 +24,9 @@ interface HistoryItem {
   analysis_date: string;
   recommendation: string;
   favorable_percentage: number;
-  current_price: number;
-  price_change: number;
-  price_change_percent: number;
+  current_price?: number;
+  price_change?: number;
+  price_change_percent?: number;
 }
 
 const FILTERS: { label: string; value: FilterType }[] = [
@@ -47,7 +47,8 @@ const getRecommendationColor = (r: string) => {
 
 function HistoryCard({ item }: { item: HistoryItem }) {
   const { colors } = useTheme();
-  const isPositive = item.price_change >= 0;
+  const hasPrice = item.current_price != null && item.current_price > 0;
+  const isPositive = hasPrice ? (item.price_change ?? 0) >= 0 : true;
   const color = isPositive ? '#34C759' : '#FF3B30';
   const arrow = isPositive ? '\u25b2' : '\u25bc';
 
@@ -62,12 +63,20 @@ function HistoryCard({ item }: { item: HistoryItem }) {
           </Text>
         </View>
         <View style={styles.priceBlock}>
-          <Text style={styles.price}>
-            ${item.current_price.toFixed(2)}
-          </Text>
-          <Text style={[styles.change, { color }]}>
-            {arrow} {item.price_change_percent.toFixed(2)}%
-          </Text>
+          {hasPrice ? (
+            <>
+              <Text style={styles.price}>
+                ${item.current_price.toFixed(2)}
+              </Text>
+              <Text style={[styles.change, { color }]}>
+                {arrow} {item.price_change_percent.toFixed(2)}%
+              </Text>
+            </>
+          ) : (
+            <Text style={[styles.change, { color: colors.textSecondary }]}>
+              --
+            </Text>
+          )}
         </View>
       </View>
       <View style={styles.bottomRow}>
@@ -92,7 +101,7 @@ export default function HistoryScreen() {
   const fetchHistory = async () => {
     try {
       setLoading(true);
-      let url = `${BACKEND_URL}/api/history/enhanced?limit=50`;
+      let url = `${BACKEND_URL}/api/history?limit=50`;
       if (activeFilter !== 'TODOS') {
         url += `&recommendation=${activeFilter}`;
       }
