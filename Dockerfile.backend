@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    CMAKE_ARGS="-DLLAMA_CPU=ON"
+    CMAKE_ARGS="-DLLAMA_CPU=ON" \
+    MODEL_DIR=/app/models
 
 WORKDIR /app
 
@@ -13,16 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/ .
-
-# Download Qwen3-1.7B model (~1.1GB)
-RUN mkdir -p models && \
-    curl -L -o models/Qwen3-1.7B-Q4_K_M.gguf \
+# Modelo Qwen3-1.7B (~1.1GB). Va ANTES de copiar el codigo para que
+# Docker cachee esta capa y no lo re-descargue en cada cambio de server.py.
+RUN mkdir -p ${MODEL_DIR} && \
+    curl -fL -o ${MODEL_DIR}/Qwen3-1.7B-Q4_K_M.gguf \
     "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true"
+
+COPY backend/ .
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
   CMD curl -f http://localhost:8000/docs || exit 1
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", ""]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -4,6 +4,8 @@ import { Svg, G, Line, Rect, Circle, Text as SvgText, Path } from "react-native-
 import axios from "axios";
 import { useTheme } from "../contexts/ThemeContext";
 
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
+
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const CHART_WIDTH = SCREEN_WIDTH - 40;
 const CHART_HEIGHT = 400;
@@ -39,6 +41,8 @@ interface IchimokuData {
     senkou_a: number;
     senkou_b: number;
     chikou_free: boolean;
+    /** "Libre" u "Obstruido" — el backend lo envía junto a chikou_free. */
+    chikou_status: string;
     cloud_color: string;
     tk_cross: string;
   };
@@ -69,7 +73,7 @@ export default function IchimokuChart({ ticker }: { ticker: string }) {
   const loadIchimoku = async () => {
     try {
       setLoading(true);
-      const { data: response } = await axios.get(`http://localhost:8002/api/ichimoku-chart/${ticker}`);
+      const { data: response } = await axios.get(`${BACKEND_URL}/api/ichimoku-chart/${ticker}`);
       setData(response);
     } catch (error) {
       console.error("Error loading Ichimoku:", error);

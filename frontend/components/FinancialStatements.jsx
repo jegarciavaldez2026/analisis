@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useTheme } from "../contexts/ThemeContext";
 
 const BACKEND_URL = typeof process !== "undefined" && process.env?.EXPO_PUBLIC_BACKEND_URL
   ? process.env.EXPO_PUBLIC_BACKEND_URL
@@ -14,9 +15,10 @@ const fmt = (v, decimals = 1) => {
   return `${n.toFixed(2)}M`;
 };
 
-const color = (v) => {
-  if (v == null || v === "") return "#6b7280";
-  return Number(v) >= 0 ? "#059669" : "#dc2626";
+/** Signo de una cifra en el codigo del producto. `c` es la paleta activa. */
+const color = (v, c) => {
+  if (v == null || v === "") return c.inkFaint;
+  return Number(v) >= 0 ? c.up : c.down;
 };
 
 // ─── PDF Generator ───────────────────────────────────────────────────────────
@@ -37,8 +39,8 @@ function generatePDF(title, ticker, companyName, rows, years) {
   const totalH = Math.max(H, tableTop + rows.length * rowH + 80);
 
   const cells = rows.map((row, ri) => {
-    const bg = row.isSection ? "#1e293b" : ri % 2 === 0 ? "#f8fafc" : "#ffffff";
-    const textColor = row.isSection ? "#ffffff" : row.isBold ? "#0f172a" : "#374151";
+    const bg = row.isSection ? c.ink : ri % 2 === 0 ? c.surfaceSunken : c.surface;
+    const textColor = row.isSection ? c.surface : row.isBold ? c.ink : c.inkMuted;
     const rectY = tableTop + ri * rowH;
     return `
       <rect x="${margin}" y="${rectY}" width="${W - margin * 2}" height="${rowH}" fill="${bg}" />
@@ -49,7 +51,7 @@ function generatePDF(title, ticker, companyName, rows, years) {
       ${years.map((yr, ci) => {
         const val = row.values?.[yr];
         const displayVal = val == null || val === "" ? "—" : fmt(val);
-        const valColor = row.isSection ? "#ffffff" : Number(val) < 0 ? "#dc2626" : textColor;
+        const valColor = row.isSection ? c.surface : Number(val) < 0 ? c.down : textColor;
         const xPos = margin + 240 + ci * colW + colW / 2;
         return `<text x="${xPos}" y="${rectY + 19}" 
                       font-family="Courier New, monospace" font-size="10" 
@@ -63,43 +65,45 @@ function generatePDF(title, ticker, companyName, rows, years) {
     const xPos = margin + 240 + ci * colW + colW / 2;
     return `<text x="${xPos}" y="${margin + titleH + 35}" 
                   font-family="Georgia, serif" font-size="12" font-weight="bold" 
-                  text-anchor="middle" fill="#ffffff">${escapeXml(yr)}</text>
+                  text-anchor="middle" fill={c.surface}>${escapeXml(yr)}</text>
             <text x="${xPos}" y="${margin + titleH + 52}" 
                   font-family="Georgia, serif" font-size="9" 
-                  text-anchor="middle" fill="#94a3b8">(M USD)</text>`;
+                  text-anchor="middle" fill={c.inkFaint}>(M USD)</text>`;
   }).join("");
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${totalH}" viewBox="0 0 ${W} ${totalH}">
   <defs>
     <linearGradient id="hdrGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <!-- El PDF exportado no sigue el tema de la app a proposito: un documento
+           impreso no deberia invertirse porque el usuario tenga el modo oscuro. -->
       <stop offset="0%" style="stop-color:#0f172a"/>
       <stop offset="100%" style="stop-color:#1e3a5f"/>
     </linearGradient>
   </defs>
   
   <!-- Background -->
-  <rect width="${W}" height="${totalH}" fill="#f8fafc"/>
+  <rect width="${W}" height="${totalH}" fill={c.surfaceSunken}/>
   
   <!-- Header gradient block -->
   <rect x="0" y="0" width="${W}" height="${margin + titleH + headerH}" fill="url(#hdrGrad)"/>
   
   <!-- Accent bar -->
-  <rect x="0" y="${margin + titleH + headerH - 4}" width="${W}" height="4" fill="#3b82f6"/>
+  <rect x="0" y="${margin + titleH + headerH - 4}" width="${W}" height="4" fill={c.accent}/>
 
   <!-- Company & Title -->
   <text x="${margin}" y="${margin + 28}" font-family="Georgia, serif" font-size="22" 
-        font-weight="bold" fill="#ffffff">${escapeXml(companyName)} · ${escapeXml(ticker)}</text>
+        font-weight="bold" fill={c.surface}>${escapeXml(companyName)} · ${escapeXml(ticker)}</text>
   <text x="${margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="15" 
-        fill="#94a3b8">${escapeXml(title)}</text>
+        fill={c.inkFaint}>${escapeXml(title)}</text>
   <text x="${W - margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="10" 
-        fill="#64748b" text-anchor="end">Generado: ${new Date().toLocaleDateString("es-ES")}</text>
+        fill={c.inkMuted} text-anchor="end">Generado: ${new Date().toLocaleDateString("es-ES")}</text>
 
   <!-- Table header -->
   <rect x="${margin}" y="${margin + titleH}" width="${W - margin * 2}" height="${headerH - 8}" 
-        fill="#1e293b" rx="4"/>
+        fill={c.ink} rx="4"/>
   <text x="${margin + 12}" y="${margin + titleH + 35}" font-family="Georgia, serif" 
-        font-size="12" font-weight="bold" fill="#ffffff">Concepto</text>
+        font-size="12" font-weight="bold" fill={c.surface}>Concepto</text>
   ${yearHeaders}
 
   <!-- Rows -->
@@ -108,13 +112,13 @@ function generatePDF(title, ticker, companyName, rows, years) {
   <!-- Footer -->
   <line x1="${margin}" y1="${tableTop + rows.length * rowH + 16}" 
         x2="${W - margin}" y2="${tableTop + rows.length * rowH + 16}" 
-        stroke="#e2e8f0" stroke-width="1"/>
+        stroke={c.rule} stroke-width="1"/>
   <text x="${margin}" y="${tableTop + rows.length * rowH + 36}" 
-        font-family="Georgia, serif" font-size="9" fill="#94a3b8">
+        font-family="Georgia, serif" font-size="9" fill={c.inkFaint}>
     * Valores en millones de USD (M). Datos provistos por Yahoo Finance vía API.
   </text>
   <text x="${W - margin}" y="${tableTop + rows.length * rowH + 36}" 
-        font-family="Georgia, serif" font-size="9" fill="#94a3b8" text-anchor="end">
+        font-family="Georgia, serif" font-size="9" fill={c.inkFaint} text-anchor="end">
     FinAnalysis Pro
   </text>
 </svg>`;
@@ -131,6 +135,7 @@ function generatePDF(title, ticker, companyName, rows, years) {
 // ─── Editable Cell ────────────────────────────────────────────────────────────
 
 function EditableCell({ value, onChange, isEditing, align = "right" }) {
+  const { colors: c } = useTheme();
   const [localVal, setLocalVal] = useState(value ?? "");
 
   useEffect(() => setLocalVal(value ?? ""), [value]);
@@ -142,7 +147,7 @@ function EditableCell({ value, onChange, isEditing, align = "right" }) {
         textAlign: align,
         fontFamily: "'Courier New', monospace",
         fontSize: 13,
-        color: value == null || value === "" ? "#9ca3af" : color(value),
+        color: value == null || value === "" ? c.inkFaint : color(value, c),
         fontWeight: Math.abs(Number(value)) > 0 ? 500 : 400,
       }}>
         {value == null || value === "" ? "—" : fmt(value)}
@@ -159,14 +164,14 @@ function EditableCell({ value, onChange, isEditing, align = "right" }) {
       onKeyDown={(e) => e.key === "Enter" && onChange(localVal === "" ? null : Number(localVal))}
       style={{
         width: "100%",
-        background: "#dbeafe",
-        border: "2px solid #3b82f6",
+        background: c.accentWash,
+        border: `2px solid ${c.accent}`,
         borderRadius: 4,
         padding: "2px 6px",
         textAlign: "right",
         fontSize: 12,
         fontFamily: "'Courier New', monospace",
-        color: "#1e3a5f",
+        color: c.ink,
         outline: "none",
       }}
     />
@@ -175,16 +180,525 @@ function EditableCell({ value, onChange, isEditing, align = "right" }) {
 
 // ─── Statement Table ──────────────────────────────────────────────────────────
 
-function StatementTable({ title, rows, years, editMode, onCellChange, ticker, companyName, accentColor }) {
+/* ==========================================================================
+ * Sparkline de fila
+ *
+ * Una minigrafica por partida, a la izquierda de los anos: deja ver si la
+ * cuenta sube o baja sin tener que leer y comparar cinco cifras. El tono lo
+ * decide la direccion del tramo completo, con el codigo verde/rojo del
+ * producto. Donde no hay dato el trazo se interrumpe: no se interpola.
+ * ========================================================================== */
+
+/**
+ * El backend devuelve los anos de mas nuevo a mas viejo (`sorted(..., reverse=True)`),
+ * que es el orden correcto para LEER la tabla pero el contrario para DIBUJAR una
+ * serie. Se ordena ascendente aqui, en un solo sitio, en vez de confiar en que
+ * quien llame se acuerde de invertir.
+ */
+function cronologico(years) {
+  return [...years].sort((a, b) => {
+    const na = Number(String(a).slice(0, 4));
+    const nb = Number(String(b).slice(0, 4));
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function RowSparkline({ values, years, c, width = 64, height = 20 }) {
+  const eje = useMemo(() => cronologico(years), [years]);
+  const serie = eje.map((yr) => {
+    const v = values?.[yr];
+    return v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v);
+  });
+  const validos = serie.filter((v) => v != null);
+  if (validos.length < 2) {
+    return <svg width={width} height={height} aria-hidden="true" />;
+  }
+
+  const min = Math.min(...validos);
+  const max = Math.max(...validos);
+  const span = max - min || Math.abs(max) || 1;
+  const pad = 2;
+  const x = (i) => (serie.length <= 1 ? width / 2 : (i / (serie.length - 1)) * (width - 2)) + 1;
+  const y = (v) => height - pad - ((v - min) / span) * (height - pad * 2);
+
+  let d = "";
+  let abierto = false;
+  serie.forEach((v, i) => {
+    if (v == null) { abierto = false; return; }
+    d += `${abierto ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)} `;
+    abierto = true;
+  });
+
+  const primero = validos[0];
+  const ultimo = validos[validos.length - 1];
+  const trazo = ultimo > primero ? c.up : ultimo < primero ? c.down : c.inkMuted;
+  const ultimoIdx = serie.map((v, i) => (v == null ? -1 : i)).filter((i) => i >= 0).pop();
+
+  return (
+    <svg width={width} height={height} style={{ display: "block", overflow: "visible" }} aria-hidden="true">
+      <path d={d} fill="none" stroke={trazo} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={x(ultimoIdx)} cy={y(ultimo)} r="1.9" fill={trazo} />
+    </svg>
+  );
+}
+
+/* ==========================================================================
+ * Estadisticas derivadas
+ *
+ * Se calculan desde las propias filas del estado, no desde una llamada nueva:
+ * si el numerador o el denominador falta, el ratio sale como sin senal en vez
+ * de como cero. El umbral de cada uno decide su tono.
+ * ========================================================================== */
+
+const buscarFila = (rows, label) => rows.find((r) => r.label === label)?.values ?? null;
+
+const razon = (a, b, yr) => {
+  const num = a?.[yr];
+  const den = b?.[yr];
+  if (num == null || den == null || Number(den) === 0) return null;
+  const v = Number(num) / Number(den);
+  return Number.isFinite(v) ? v : null;
+};
+
+function derivarEstadisticas(tab, rows, years) {
+  const f = (label) => buscarFila(rows, label);
+
+  if (tab === "balance") {
+    const activoCorriente = f("Total Activo Corriente");
+    const pasivoCorriente = f("Total Pasivo Corriente");
+    const pasivoTotal     = f("TOTAL PASIVO");
+    const patrimonio      = f("Total Patrimonio Neto");
+    const activoTotal     = f("TOTAL ACTIVO");
+    return [
+      { label: "Current Ratio", hint: "Activo corriente / pasivo corriente", decimales: 2,
+        bueno: (v) => v >= 1.5, malo: (v) => v < 1,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(activoCorriente, pasivoCorriente, yr)])) },
+      { label: "Deuda / Patrimonio", hint: "Apalancamiento", decimales: 2,
+        bueno: (v) => v <= 1, malo: (v) => v > 2,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(pasivoTotal, patrimonio, yr)])) },
+      { label: "Patrimonio / Activo", hint: "Cuanto del activo es propio", decimales: 2,
+        bueno: (v) => v >= 0.5, malo: (v) => v < 0.25,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(patrimonio, activoTotal, yr)])) },
+    ];
+  }
+
+  if (tab === "income") {
+    const ingresos = f("Ingresos Totales");
+    const bruto    = f("Beneficio Bruto");
+    const ebit     = f("EBIT / Beneficio Operativo");
+    const neto     = f("Beneficio Neto");
+    return [
+      { label: "Margen bruto", hint: "Beneficio bruto / ingresos", decimales: 1, porcentaje: true,
+        bueno: (v) => v >= 0.4, malo: (v) => v < 0.2,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(bruto, ingresos, yr)])) },
+      { label: "Margen operativo", hint: "EBIT / ingresos", decimales: 1, porcentaje: true,
+        bueno: (v) => v >= 0.15, malo: (v) => v < 0.05,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(ebit, ingresos, yr)])) },
+      { label: "Margen neto", hint: "Beneficio neto / ingresos", decimales: 1, porcentaje: true,
+        bueno: (v) => v >= 0.1, malo: (v) => v < 0,
+        values: Object.fromEntries(years.map((yr) => [yr, razon(neto, ingresos, yr)])) },
+    ];
+  }
+
+  const ocf   = f("Flujo de Caja Operativo (OCF)");
+  const fcf   = f("Flujo de Caja Libre (FCF)");
+  const neto  = f("Beneficio Neto");
+  const capex = f("Inversiones en PP&E (Capex)");
+  return [
+    { label: "Conversion a caja", hint: "OCF / beneficio neto", decimales: 2,
+      bueno: (v) => v >= 1, malo: (v) => v < 0.7,
+      values: Object.fromEntries(years.map((yr) => [yr, razon(ocf, neto, yr)])) },
+    { label: "FCF / OCF", hint: "Cuanto del flujo operativo queda libre", decimales: 2,
+      bueno: (v) => v >= 0.6, malo: (v) => v < 0.3,
+      values: Object.fromEntries(years.map((yr) => [yr, razon(fcf, ocf, yr)])) },
+    { label: "Capex / OCF", hint: "Intensidad de inversion", decimales: 2,
+      bueno: (v) => v <= 0.3, malo: (v) => v > 0.6,
+      values: Object.fromEntries(years.map((yr) => [yr, Math.abs(razon(capex, ocf, yr) ?? NaN) || null])) },
+  ];
+}
+
+function StatsSection({ tab, rows, years, c }) {
+  const stats = useMemo(() => derivarEstadisticas(tab, rows, years), [tab, rows, years]);
+  if (!stats.length || !years.length) return null;
+
+  const tono = (st, v) => (v == null ? c.noSignal : st.bueno(v) ? c.up : st.malo(v) ? c.down : c.caution);
+  const fmtV = (st, v) =>
+    v == null ? "—" : st.porcentaje ? `${(v * 100).toFixed(st.decimales)} %` : v.toFixed(st.decimales);
+
+  return (
+    <div style={{ borderTop: `1px solid ${c.rule}` }}>
+      <div style={{ padding: "12px 24px 8px", background: c.surfaceSunken }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: c.inkFaint, textTransform: "uppercase", letterSpacing: 1 }}>
+          Estadisticas derivadas
+        </span>
+      </div>
+      {stats.map((st, i) => (
+        <div key={st.label} style={{
+          display: "grid",
+          gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+          padding: "8px 24px",
+          borderBottom: i < stats.length - 1 ? `1px solid ${c.rule}` : "none",
+        }}>
+          <span style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: c.ink }}>{st.label}</span>
+            <span style={{ fontSize: 10, color: c.inkFaint }}>{st.hint}</span>
+          </span>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <RowSparkline values={st.values} years={years} c={c} />
+          </div>
+          {years.map((yr) => (
+            <span key={yr} style={{
+              fontSize: 12, fontWeight: 600, textAlign: "right", paddingLeft: 8,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontVariantNumeric: "tabular-nums",
+              color: tono(st, st.values[yr]),
+            }}>
+              {fmtV(st, st.values[yr])}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+/* ==========================================================================
+ * Graficos al pie del estado
+ *
+ * Tres formas, una por lo que cada estado necesita mostrar:
+ *
+ *  - Area apilada espejada (balance): el activo se apila hacia arriba desde la
+ *    linea cero y el pasivo mas patrimonio hacia abajo. Cuadran por definicion,
+ *    asi que la simetria es la lectura: si un lado crece mas que el otro, se ve.
+ *  - Barras agrupadas (balance): activo contra pasivo, separados en corto y
+ *    largo plazo. Responde a "con que se financia lo que se tiene, y a que plazo".
+ *  - Multilinea (resultados y flujo): magnitudes que se comparan en el tiempo.
+ *
+ * Todo en SVG inline, sin dependencias, con la paleta activa.
+ * ========================================================================== */
+
+/** Mezcla dos colores hex. Sirve para derivar una segunda capa del acento sin
+ *  meter un color nuevo que no esté en el sistema. */
+function mixSuave(a, b, t = 0.38) {
+  const p = (h) => {
+    const x = h.replace('#', '');
+    const f = x.length === 3 ? x.split('').map((ch) => ch + ch).join('') : x.slice(0, 6);
+    return [parseInt(f.slice(0, 2), 16), parseInt(f.slice(2, 4), 16), parseInt(f.slice(4, 6), 16)];
+  };
+  const [r1, g1, b1] = p(a);
+  const [r2, g2, b2] = p(b);
+  const h = (n) => Math.round(n).toString(16).padStart(2, '0');
+  return `#${h(r1 + (r2 - r1) * t)}${h(g1 + (g2 - g1) * t)}${h(b1 + (b2 - b1) * t)}`;
+}
+
+const numOf = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/** Rotulo compacto para los ejes: 1.2B, 340M, 12k. */
+function ejeFmt(v) {
+  const a = Math.abs(v);
+  if (a >= 1e6) return `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}B`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(a >= 1e4 ? 0 : 1)}MM`;
+  if (a >= 1) return `${v.toFixed(0)}M`;
+  return v === 0 ? "0" : v.toFixed(1);
+}
+
+function Leyenda({ series, c }) {
+  return (
+    <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
+      {series.map((s) => (
+        <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: c.inkMuted }}>
+          <span style={{ width: 10, height: 10, background: s.color, display: "inline-block", borderRadius: 2 }} />
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* ── Area apilada espejada ────────────────────────────────────────────────── */
+
+function AreaEspejada({ arriba, abajo, years, c, etiquetaArriba, etiquetaAbajo }) {
+  const W = 480, H = 210, PAD = { t: 14, r: 10, b: 22, l: 46 };
+  const plotW = W - PAD.l - PAD.r;
+  const semiH = (H - PAD.t - PAD.b) / 2;
+  const cero = PAD.t + semiH;
+
+  const suma = (capas, yr) => capas.reduce((acc, cap) => acc + Math.abs(numOf(cap.values?.[yr]) ?? 0), 0);
+  const max = Math.max(...years.flatMap((yr) => [suma(arriba, yr), suma(abajo, yr)]), 1);
+
+  const x = (i) => PAD.l + (years.length <= 1 ? plotW / 2 : (i / (years.length - 1)) * plotW);
+  const alto = (v) => (Math.abs(v) / max) * semiH;
+
+  /** Cada capa se dibuja como banda entre su acumulado previo y el nuevo. */
+  const bandas = (capas, signo) => {
+    const acum = years.map(() => 0);
+    return capas.map((cap) => {
+      const base = [...acum];
+      years.forEach((yr, i) => { acum[i] += Math.abs(numOf(cap.values?.[yr]) ?? 0); });
+      const arribaPts = years.map((_, i) => `${x(i).toFixed(1)},${(cero - signo * alto(acum[i])).toFixed(1)}`);
+      const abajoPts = years.map((_, i) => `${x(i).toFixed(1)},${(cero - signo * alto(base[i])).toFixed(1)}`).reverse();
+      return { ...cap, d: `M${arribaPts.join(" L")} L${abajoPts.join(" L")} Z` };
+    });
+  };
+
+  const bandasArriba = bandas(arriba, 1);
+  const bandasAbajo = bandas(abajo, -1);
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {bandasAbajo.concat(bandasArriba).map((b) => (
+        <path key={b.label} d={b.d} fill={b.color} fillOpacity="0.75" stroke={b.color} strokeWidth="1" />
+      ))}
+
+      {/* Linea cero: el eje de simetria, que es de lo que va este grafico */}
+      <line x1={PAD.l} x2={W - PAD.r} y1={cero} y2={cero} stroke={c.ruleStrong} strokeWidth="1" />
+
+      <text x={4} y={PAD.t + semiH / 2} fontSize="9" fill={c.inkFaint}
+            style={{ textTransform: "uppercase", letterSpacing: 0.6 }}>{etiquetaArriba}</text>
+      <text x={4} y={cero + semiH / 2} fontSize="9" fill={c.inkFaint}
+            style={{ textTransform: "uppercase", letterSpacing: 0.6 }}>{etiquetaAbajo}</text>
+
+      {years.map((yr, i) => (
+        <text key={yr} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill={c.inkFaint}
+              fontFamily="ui-monospace, monospace">{yr}</text>
+      ))}
+    </svg>
+  );
+}
+
+/* ── Barras agrupadas ─────────────────────────────────────────────────────── */
+
+function BarrasAgrupadas({ grupos, series, c }) {
+  const W = 480, H = 210, PAD = { t: 14, r: 10, b: 34, l: 52 };
+  const plotW = W - PAD.l - PAD.r;
+  const plotH = H - PAD.t - PAD.b;
+  const valores = grupos.flatMap((g) => g.valores.map((v) => Math.abs(v ?? 0)));
+  const max = Math.max(...valores, 1);
+  const anchoGrupo = plotW / grupos.length;
+  const anchoBarra = Math.min(46, (anchoGrupo * 0.6) / series.length);
+  const y = (v) => PAD.t + plotH - (Math.abs(v) / max) * plotH;
+  const ticks = [0, max / 2, max];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke={c.rule} strokeWidth="1" />
+          <text x={PAD.l - 6} y={y(t) + 3} textAnchor="end" fontSize="9" fill={c.inkFaint}
+                fontFamily="ui-monospace, monospace">{ejeFmt(t)}</text>
+        </g>
+      ))}
+
+      {grupos.map((g, gi) => {
+        const centro = PAD.l + anchoGrupo * (gi + 0.5);
+        const inicio = centro - (anchoBarra * series.length) / 2;
+        return (
+          <g key={g.label}>
+            {g.valores.map((v, si) => {
+              if (v == null) return null;
+              const bx = inicio + anchoBarra * si;
+              return (
+                <rect key={series[si].label} x={bx + 2} y={y(v)} width={anchoBarra - 4}
+                      height={Math.max(PAD.t + plotH - y(v), 1)} fill={series[si].color} />
+              );
+            })}
+            <text x={centro} y={H - 16} textAnchor="middle" fontSize="10" fill={c.inkMuted}>{g.label}</text>
+          </g>
+        );
+      })}
+
+      <line x1={PAD.l} x2={W - PAD.r} y1={PAD.t + plotH} y2={PAD.t + plotH} stroke={c.ruleStrong} strokeWidth="1" />
+    </svg>
+  );
+}
+
+/* ── Multilinea ───────────────────────────────────────────────────────────── */
+
+function MultiLinea({ series, years, c, decimales = 0 }) {
+  const W = 480, H = 210, PAD = { t: 14, r: 10, b: 22, l: 52 };
+  const plotW = W - PAD.l - PAD.r;
+  const plotH = H - PAD.t - PAD.b;
+  const todos = series.flatMap((s) => years.map((yr) => numOf(s.values?.[yr]))).filter((v) => v != null);
+  if (!todos.length) return null;
+
+  const min = Math.min(...todos, 0);
+  const max = Math.max(...todos);
+  const span = max - min || Math.abs(max) || 1;
+  const x = (i) => PAD.l + (years.length <= 1 ? plotW / 2 : (i / (years.length - 1)) * plotW);
+  const y = (v) => PAD.t + plotH - ((v - min) / span) * plotH;
+  const ticks = [min, min + span / 2, max];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke={c.rule} strokeWidth="1" />
+          <text x={PAD.l - 6} y={y(t) + 3} textAnchor="end" fontSize="9" fill={c.inkFaint}
+                fontFamily="ui-monospace, monospace">
+            {decimales ? t.toFixed(decimales) : ejeFmt(t)}
+          </text>
+        </g>
+      ))}
+
+      {min < 0 && (
+        <line x1={PAD.l} x2={W - PAD.r} y1={y(0)} y2={y(0)} stroke={c.ruleStrong} strokeWidth="1" strokeDasharray="3 3" />
+      )}
+
+      {series.map((s) => {
+        let d = "", abierto = false;
+        const puntos = [];
+        years.forEach((yr, i) => {
+          const v = numOf(s.values?.[yr]);
+          if (v == null) { abierto = false; return; }
+          d += `${abierto ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)} `;
+          puntos.push({ x: x(i), y: y(v) });
+          abierto = true;
+        });
+        return (
+          <g key={s.label}>
+            <path d={d} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {puntos.map((p, i) => (
+              <circle key={i} cx={p.x} cy={p.y} r="2.6" fill={c.surface} stroke={s.color} strokeWidth="1.6" />
+            ))}
+          </g>
+        );
+      })}
+
+      {years.map((yr, i) => (
+        <text key={yr} x={x(i)} y={H - 6} textAnchor="middle" fontSize="9" fill={c.inkFaint}
+              fontFamily="ui-monospace, monospace">{yr}</text>
+      ))}
+    </svg>
+  );
+}
+
+/* ── Compositor ───────────────────────────────────────────────────────────── */
+
+function StatementCharts({ tab, rows, years, c }) {
+  const anos = useMemo(() => cronologico(years), [years]);
+  const f = useCallback((label) => buscarFila(rows, label), [rows]);
+
+  const bloques = useMemo(() => {
+    if (!anos.length) return null;
+
+    if (tab === "balance") {
+      const activoC = { label: "Activo corriente", values: f("Total Activo Corriente"), color: c.accent };
+      const activoNC = { label: "Activo no corriente", values: f("Total Activo No Corriente"), color: mixSuave(c.accent, c.ink) };
+      const pasivoC = { label: "Pasivo corriente", values: f("Total Pasivo Corriente"), color: c.caution };
+      const pasivoNC = { label: "Pasivo no corriente", values: f("Total Pasivo No Corriente"), color: c.down };
+      const patrimonio = { label: "Patrimonio neto", values: f("Total Patrimonio Neto"), color: c.up };
+      const ultimo = anos[anos.length - 1];
+      const v = (fila) => numOf(fila?.[ultimo]);
+
+      return {
+        izq: {
+          titulo: "Balance a lo largo del tiempo",
+          leyenda: [activoC, activoNC, pasivoC, pasivoNC, patrimonio],
+          grafico: (
+            <AreaEspejada
+              arriba={[activoC, activoNC]}
+              abajo={[pasivoC, pasivoNC, patrimonio]}
+              years={anos}
+              c={c}
+              etiquetaArriba="Activo"
+              etiquetaAbajo="Pasivo + patrimonio"
+            />
+          ),
+        },
+        der: {
+          titulo: `Corto vs largo plazo · ${ultimo}`,
+          leyenda: [{ label: "Activo", color: c.accent }, { label: "Pasivo", color: c.caution }],
+          grafico: (
+            <BarrasAgrupadas
+              series={[{ label: "Activo", color: c.accent }, { label: "Pasivo", color: c.caution }]}
+              grupos={[
+                { label: "Corto plazo", valores: [v(activoC.values), v(pasivoC.values)] },
+                { label: "Largo plazo", valores: [v(activoNC.values), v(pasivoNC.values)] },
+              ]}
+              c={c}
+            />
+          ),
+        },
+      };
+    }
+
+    if (tab === "income") {
+      const lineas = [
+        { label: "Ingresos", values: f("Ingresos Totales"), color: c.accent },
+        { label: "EBIT", values: f("EBIT / Beneficio Operativo"), color: c.caution },
+        { label: "Beneficio neto", values: f("Beneficio Neto"), color: c.down },
+        { label: "EBITDA", values: f("EBITDA"), color: c.up },
+      ].filter((s) => s.values);
+      const bpa = [
+        { label: "BPA básico", values: f("BPA Básico (EPS)"), color: c.accent },
+        { label: "BPA diluido", values: f("BPA Diluido (EPS)"), color: c.caution },
+      ].filter((s) => s.values);
+
+      return {
+        izq: { titulo: "Cuenta de resultados", leyenda: lineas, grafico: <MultiLinea series={lineas} years={anos} c={c} /> },
+        der: bpa.length
+          ? { titulo: "Beneficio por acción", leyenda: bpa, grafico: <MultiLinea series={bpa} years={anos} c={c} decimales={2} /> }
+          : null,
+      };
+    }
+
+    const flujos = [
+      { label: "Flujo operativo", values: f("Flujo de Caja Operativo (OCF)"), color: c.accent },
+      { label: "Flujo libre", values: f("Flujo de Caja Libre (FCF)"), color: c.up },
+      { label: "Capex", values: f("Inversiones en PP&E (Capex)"), color: c.down },
+    ].filter((s) => s.values);
+    const reparto = [
+      { label: "Dividendos", values: f("Dividendos Pagados"), color: c.accent },
+      { label: "Recompras", values: f("Recompra de Acciones"), color: c.caution },
+    ].filter((s) => s.values);
+
+    return {
+      izq: { titulo: "Flujos de caja", leyenda: flujos, grafico: <MultiLinea series={flujos} years={anos} c={c} /> },
+      der: reparto.length
+        ? { titulo: "Retribución al accionista", leyenda: reparto, grafico: <MultiLinea series={reparto} years={anos} c={c} /> }
+        : null,
+    };
+  }, [tab, anos, f, c]);
+
+  if (!bloques) return null;
+
+  const panel = (b) =>
+    b && (
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: c.inkFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+          {b.titulo}
+        </div>
+        {b.grafico}
+        <Leyenda series={b.leyenda} c={c} />
+      </div>
+    );
+
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
+      gap: 24,
+      padding: 20,
+      borderTop: `1px solid ${c.rule}`,
+      background: c.surfaceSunken,
+    }}>
+      {panel(bloques.izq)}
+      {panel(bloques.der)}
+    </div>
+  );
+}
+
+function StatementTable({ title, rows, years, editMode, onCellChange, ticker, companyName, accentColor, statementTab }) {
+  const { colors: c } = useTheme();
   const [hoveredRow, setHoveredRow] = useState(null);
 
   return (
     <div style={{
-      background: "#ffffff",
+      background: c.surface,
       borderRadius: 16,
       overflow: "hidden",
       boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
-      border: "1px solid #e2e8f0",
+      border: `1px solid ${c.rule}`,
       marginBottom: 32,
     }}>
       {/* Table Header */}
@@ -193,7 +707,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
         alignItems: "center",
         justifyContent: "space-between",
         padding: "20px 24px 16px",
-        background: `linear-gradient(135deg, ${accentColor}08 0%, #ffffff 100%)`,
+        background: c.surface,
         borderBottom: `3px solid ${accentColor}30`,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -202,10 +716,10 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
             background: accentColor,
           }} />
           <div>
-            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#0f172a", fontFamily: "Georgia, serif" }}>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: c.ink, fontFamily: "Georgia, serif" }}>
               {title}
             </h3>
-            <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: "monospace" }}>
+            <span style={{ fontSize: 11, color: c.inkFaint, fontFamily: "monospace" }}>
               Valores en millones USD (M)
             </span>
           </div>
@@ -214,37 +728,42 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
           onClick={() => generatePDF(title, ticker, companyName, rows, years)}
           style={{
             display: "flex", alignItems: "center", gap: 6,
-            padding: "8px 16px",
-            background: "#0f172a",
-            color: "#ffffff",
-            border: "none",
-            borderRadius: 8,
-            fontSize: 12,
+            padding: "0 16px",
+            background: c.accent,
+            color: c.inkOnAccent,
+            border: `1px solid ${c.accent}`,
+            borderRadius: 5,
+            minHeight: 40,
+            fontSize: 13,
             fontWeight: 600,
+            letterSpacing: 0.2,
             cursor: "pointer",
-            transition: "all 0.2s",
-            fontFamily: "Georgia, serif",
+            transition: "background 160ms",
+            fontFamily: "inherit",
           }}
-          onMouseEnter={e => e.target.style.background = accentColor}
-          onMouseLeave={e => e.target.style.background = "#0f172a"}
+          onMouseEnter={e => e.target.style.background = c.accentPressed}
+          onMouseLeave={e => e.target.style.background = c.accent}
         >
-          ⬇ Exportar SVG/PDF
+          Exportar SVG/PDF
         </button>
       </div>
 
       {/* Column Headers */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: `240px repeat(${years.length}, 1fr)`,
-        background: "#1e293b",
+        gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+        background: c.ink,
         padding: "12px 24px",
       }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: c.inkFaint, textTransform: "uppercase", letterSpacing: 1 }}>
           Concepto
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: c.inkFaint, textTransform: "uppercase", letterSpacing: 1 }}>
+          Tendencia
         </span>
         {years.map(yr => (
           <span key={yr} style={{
-            fontSize: 12, fontWeight: 700, color: "#ffffff",
+            fontSize: 12, fontWeight: 700, color: c.surface,
             textAlign: "right", fontFamily: "Georgia, serif",
           }}>
             {yr}
@@ -259,14 +778,14 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
             return (
               <div key={ri} style={{
                 display: "grid",
-                gridTemplateColumns: `240px repeat(${years.length}, 1fr)`,
+                gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
                 padding: "10px 24px",
-                background: "#f1f5f9",
-                borderTop: "1px solid #e2e8f0",
-                borderBottom: "1px solid #e2e8f0",
+                background: c.rule,
+                borderTop: `1px solid ${c.rule}`,
+                borderBottom: `1px solid ${c.rule}`,
               }}>
                 <span style={{
-                  fontSize: 11, fontWeight: 700, color: "#64748b",
+                  fontSize: 11, fontWeight: 700, color: c.inkMuted,
                   textTransform: "uppercase", letterSpacing: 0.8,
                 }}>
                   {row.label}
@@ -284,10 +803,10 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
               onMouseLeave={() => setHoveredRow(null)}
               style={{
                 display: "grid",
-                gridTemplateColumns: `240px repeat(${years.length}, 1fr)`,
+                gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
                 padding: "8px 24px",
-                background: isHovered ? `${accentColor}06` : ri % 2 === 0 ? "#fafafa" : "#ffffff",
-                borderBottom: "1px solid #f1f5f9",
+                background: isHovered ? `${accentColor}06` : ri % 2 === 0 ? c.surfaceSunken : c.surface,
+                borderBottom: `1px solid ${c.rule}`,
                 transition: "background 0.15s",
                 cursor: editMode ? "text" : "default",
               }}
@@ -295,17 +814,20 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
               <span style={{
                 fontSize: row.isBold ? 13 : 12,
                 fontWeight: row.isBold ? 700 : 400,
-                color: row.isBold ? "#0f172a" : "#374151",
+                color: row.isBold ? c.ink : c.inkMuted,
                 fontFamily: "Georgia, serif",
                 display: "flex",
                 alignItems: "center",
                 paddingLeft: row.indent ? `${row.indent * 16}px` : 0,
               }}>
                 {row.isBold && (
-                  <span style={{ marginRight: 6, color: accentColor, fontSize: 10 }}>▶</span>
+                  <span style={{ marginRight: 8, width: 3, height: 13, background: accentColor, display: "inline-block", flexShrink: 0 }} />
                 )}
                 {row.label}
               </span>
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <RowSparkline values={row.values} years={years} c={c} />
+              </div>
               {years.map(yr => (
                 <div key={yr} style={{ paddingLeft: 8 }}>
                   <EditableCell
@@ -319,6 +841,9 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
           );
         })}
       </div>
+
+      <StatsSection tab={statementTab} rows={rows} years={years} c={c} />
+      <StatementCharts tab={statementTab} rows={rows} years={years} c={c} />
     </div>
   );
 }
@@ -326,6 +851,8 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function FinancialStatements({ ticker, companyName }) {
+  const { colors: c } = useTheme();
+  const styles = useMemo(() => makeStyles(c), [c]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("income");
@@ -381,9 +908,9 @@ export default function FinancialStatements({ ticker, companyName }) {
   };
 
   const tabs = [
-    { id: "income", label: "Cuenta de Resultados", emoji: "📊", color: "#3b82f6" },
-    { id: "balance", label: "Balance", emoji: "⚖️", color: "#8b5cf6" },
-    { id: "cashflow", label: "Flujo de Caja", emoji: "💵", color: "#059669" },
+    { id: "income", label: "Cuenta de resultados", color: c.accent },
+    { id: "balance", label: "Balance", color: c.accent },
+    { id: "cashflow", label: "Flujo de caja", color: c.up },
   ];
 
   const activeTabData = tabs.find(t => t.id === activeTab);
@@ -392,8 +919,8 @@ export default function FinancialStatements({ ticker, companyName }) {
   if (!ticker) {
     return (
       <div style={styles.emptyState}>
-        <span style={{ fontSize: 48 }}>📋</span>
-        <p style={{ color: "#94a3b8", fontFamily: "Georgia, serif" }}>
+        
+        <p style={{ color: c.inkFaint, fontFamily: "Georgia, serif" }}>
           Analiza una acción para ver sus estados financieros
         </p>
       </div>
@@ -406,10 +933,10 @@ export default function FinancialStatements({ ticker, companyName }) {
       {/* ── Header ── */}
       <div style={styles.header}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#0f172a" }}>
-            📋 Estados Financieros
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: c.ink }}>
+            Estados financieros
           </h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: "#64748b" }}>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: c.inkMuted }}>
             {companyName || ticker} · Últimos 4 ejercicios fiscales · Millones USD
           </p>
         </div>
@@ -417,27 +944,27 @@ export default function FinancialStatements({ ticker, companyName }) {
           <button
             onClick={fetchStatements}
             disabled={loading}
-            style={{ ...styles.btn, background: "#f1f5f9", color: "#374151" }}
+            style={{ ...styles.btn, background: c.surfaceSunken, color: c.ink }}
           >
-            {loading ? "⏳" : "🔄"} Actualizar
+            {loading ? "Actualizando…" : "Actualizar"}
           </button>
           <button
             onClick={() => setEditMode(e => !e)}
             style={{
               ...styles.btn,
-              background: editMode ? "#dbeafe" : "#0f172a",
-              color: editMode ? "#1e40af" : "#ffffff",
-              border: editMode ? "2px solid #3b82f6" : "2px solid transparent",
+              background: editMode ? c.accentWash : c.accent,
+              color: editMode ? c.accent : c.inkOnAccent,
+              borderColor: c.accent,
             }}
           >
-            {editMode ? "✅ Modo edición ON" : "✏️ Editar valores"}
+            {editMode ? "Terminar edición" : "Editar valores"}
           </button>
         </div>
       </div>
 
       {editMode && (
         <div style={styles.editBanner}>
-          ✏️ <strong>Modo edición activo</strong> — Haz clic en cualquier celda numérica para modificarla.
+          <strong>Modo edición activo</strong> — Haz clic en cualquier celda numérica para modificarla.
           Los cambios se reflejan en tiempo real y en la exportación.
         </div>
       )}
@@ -445,7 +972,7 @@ export default function FinancialStatements({ ticker, companyName }) {
       {loading && (
         <div style={styles.loading}>
           <div style={styles.spinner} />
-          <span style={{ marginLeft: 12, color: "#64748b" }}>
+          <span style={{ marginLeft: 12, color: c.inkMuted }}>
             Cargando estados financieros de {ticker}...
           </span>
         </div>
@@ -461,14 +988,14 @@ export default function FinancialStatements({ ticker, companyName }) {
                 onClick={() => setActiveTab(tab.id)}
                 style={{
                   ...styles.tab,
-                  background: activeTab === tab.id ? "#ffffff" : "transparent",
-                  color: activeTab === tab.id ? tab.color : "#64748b",
+                  background: activeTab === tab.id ? c.surface : "transparent",
+                  color: activeTab === tab.id ? tab.color : c.inkMuted,
                   borderBottom: activeTab === tab.id ? `3px solid ${tab.color}` : "3px solid transparent",
                   fontWeight: activeTab === tab.id ? 700 : 500,
                   boxShadow: activeTab === tab.id ? "0 2px 8px rgba(0,0,0,0.06)" : "none",
                 }}
               >
-                {tab.emoji} {tab.label}
+                {tab.label}
               </button>
             ))}
           </div>
@@ -477,6 +1004,7 @@ export default function FinancialStatements({ ticker, companyName }) {
           <div style={{ marginTop: 20 }}>
             {activeTab === "income" && (
               <StatementTable
+                statementTab="income"
                 title="Cuenta de Resultados (Income Statement)"
                 rows={incomeRows}
                 years={years}
@@ -484,11 +1012,12 @@ export default function FinancialStatements({ ticker, companyName }) {
                 onCellChange={handleCellChange(setIncomeRows)}
                 ticker={ticker}
                 companyName={companyName || ticker}
-                accentColor="#3b82f6"
+                accentColor={c.accent}
               />
             )}
             {activeTab === "balance" && (
               <StatementTable
+                statementTab="balance"
                 title="Balance de Situación (Balance Sheet)"
                 rows={balanceRows}
                 years={years}
@@ -496,11 +1025,12 @@ export default function FinancialStatements({ ticker, companyName }) {
                 onCellChange={handleCellChange(setBalanceRows)}
                 ticker={ticker}
                 companyName={companyName || ticker}
-                accentColor="#8b5cf6"
+                accentColor={c.accent}
               />
             )}
             {activeTab === "cashflow" && (
               <StatementTable
+                statementTab="cashflow"
                 title="Estado de Flujo de Efectivo (Cash Flow)"
                 rows={cashflowRows}
                 years={years}
@@ -508,14 +1038,14 @@ export default function FinancialStatements({ ticker, companyName }) {
                 onCellChange={handleCellChange(setCashflowRows)}
                 ticker={ticker}
                 companyName={companyName || ticker}
-                accentColor="#059669"
+                accentColor={c.up}
               />
             )}
           </div>
 
           {/* ── Export All ── */}
           <div style={styles.exportAll}>
-            <span style={{ fontSize: 13, color: "#64748b" }}>
+            <span style={{ fontSize: 13, color: c.inkMuted }}>
               Exportar individualmente: haz clic en "Exportar SVG/PDF" en cada estado
             </span>
             <button
@@ -524,9 +1054,9 @@ export default function FinancialStatements({ ticker, companyName }) {
                 setTimeout(() => generatePDF("Balance", ticker, companyName || ticker, balanceRows, years), 500);
                 setTimeout(() => generatePDF("Flujo de Caja", ticker, companyName || ticker, cashflowRows, years), 1000);
               }}
-              style={{ ...styles.btn, background: "#0f172a", color: "#ffffff" }}
+              style={{ ...styles.btn, background: c.accent, color: c.inkOnAccent, borderColor: c.accent }}
             >
-              ⬇ Exportar los 3 estados
+              Exportar los tres estados
             </button>
           </div>
         </>
@@ -707,97 +1237,103 @@ function buildMockData(ticker) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = {
-  header: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 20,
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  btn: {
-    padding: "9px 16px",
-    borderRadius: 8,
-    border: "none",
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: "pointer",
-    fontFamily: "Georgia, serif",
-    transition: "all 0.2s",
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-  },
-  editBanner: {
-    background: "#dbeafe",
-    border: "1px solid #93c5fd",
-    borderRadius: 8,
-    padding: "10px 16px",
-    fontSize: 13,
-    color: "#1e40af",
-    marginBottom: 16,
-  },
-  loading: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 60,
-    background: "#ffffff",
-    borderRadius: 16,
-    border: "1px solid #e2e8f0",
-  },
-  spinner: {
-    width: 28,
-    height: 28,
-    border: "3px solid #e2e8f0",
-    borderTop: "3px solid #3b82f6",
-    borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
-  },
-  tabs: {
-    display: "flex",
-    background: "#f8fafc",
-    borderRadius: 12,
-    padding: 4,
-    gap: 4,
-    border: "1px solid #e2e8f0",
-  },
-  tab: {
-    flex: 1,
-    padding: "10px 12px",
-    border: "none",
-    borderRadius: 8,
-    fontSize: 13,
-    cursor: "pointer",
-    transition: "all 0.2s",
-    fontFamily: "Georgia, serif",
-    letterSpacing: 0.2,
-  },
-  exportAll: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 20px",
-    background: "#f8fafc",
-    borderRadius: 12,
-    border: "1px solid #e2e8f0",
-    marginTop: 8,
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  emptyState: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 60,
-    background: "#f8fafc",
-    borderRadius: 16,
-    border: "1px dashed #e2e8f0",
-    gap: 12,
-  },
-};
+function makeStyles(c) {
+  return {
+    header: {
+      display: "flex",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      marginBottom: 20,
+      flexWrap: "wrap",
+      gap: 12,
+    },
+    btn: {
+      minHeight: 40,
+      padding: "0 16px",
+      borderRadius: 5,
+      border: `1px solid ${c.rule}`,
+      fontSize: 13,
+      fontWeight: 600,
+      letterSpacing: 0.2,
+      cursor: "pointer",
+      fontFamily: "inherit",
+      transition: "background 160ms, border-color 160ms",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+    },
+    editBanner: {
+      background: c.accentWash,
+      border: `1px solid ${c.accent}`,
+      borderRadius: 8,
+      padding: "10px 16px",
+      fontSize: 13,
+      color: c.accent,
+      marginBottom: 16,
+    },
+    loading: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 60,
+      background: c.surface,
+      borderRadius: 16,
+      border: `1px solid ${c.rule}`,
+    },
+    spinner: {
+      width: 28,
+      height: 28,
+      border: `3px solid ${c.rule}`,
+      borderTop: `3px solid ${c.accent}`,
+      borderRadius: "50%",
+      animation: "spin 0.8s linear infinite",
+    },
+    tabs: {
+      display: "flex",
+      background: c.surfaceSunken,
+      borderRadius: 12,
+      padding: 4,
+      gap: 4,
+      border: `1px solid ${c.rule}`,
+    },
+    tab: {
+      flex: 1,
+      minHeight: 44,
+      padding: "0 12px",
+      border: "none",
+      borderRadius: 0,
+      fontSize: 13,
+      cursor: "pointer",
+      transition: "background 160ms, color 160ms",
+      fontFamily: "inherit",
+      letterSpacing: 0.2,
+    },
+    exportAll: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "14px 20px",
+      background: c.surfaceSunken,
+      borderRadius: 12,
+      border: `1px solid ${c.rule}`,
+      marginTop: 8,
+      flexWrap: "wrap",
+      gap: 10,
+    },
+    emptyState: {
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 60,
+      background: c.surfaceSunken,
+      borderRadius: 16,
+      border: `1px dashed ${c.rule}`,
+      gap: 12,
+    },
+  };
+}
 
 // CSS animation injection
 if (typeof document !== "undefined" && !document.getElementById("fs-anim")) {

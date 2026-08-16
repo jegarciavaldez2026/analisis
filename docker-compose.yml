@@ -4,33 +4,93 @@ services:
     container_name: analisis_mongo
     restart: unless-stopped
     environment:
-      MONGO_INITDB_DATABASE: analisis_db
+      MONGO_INITDB_DATABASE: ${DB_NAME:-analisis_db}
     volumes:
       - mongo_data:/data/db
-    ports:
-      - "27018:27017"
+    # Sin puertos publicados: solo el backend habla con Mongo por la red interna.
+    # Descomenta si necesitas conectarte con Compass desde tu equipo.
+    # ports:
+    #   - "27018:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     networks:
       - analisis_net
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
+    image: analisis-backend:latest
     container_name: analisis_backend
     restart: unless-stopped
-    ports:
-      - "8002:8000"
-    env_file:
-      - backend/.env
     environment:
-      MONGO_URL: mongodb://mongo:27017/analisis_db
-      DB_NAME: analisis_db
-      SECRET_KEY: finanalysis-jwt-secret-2026-change-me
+      MONGO_URL: mongodb://mongo:27017/${DB_NAME:-analisis_db}
+      DB_NAME: ${DB_NAME:-analisis_db}
+      SECRET_KEY: ${SECRET_KEY:?define SECRET_KEY en el archivo .env}
+    # Sin puertos publicados: nginx lo alcanza por la red interna.
+    # Para depurar directamente, descomenta:
+    # ports:
+    #   - "8002:8000"
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKEND_MEM_LIMIT:-6g}
+    depends_on:
+      mongo:
+        condition: service_healthy
     networks:
       - analisis_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Vacio = la app llama a /api relativo y nginx lo proxea al backend.
+        EXPO_PUBLIC_BACKEND_URL: "${EXPO_PUBLIC_BACKEND_URL:-}"
+    image: analisis-frontend:latest
+    container_name: analisis_frontend
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
     depends_on:
-      - mongo
+      - backend
+    networks:
+      - analisis_net
+    labels:
+      # --- Traefik (se ignoran si no usas Traefik) ---
+      traefik.enable: "true"
+      traefik.docker.network: "analisis_net"
+      traefik.http.routers.analisis.rule: "Host(`${APP_DOMAIN:-analisis.local}`)"
+      traefik.http.routers.analisis.entrypoints: "websecure"
+      traefik.http.routers.analisis.tls.certresolver: "letsencrypt"
+      traefik.http.services.analisis.loadbalancer.server.port: "80"
+
+  # Perfil opcional: expone la app por Cloudflare Tunnel sin abrir puertos.
+  #   docker compose --profile cloudflare up -d
+  # Requiere CF_TUNNEL_TOKEN en .env (Zero Trust > Networks > Tunnels).
+  # En el panel de Cloudflare apunta el hostname al servicio http://frontend:80
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: analisis_cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - frontend
+    networks:
+      - analisis_net
+    profiles:
+      - cloudflare
+
 volumes:
   mongo_data:
+
 networks:
   analisis_net:
     driver: bridge

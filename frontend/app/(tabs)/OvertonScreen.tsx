@@ -18,8 +18,9 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import OvertonSignalMatrix_v4 from '../../components/OvertonSignalMatrix_v4';
 import { useTheme } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../../contexts/ThemeContext';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 interface HistoryItem {
   id: string;
@@ -29,14 +30,16 @@ interface HistoryItem {
   favorable_percentage: number;
 }
 
-const REC_COLOR: Record<string, string> = {
-  COMPRAR: '#2E7D32',
-  MANTENER: '#E65100',
-  VENDER: '#C62828',
-};
+/** El código verde/rojo del producto, resuelto desde los tokens. */
+const recColor = (c: ThemeColors): Record<string, string> => ({
+  COMPRAR: c.up,
+  MANTENER: c.caution,
+  VENDER: c.down,
+});
 
 export default function OvertonScreen() {
   const { colors, isDark } = useTheme();
+  const REC_COLOR = React.useMemo(() => recColor(colors), [colors]);
   const [history,        setHistory]        = useState<HistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [selectedTicker, setSelectedTicker] = useState('');
@@ -89,8 +92,8 @@ export default function OvertonScreen() {
     >
       {/* ── Cabecera ── */}
       <View style={s.header}>
-        <View style={[s.headerIcon, { backgroundColor: isDark ? '#5856D625' : '#5856D612' }]}>
-          <Ionicons name="eye" size={28} color="#5856D6" />
+        <View style={[s.headerIcon, { backgroundColor: colors.accentWash }]}>
+          <Ionicons name="eye" size={28} color={colors.accent} />
         </View>
         <View>
           <Text style={[s.headerTitle, { color: colors.text }]}>Ventana de Overton</Text>
@@ -101,14 +104,14 @@ export default function OvertonScreen() {
       </View>
 
       {/* ── Selector ── */}
-      <View style={[s.selectorCard, { backgroundColor: colors.card, borderColor: isDark ? '#3A3A3C' : '#E0E0E0' }]}>
+      <View style={[s.selectorCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <Text style={[s.selectorLabel, { color: colors.textSecondary }]}>
           Selecciona una acción analizada
         </Text>
 
         {loadingHistory ? (
           <View style={s.loadRow}>
-            <ActivityIndicator size="small" color="#5856D6" />
+            <ActivityIndicator size="small" color={colors.accent} />
             <Text style={[s.loadTxt, { color: colors.textSecondary }]}>Cargando historial…</Text>
           </View>
         ) : history.length === 0 ? (
@@ -131,10 +134,10 @@ export default function OvertonScreen() {
                 flex: 1,
                 padding: '9px 12px',
                 borderRadius: 8,
-                border: `1px solid ${isDark ? '#48484A' : '#D1D1D6'}`,
-                backgroundColor: isDark ? '#2C2C2E' : '#F2F2F7',
+                border: `1px solid ${colors.ruleStrong}`,
+                backgroundColor: colors.inputBackground,
                 fontSize: 14,
-                color: isDark ? '#FFFFFF' : '#1C1C1E',
+                color: colors.text,
                 cursor: 'pointer',
                 outline: 'none',
                 fontFamily: 'system-ui, sans-serif',
@@ -147,11 +150,11 @@ export default function OvertonScreen() {
               ))}
             </select>
             <TouchableOpacity
-              style={[s.analyzeBtn, { backgroundColor: '#5856D6' }, !selectedTicker && s.analyzeBtnOff]}
+              style={[s.analyzeBtn, { backgroundColor: colors.accent }, !selectedTicker && s.analyzeBtnOff]}
               onPress={handleAnalyze}
               disabled={!selectedTicker}
             >
-              <Ionicons name="eye" size={16} color="#FFF" />
+              <Ionicons name="eye" size={16} color={colors.inkOnAccent} />
               <Text style={s.analyzeBtnTxt}>Analizar</Text>
             </TouchableOpacity>
           </View>
@@ -162,8 +165,8 @@ export default function OvertonScreen() {
               style={[
                 s.dropdownTrigger,
                 {
-                  backgroundColor: isDark ? '#2C2C2E' : '#F2F2F7',
-                  borderColor: showDropdown ? '#5856D6' : (isDark ? '#48484A' : '#D1D1D6'),
+                  backgroundColor: colors.inputBackground,
+                  borderColor: showDropdown ? colors.accent : (colors.ruleStrong),
                 },
               ]}
               onPress={() => setShowDropdown(v => !v)}
@@ -172,8 +175,8 @@ export default function OvertonScreen() {
               <View style={s.dropTriggerLeft}>
                 {selectedTicker ? (
                   <>
-                    <View style={[s.tickerPill, { backgroundColor: '#5856D615' }]}>
-                      <Text style={[s.tickerPillTxt, { color: '#5856D6' }]}>{selectedTicker}</Text>
+                    <View style={[s.tickerPill, { backgroundColor: colors.accentWash }]}>
+                      <Text style={[s.tickerPillTxt, { color: colors.accent }]}>{selectedTicker}</Text>
                     </View>
                     <Text style={[s.dropSelName, { color: colors.text }]} numberOfLines={1}>
                       {selectedName}
@@ -191,17 +194,17 @@ export default function OvertonScreen() {
             </TouchableOpacity>
 
             {showDropdown && (
-              <View style={[s.dropList, { backgroundColor: colors.card, borderColor: isDark ? '#48484A' : '#E0E0E0' }]}>
+              <View style={[s.dropList, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 {history.map((item, idx) => {
-                  const rc = REC_COLOR[item.recommendation] ?? '#757575';
+                  const rc = REC_COLOR[item.recommendation] ?? colors.inkFaint;
                   const active = item.ticker === selectedTicker;
                   return (
                     <TouchableOpacity
                       key={item.id}
                       style={[
                         s.dropItem,
-                        idx < history.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: isDark ? '#3A3A3C' : '#F0F0F0' },
-                        active && { backgroundColor: isDark ? '#5856D618' : '#5856D608' },
+                        idx < history.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: colors.border },
+                        active && { backgroundColor: colors.accentWash },
                       ]}
                       onPress={() => handleSelect(item)}
                       activeOpacity={0.7}
@@ -217,7 +220,7 @@ export default function OvertonScreen() {
                           {item.recommendation} · {item.favorable_percentage.toFixed(1)}% favorable
                         </Text>
                       </View>
-                      {active && <Ionicons name="checkmark-circle" size={17} color="#5856D6" />}
+                      {active && <Ionicons name="checkmark-circle" size={17} color={colors.accent} />}
                     </TouchableOpacity>
                   );
                 })}
@@ -227,13 +230,13 @@ export default function OvertonScreen() {
             <TouchableOpacity
               style={[
                 s.analyzeBtn,
-                { backgroundColor: '#5856D6', marginTop: 10 },
+                { backgroundColor: colors.accent, marginTop: 10 },
                 !selectedTicker && s.analyzeBtnOff,
               ]}
               onPress={handleAnalyze}
               disabled={!selectedTicker}
             >
-              <Ionicons name="eye" size={16} color="#FFF" />
+              <Ionicons name="eye" size={16} color={colors.inkOnAccent} />
               <Text style={s.analyzeBtnTxt}>Analizar ventana de Overton</Text>
             </TouchableOpacity>
           </View>
@@ -242,13 +245,13 @@ export default function OvertonScreen() {
 
       {/* ── Info antes de analizar ── */}
       {selectedTicker && !showMatrix && (
-        <View style={[s.infoPill, { backgroundColor: isDark ? '#5856D618' : '#5856D60A' }]}>
-          <Ionicons name="information-circle-outline" size={16} color="#5856D6" />
+        <View style={[s.infoPill, { backgroundColor: colors.accentWash }]}>
+          <Ionicons name="information-circle-outline" size={16} color={colors.accent} />
           <Text style={[s.infoPillTxt, { color: colors.text }]}>
             Pulsa{' '}
-            <Text style={{ color: '#5856D6', fontWeight: '700' }}>Analizar</Text>
+            <Text style={{ color: colors.accent, fontWeight: '700' }}>Analizar</Text>
             {' '}para calcular el análisis Overton de{' '}
-            <Text style={{ color: '#5856D6', fontWeight: '700' }}>{selectedTicker}</Text>
+            <Text style={{ color: colors.accent, fontWeight: '700' }}>{selectedTicker}</Text>
           </Text>
         </View>
       )}
@@ -285,7 +288,7 @@ const s = StyleSheet.create({
   analyzeBtn:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
                    gap: 7, paddingVertical: 11, paddingHorizontal: 18, borderRadius: 10 },
   analyzeBtnOff: { opacity: 0.35 },
-  analyzeBtnTxt: { color: '#FFF', fontSize: 14, fontWeight: '600' },
+  analyzeBtnTxt: { fontSize: 14, fontWeight: '600' },
 
   dropdownTrigger: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                      paddingHorizontal: 13, paddingVertical: 11, borderRadius: 10, borderWidth: 1.5 },

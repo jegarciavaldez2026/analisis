@@ -1,20 +1,32 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
-  TouchableOpacity,
-  ActivityIndicator,
   RefreshControl,
   Image,
   Linking,
+  Pressable,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Line, Rect } from 'react-native-svg';
 import axios from 'axios';
-import { useTheme } from '../../contexts/ThemeContext';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { useTheme } from '../../contexts/ThemeContext';
+import {
+  Button,
+  EmptyState,
+  Legend,
+  Panel,
+  Rule,
+  Skeleton,
+  SkeletonRows,
+} from '../../components/ui';
+import { deltaTone, Tone, toneColors } from '../../theme/tokens';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 interface MarketIndicator {
   name: string;
@@ -68,6 +80,8 @@ interface MarketHours {
 }
 
 interface MarketData {
+  /** Cruces principales. Puede venir vacío si el proveedor falla. */
+  currencies?: CurrencyPair[];
   vix: MarketIndicator;
   treasury_10y: MarketIndicator;
   sp500: MarketIndicator;
@@ -97,8 +111,201 @@ interface NewsArticle {
   summary: string | null;
 }
 
+/* --------------------------------------------------------------------------
+ * Bandas del VIX — los umbrales que ya usaba el producto, ahora dibujados
+ * sobre la misma escala calibrada que el resto de la app.
+ * ------------------------------------------------------------------------ */
+
+const VIX_BANDS: { to: number; label: string; tone: Tone }[] = [
+  { to: 12, label: 'Complacencia', tone: 'up' },
+  { to: 17, label: 'Volatilidad baja', tone: 'up' },
+  { to: 25, label: 'Volatilidad moderada', tone: 'caution' },
+  { to: 35, label: 'Volatilidad alta', tone: 'caution' },
+  { to: 50, label: 'Volatilidad extrema', tone: 'down' },
+];
+
+function vixBand(value: number) {
+  return VIX_BANDS.find((b) => value < b.to) ?? VIX_BANDS[VIX_BANDS.length - 1];
+}
+
+/* ==========================================================================
+ * Fila medida de mercado — la unidad de lectura de esta pantalla.
+ * ======================================================================== */
+
+function QuoteRow({
+  name,
+  ticker,
+  value,
+  change,
+  changePercent,
+  unit,
+  decimals = 2,
+  last,
+}: {
+  name: string;
+  ticker: string;
+  value: number | null | undefined;
+  change: number | null | undefined;
+  changePercent: number | null | undefined;
+  unit?: string;
+  decimals?: number;
+  last?: boolean;
+}) {
+  const { colors, palette, space, type, numeric } = useTheme();
+  const tone = deltaTone(change);
+  const { fg } = toneColors(palette, tone);
+  const hasValue = value != null && Number.isFinite(value);
+
+  return (
+    <View>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: space.md,
+          paddingVertical: space.md,
+          paddingHorizontal: space.lg,
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[type.label, { color: colors.ink }]} numberOfLines={1}>
+            {name}
+          </Text>
+          <Text style={[type.legend, numeric, { color: colors.inkFaint, letterSpacing: 0 }]}>
+            {ticker}
+          </Text>
+        </View>
+
+        <View style={{ alignItems: 'flex-end', minWidth: 92 }}>
+          <Text style={[type.bodyStrong, numeric, { color: colors.ink }]}>
+            {hasValue
+              ? (value as number).toLocaleString('es-ES', {
+                  minimumFractionDigits: decimals,
+                  maximumFractionDigits: decimals,
+                })
+              : '—'}
+            {unit ? <Text style={{ color: colors.inkFaint, fontWeight: '500' }}> {unit}</Text> : null}
+          </Text>
+        </View>
+
+        <View style={{ alignItems: 'flex-end', minWidth: 96, flexDirection: 'row', justifyContent: 'flex-end', gap: 4 }}>
+          {change != null && Number.isFinite(change) ? (
+            <>
+              <Ionicons
+                name={change > 0 ? 'arrow-up' : change < 0 ? 'arrow-down' : 'remove'}
+                size={12}
+                color={fg}
+                style={{ marginTop: 3 }}
+              />
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={[type.caption, numeric, { color: fg, fontWeight: '700' }]}>
+                  {changePercent != null && Number.isFinite(changePercent)
+                    ? `${Math.abs(changePercent).toFixed(2)} %`
+                    : '—'}
+                </Text>
+                <Text style={[type.legend, numeric, { color: colors.inkFaint, letterSpacing: 0 }]}>
+                  {change > 0 ? '+' : change < 0 ? '−' : ''}
+                  {Math.abs(change).toFixed(decimals)}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <Text style={[type.caption, { color: colors.noSignal }]}>—</Text>
+          )}
+        </View>
+      </View>
+      {last ? null : <Rule />}
+    </View>
+  );
+}
+
+/* ==========================================================================
+ * Escala calibrada genérica (VIX): bandas + índice, misma gramática que la
+ * escala de decisión de un análisis.
+ * ======================================================================== */
+
+function BandScale({
+  value,
+  max,
+  bands,
+}: {
+  value: number;
+  max: number;
+  bands: { to: number; label: string; tone: Tone }[];
+}) {
+  const { colors, palette, radius, hairline, space, type } = useTheme();
+  const [width, setWidth] = useState(0);
+  const clamped = Math.max(0, Math.min(max, value));
+  const active = bands.find((b) => value < b.to) ?? bands[bands.length - 1];
+  const { fg } = toneColors(palette, active.tone);
+  const height = 30;
+
+  return (
+    <View style={{ gap: space.xs }}>
+      <View
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+        style={{
+          height,
+          borderRadius: radius.xs,
+          borderWidth: hairline,
+          borderColor: colors.ruleStrong,
+          backgroundColor: colors.surfaceSunken,
+          overflow: 'hidden',
+        }}
+      >
+        {width > 0 ? (
+          <Svg width={width} height={height}>
+            {bands.map((b, i) => {
+              const from = i === 0 ? 0 : bands[i - 1].to;
+              const { wash } = toneColors(palette, b.tone);
+              return (
+                <Rect
+                  key={b.label}
+                  x={(from / max) * width}
+                  y={0}
+                  width={((b.to - from) / max) * width}
+                  height={height}
+                  fill={wash}
+                />
+              );
+            })}
+            {bands.slice(0, -1).map((b) => (
+              <Line
+                key={b.to}
+                x1={(b.to / max) * width}
+                x2={(b.to / max) * width}
+                y1={0}
+                y2={height}
+                stroke={colors.ink}
+                strokeWidth={1}
+                strokeDasharray="3 3"
+                opacity={0.45}
+              />
+            ))}
+            <Rect x={(clamped / max) * width - 1.5} y={0} width={3} height={height} fill={fg} />
+          </Svg>
+        ) : null}
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        {[0, ...bands.map((b) => b.to)].map((t, i) => (
+          <Text key={`${t}-${i}`} style={[type.legend, { color: colors.inkFaint, letterSpacing: 0 }]}>
+            {t}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/* ==========================================================================
+ * Pantalla
+ * ======================================================================== */
+
 export default function MarketScreen() {
-  const { colors, isDark } = useTheme();
+  const { colors, palette, space, type, radius, hairline, numeric } = useTheme();
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
+
   const [data, setData] = useState<MarketData | null>(null);
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,7 +320,9 @@ export default function MarketScreen() {
       setData(response.data);
     } catch (err: any) {
       console.error('Error fetching market indicators:', err);
-      setError('No se pudieron cargar los indicadores de mercado');
+      setError(
+        'No se pudieron cargar los indicadores de mercado. Comprueba tu conexión y vuelve a intentarlo.',
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -134,7 +343,7 @@ export default function MarketScreen() {
 
   const openNewsLink = (url: string) => {
     if (url) {
-      Linking.openURL(url).catch(err => console.error('Error opening link:', err));
+      Linking.openURL(url).catch((err) => console.error('Error opening link:', err));
     }
   };
 
@@ -149,1406 +358,394 @@ export default function MarketScreen() {
     fetchNews();
   }, []);
 
-  const getVixColor = (value: number) => {
-    if (value < 12) return '#34C759'; // Verde - Complacencia
-    if (value < 17) return '#8BC34A'; // Verde claro - Bajo
-    if (value < 25) return '#FF9500'; // Naranja - Moderado
-    if (value < 35) return '#FF6B00'; // Naranja oscuro - Alto
-    return '#FF3B30'; // Rojo - Extremo
-  };
+  const indices = useMemo(() => {
+    if (!data) return [];
+    return [
+      data.sp500,
+      data.nasdaq,
+      data.ibex35,
+      data.eurostoxx50,
+      data.dax,
+      data.msci_world,
+    ].filter(Boolean) as MarketIndicator[];
+  }, [data]);
 
-  const getVixLabel = (value: number) => {
-    if (value < 12) return 'Complacencia';
-    if (value < 17) return 'Volatilidad Baja';
-    if (value < 25) return 'Volatilidad Moderada';
-    if (value < 35) return 'Volatilidad Alta';
-    return 'Volatilidad Extrema';
-  };
+  /** Decimales por convención de mercado: el yen se cotiza con dos, el resto
+   *  de cruces mayores con cuatro. Redondear todo igual falsea la precisión. */
+  const decimalesFx = (name: string) =>
+    /JPY|MXN|CNY/.test(name) ? 2 : 4;
 
-  const getChangeColor = (change: number) => {
-    return change >= 0 ? '#34C759' : '#FF3B30';
-  };
+  const divisas = useMemo(() => {
+    if (!data) return [];
+    // Si el backend aún no envía la lista (imagen antigua), se cae al par que
+    // siempre ha existido para no dejar la sección vacía.
+    if (data.currencies?.length) return data.currencies;
+    return data.eur_usd ? [data.eur_usd] : [];
+  }, [data]);
 
-  const getSentimentColor = (sentiment: string) => {
-    if (sentiment.includes('optimista')) return '#34C759';
-    if (sentiment.includes('pesimista')) return '#FF3B30';
-    return '#FF9500';
-  };
+  const crypto = useMemo(() => {
+    if (!data) return [];
+    return [data.bitcoin, data.ethereum, data.solana, data.hedera].filter(
+      Boolean,
+    ) as CryptoIndicator[];
+  }, [data]);
 
-  const getFearGreedColor = (level: string) => {
-    switch (level) {
-      case 'Codicia':
-      case 'Codicia Extrema':
-        return '#34C759';
-      case 'Neutral':
-        return '#FF9500';
-      case 'Miedo':
-      case 'Miedo Extremo':
-        return '#FF3B30';
-      default:
-        return '#8E8E93';
-    }
+  const sentimentTone: Tone = data
+    ? data.market_sentiment?.includes('optimista')
+      ? 'up'
+      : data.market_sentiment?.includes('pesimista')
+        ? 'down'
+        : 'caution'
+    : 'neutral';
+
+  const fearGreedTone: Tone = data
+    ? ['Codicia', 'Codicia Extrema'].includes(data.fear_greed_level)
+      ? 'up'
+      : ['Miedo', 'Miedo Extremo'].includes(data.fear_greed_level)
+        ? 'down'
+        : 'caution'
+    : 'neutral';
+
+  const contentStyle = {
+    padding: space.xl,
+    paddingBottom: space.h3,
+    gap: space.xl,
+    maxWidth: 1100,
+    width: '100%' as const,
+    alignSelf: 'center' as const,
   };
 
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Cargando indicadores...</Text>
-      </View>
+      <ScrollView style={{ flex: 1, backgroundColor: colors.canvas }} contentContainerStyle={contentStyle}>
+        <Panel legend="Cargando" title="Estado del mercado">
+          <SkeletonRows rows={3} />
+        </Panel>
+        <Panel legend="Cargando" title="Índices">
+          <SkeletonRows rows={6} />
+        </Panel>
+      </ScrollView>
     );
   }
 
   if (error || !data) {
     return (
-      <View style={[styles.errorContainer, { backgroundColor: colors.background }]}>
-        <Ionicons name="cloud-offline" size={60} color={colors.danger} />
-        <Text style={[styles.errorText, { color: colors.text }]}>{error || 'Error desconocido'}</Text>
-        <TouchableOpacity style={[styles.retryButton, { backgroundColor: colors.primary }]} onPress={fetchData}>
-          <Text style={styles.retryButtonText}>Reintentar</Text>
-        </TouchableOpacity>
+      <View style={{ flex: 1, backgroundColor: colors.canvas, padding: space.xl, justifyContent: 'center' }}>
+        <Panel padded={false}>
+          <EmptyState
+            icon="cloud-offline-outline"
+            title="Sin conexión con los datos de mercado"
+            body={error || 'No se recibió respuesta del servidor.'}
+            action={<Button label="Reintentar" icon="refresh-outline" onPress={fetchData} />}
+          />
+        </Panel>
       </View>
     );
   }
 
-  
+  const vix = data.vix;
+  const band = vixBand(vix.current_value);
+  const bandColor = toneColors(palette, band.tone).fg;
+
   return (
     <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.scrollContent}
+      style={{ flex: 1, backgroundColor: colors.canvas }}
+      contentContainerStyle={contentStyle}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
       }
     >
-      {/* Market Sentiment Summary */}
-      <View style={[styles.sentimentCard, { backgroundColor: colors.card }]}>
-        <View style={styles.sentimentHeader}>
-          <Ionicons name="pulse" size={28} color={colors.primary} />
-          <Text style={[styles.sentimentTitle, { color: colors.text }]}>Estado del Mercado</Text>
-        </View>
-        <View style={styles.sentimentContent}>
-          <View style={styles.sentimentItem}>
-            <Text style={[styles.sentimentLabel, { color: colors.textSecondary }]}>Sentimiento</Text>
-            <Text style={[styles.sentimentValue, { color: getSentimentColor(data.market_sentiment) }]}>
+      {/* Lectura general */}
+      <Panel legend="Lectura general" title="Estado del mercado" padded={false}>
+        <View style={{ flexDirection: wide ? 'row' : 'column' }}>
+          <View style={{ flex: 1, padding: space.lg, gap: 2 }}>
+            <Legend>Sentimiento</Legend>
+            <Text style={[type.title3, { color: toneColors(palette, sentimentTone).fg }]}>
               {data.market_sentiment}
             </Text>
           </View>
-          <View style={[styles.sentimentDivider, { backgroundColor: colors.border }]} />
-          <View style={styles.sentimentItem}>
-            <Text style={[styles.sentimentLabel, { color: colors.textSecondary }]}>Nivel Fear & Greed</Text>
-            <Text style={[styles.sentimentValue, { color: getFearGreedColor(data.fear_greed_level) }]}>
+          {wide ? <Rule vertical /> : <Rule />}
+          <View style={{ flex: 1, padding: space.lg, gap: 2 }}>
+            <Legend>Fear &amp; Greed</Legend>
+            <Text style={[type.title3, { color: toneColors(palette, fearGreedTone).fg }]}>
               {data.fear_greed_level}
             </Text>
           </View>
         </View>
-      </View>
+      </Panel>
 
-      {/* VIX Card */}
-      <View style={[styles.indicatorCard, { backgroundColor: colors.card }]}>
-        <View style={styles.indicatorHeader}>
-          <View style={styles.indicatorTitleContainer}>
-            <View style={[styles.indicatorIcon, { backgroundColor: getVixColor(data.vix.current_value) + '20' }]}>
-              <Ionicons name="pulse" size={24} color={getVixColor(data.vix.current_value)} />
-            </View>
-            <View>
-              <Text style={[styles.indicatorName, { color: colors.text }]}>{data.vix.name}</Text>
-              <Text style={[styles.indicatorTicker, { color: colors.textSecondary }]}>{data.vix.ticker}</Text>
-            </View>
+      {/* VIX — el indicador con escala propia */}
+      <Panel
+        legend={`${vix.ticker} · actualizado ${vix.updated}`}
+        title={vix.name}
+        action={
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[type.title2, numeric, { color: colors.ink }]}>
+              {vix.current_value.toFixed(2)}
+            </Text>
+            <Text
+              style={[
+                type.caption,
+                numeric,
+                { color: toneColors(palette, deltaTone(vix.change)).fg, fontWeight: '700' },
+              ]}
+            >
+              {vix.change >= 0 ? '+' : '−'}
+              {Math.abs(vix.change).toFixed(2)} ({Math.abs(vix.change_percent).toFixed(2)} %)
+            </Text>
           </View>
-          <View style={styles.indicatorValueContainer}>
-            <Text style={[styles.indicatorValue, { color: colors.text }]}>{data.vix.current_value.toFixed(2)}</Text>
-            <View style={[styles.changeContainer, { backgroundColor: getChangeColor(data.vix.change) + '15' }]}>
-              <Ionicons
-                name={data.vix.change >= 0 ? 'arrow-up' : 'arrow-down'}
-                size={14}
-                color={getChangeColor(data.vix.change)}
-              />
-              <Text style={[styles.changeText, { color: getChangeColor(data.vix.change) }]}>
-                {data.vix.change >= 0 ? '+' : ''}{data.vix.change.toFixed(2)} ({data.vix.change_percent >= 0 ? '+' : ''}{data.vix.change_percent.toFixed(2)}%)
-              </Text>
-            </View>
+        }
+      >
+        <View style={{ gap: space.md }}>
+          <BandScale value={vix.current_value} max={50} bands={VIX_BANDS} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+            <View style={{ width: 3, height: 16, backgroundColor: bandColor }} />
+            <Text style={[type.labelStrong, { color: bandColor }]}>{band.label}</Text>
           </View>
+          <Text style={[type.caption, { color: colors.inkMuted }]}>{vix.description}</Text>
         </View>
-        
-        {/* VIX Status Badge */}
-        <View style={[styles.statusBadge, { backgroundColor: getVixColor(data.vix.current_value) + '20' }]}>
-          <View style={[styles.statusDot, { backgroundColor: getVixColor(data.vix.current_value) }]} />
-          <Text style={[styles.statusText, { color: getVixColor(data.vix.current_value) }]}>
-            {getVixLabel(data.vix.current_value)}
+      </Panel>
+
+      {/* Bono 10 años */}
+      <Panel
+        legend={`${data.treasury_10y.ticker} · actualizado ${data.treasury_10y.updated}`}
+        title={data.treasury_10y.name}
+        action={
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[type.title2, numeric, { color: colors.ink }]}>
+              {data.treasury_10y.current_value.toFixed(3)} %
+            </Text>
+            <Text
+              style={[
+                type.caption,
+                numeric,
+                { color: toneColors(palette, deltaTone(data.treasury_10y.change)).fg, fontWeight: '700' },
+              ]}
+            >
+              {data.treasury_10y.change >= 0 ? '+' : '−'}
+              {Math.abs(data.treasury_10y.change).toFixed(3)}
+            </Text>
+          </View>
+        }
+      >
+        <View style={{ gap: space.sm }}>
+          <Text style={[type.label, { color: colors.ink }]}>
+            {data.treasury_10y.current_value < 3
+              ? 'Tasas bajas: favorecen la renta variable.'
+              : data.treasury_10y.current_value < 4.5
+                ? 'Tasas moderadas: equilibrio entre riesgo y retorno.'
+                : 'Tasas altas: pueden presionar a los mercados de acciones.'}
+          </Text>
+          <Text style={[type.caption, { color: colors.inkMuted }]}>
+            {data.treasury_10y.description}
           </Text>
         </View>
-        
-        {/* VIX Scale */}
-        <View style={styles.vixScale}>
-          <View style={styles.vixScaleBar}>
-            <View style={[styles.vixScaleSection, { backgroundColor: '#34C759', flex: 12 }]} />
-            <View style={[styles.vixScaleSection, { backgroundColor: '#8BC34A', flex: 5 }]} />
-            <View style={[styles.vixScaleSection, { backgroundColor: '#FF9500', flex: 8 }]} />
-            <View style={[styles.vixScaleSection, { backgroundColor: '#FF6B00', flex: 10 }]} />
-            <View style={[styles.vixScaleSection, { backgroundColor: '#FF3B30', flex: 15 }]} />
-          </View>
-          <View style={styles.vixScaleLabels}>
-            <Text style={styles.vixScaleLabel}>0</Text>
-            <Text style={styles.vixScaleLabel}>12</Text>
-            <Text style={styles.vixScaleLabel}>17</Text>
-            <Text style={styles.vixScaleLabel}>25</Text>
-            <Text style={styles.vixScaleLabel}>35</Text>
-            <Text style={styles.vixScaleLabel}>50+</Text>
-          </View>
-          {/* Current Position Indicator */}
-          <View 
-            style={[
-              styles.vixIndicator, 
-              { left: `${Math.min((data.vix.current_value / 50) * 100, 100)}%` }
-            ]}
-          >
-            <View style={styles.vixIndicatorDot} />
-          </View>
-        </View>
-        
-        <Text style={styles.indicatorDescription}>{data.vix.description}</Text>
-        <Text style={styles.updateTime}>Actualizado: {data.vix.updated}</Text>
-      </View>
+      </Panel>
 
-      {/* Treasury 10Y Card */}
-      <View style={styles.indicatorCard}>
-        <View style={styles.indicatorHeader}>
-          <View style={styles.indicatorTitleContainer}>
-            <View style={[styles.indicatorIcon, { backgroundColor: '#007AFF20' }]}>
-              <Ionicons name="trending-up" size={24} color="#007AFF" />
-            </View>
-            <View>
-              <Text style={styles.indicatorName}>{data.treasury_10y.name}</Text>
-              <Text style={styles.indicatorTicker}>{data.treasury_10y.ticker}</Text>
-            </View>
-          </View>
-          <View style={styles.indicatorValueContainer}>
-            <Text style={styles.indicatorValue}>{data.treasury_10y.current_value.toFixed(3)}%</Text>
-            <View style={[styles.changeContainer, { backgroundColor: getChangeColor(data.treasury_10y.change) + '15' }]}>
-              <Ionicons
-                name={data.treasury_10y.change >= 0 ? 'arrow-up' : 'arrow-down'}
-                size={14}
-                color={getChangeColor(data.treasury_10y.change)}
-              />
-              <Text style={[styles.changeText, { color: getChangeColor(data.treasury_10y.change) }]}>
-                {data.treasury_10y.change >= 0 ? '+' : ''}{data.treasury_10y.change.toFixed(3)} ({data.treasury_10y.change_percent >= 0 ? '+' : ''}{data.treasury_10y.change_percent.toFixed(2)}%)
-              </Text>
-            </View>
-          </View>
-        </View>
-        
-        {/* Treasury Rate Interpretation */}
-        <View style={styles.treasuryInfo}>
-          <View style={styles.treasuryItem}>
-            <Ionicons name="information-circle" size={18} color="#6E6E73" />
-            <Text style={styles.treasuryItemText}>
-              {data.treasury_10y.current_value < 3 
-                ? 'Tasas bajas favorecen renta variable' 
-                : data.treasury_10y.current_value < 4.5 
-                  ? 'Tasas moderadas, equilibrio riesgo-retorno'
-                  : 'Tasas altas pueden presionar mercados'}
-            </Text>
-          </View>
-        </View>
-        
-        <Text style={styles.indicatorDescription}>{data.treasury_10y.description}</Text>
-        <Text style={styles.updateTime}>Actualizado: {data.treasury_10y.updated}</Text>
-      </View>
-
-      {/* S&P 500 Card */}
-      <View style={styles.indicatorCard}>
-        <View style={styles.indicatorHeader}>
-          <View style={styles.indicatorTitleContainer}>
-            <View style={[styles.indicatorIcon, { backgroundColor: '#34C75920' }]}>
-              <Ionicons name="stats-chart" size={24} color="#34C759" />
-            </View>
-            <View>
-              <Text style={styles.indicatorName}>{data.sp500.name}</Text>
-              <Text style={styles.indicatorTicker}>{data.sp500.ticker}</Text>
-            </View>
-          </View>
-          <View style={styles.indicatorValueContainer}>
-            <Text style={styles.indicatorValue}>{data.sp500.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
-            <View style={[styles.changeContainer, { backgroundColor: getChangeColor(data.sp500.change) + '15' }]}>
-              <Ionicons
-                name={data.sp500.change >= 0 ? 'arrow-up' : 'arrow-down'}
-                size={14}
-                color={getChangeColor(data.sp500.change)}
-              />
-              <Text style={[styles.changeText, { color: getChangeColor(data.sp500.change) }]}>
-                {data.sp500.change >= 0 ? '+' : ''}{data.sp500.change.toFixed(2)} ({data.sp500.change_percent >= 0 ? '+' : ''}{data.sp500.change_percent.toFixed(2)}%)
-              </Text>
-            </View>
-          </View>
-        </View>
-        
-        <Text style={styles.indicatorDescription}>{data.sp500.description}</Text>
-        <Text style={styles.updateTime}>Actualizado: {data.sp500.updated}</Text>
-      </View>
-
-      {/* IBEX 35 Card */}
-      {data.ibex35 && (
-        <View style={[styles.indicatorCard, { borderLeftColor: '#FF6B00' }]}>
-          <View style={styles.indicatorHeader}>
-            <View>
-              <Text style={styles.indicatorName}>🇪🇸 {data.ibex35.name}</Text>
-              <Text style={styles.tickerLabel}>{data.ibex35.ticker}</Text>
-            </View>
-            <View style={[
-              styles.changeContainer,
-              { backgroundColor: data.ibex35.change >= 0 ? '#34C75915' : '#FF3B3015' }
-            ]}>
-              <Ionicons 
-                name={data.ibex35.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={18} 
-                color={data.ibex35.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.changeText,
-                { color: data.ibex35.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.ibex35.change >= 0 ? '+' : ''}{data.ibex35.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          
-          <View style={styles.valueRow}>
-            <Text style={styles.currentValue}>{data.ibex35.current_value.toFixed(2)}</Text>
-            <Text style={[
-              styles.changeAmount,
-              { color: data.ibex35.change >= 0 ? '#34C759' : '#FF3B30' }
-            ]}>
-              {data.ibex35.change >= 0 ? '+' : ''}{data.ibex35.change.toFixed(2)} pts
-            </Text>
-          </View>
-          
-          <Text style={styles.indicatorDescription}>{data.ibex35.description}</Text>
-          <Text style={styles.updateTime}>Actualizado: {data.ibex35.updated}</Text>
-        </View>
+      {/* Índices */}
+      {indices.length > 0 && (
+        <Panel legend="Renta variable" title="Índices" padded={false}>
+          {indices.map((ix, i) => (
+            <QuoteRow
+              key={ix.ticker}
+              name={ix.name}
+              ticker={ix.ticker}
+              value={ix.current_value}
+              change={ix.change}
+              changePercent={ix.change_percent}
+              last={i === indices.length - 1}
+            />
+          ))}
+        </Panel>
       )}
 
-      {/* Euro Stoxx 50 Card */}
-      {data.eurostoxx50 && (
-        <View style={[styles.indicatorCard, { borderLeftColor: '#003399', backgroundColor: colors.card }]}>
-          <View style={styles.indicatorHeader}>
-            <View>
-              <Text style={[styles.indicatorName, { color: colors.text }]}>🇪🇺 {data.eurostoxx50.name}</Text>
-              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.eurostoxx50.ticker}</Text>
-            </View>
-            <View style={[
-              styles.changeContainer,
-              { backgroundColor: data.eurostoxx50.change >= 0 ? '#34C75915' : '#FF3B3015' }
-            ]}>
-              <Ionicons 
-                name={data.eurostoxx50.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={18} 
-                color={data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.changeText,
-                { color: data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.eurostoxx50.change >= 0 ? '+' : ''}{data.eurostoxx50.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          
-          <View style={styles.valueRow}>
-            <Text style={[styles.currentValue, { color: colors.text }]}>{data.eurostoxx50.current_value.toFixed(2)}</Text>
-            <Text style={[
-              styles.changeAmount,
-              { color: data.eurostoxx50.change >= 0 ? '#34C759' : '#FF3B30' }
-            ]}>
-              {data.eurostoxx50.change >= 0 ? '+' : ''}{data.eurostoxx50.change.toFixed(2)} pts
-            </Text>
-          </View>
-          
-          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.eurostoxx50.description}</Text>
-          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.eurostoxx50.updated}</Text>
-        </View>
+      {/* Cripto */}
+      {crypto.length > 0 && (
+        <Panel legend="Cripto" title="Activos digitales" padded={false}>
+          {crypto.map((c, i) => (
+            <QuoteRow
+              key={c.ticker}
+              name={`${c.name} (${c.symbol})`}
+              ticker={c.ticker}
+              value={c.current_value}
+              change={c.change}
+              changePercent={c.change_percent}
+              last={i === crypto.length - 1}
+            />
+          ))}
+        </Panel>
       )}
 
-      {/* DAX Card */}
-      {data.dax && (
-        <View style={[styles.indicatorCard, { borderLeftColor: '#FFCC00', backgroundColor: colors.card }]}>
-          <View style={styles.indicatorHeader}>
-            <View>
-              <Text style={[styles.indicatorName, { color: colors.text }]}>🇩🇪 {data.dax.name}</Text>
-              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.dax.ticker}</Text>
-            </View>
-            <View style={[
-              styles.changeContainer,
-              { backgroundColor: data.dax.change >= 0 ? '#34C75915' : '#FF3B3015' }
-            ]}>
-              <Ionicons 
-                name={data.dax.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={18} 
-                color={data.dax.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.changeText,
-                { color: data.dax.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.dax.change >= 0 ? '+' : ''}{data.dax.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          
-          <View style={styles.valueRow}>
-            <Text style={[styles.currentValue, { color: colors.text }]}>{data.dax.current_value.toFixed(2)}</Text>
-            <Text style={[
-              styles.changeAmount,
-              { color: data.dax.change >= 0 ? '#34C759' : '#FF3B30' }
-            ]}>
-              {data.dax.change >= 0 ? '+' : ''}{data.dax.change.toFixed(2)} pts
-            </Text>
-          </View>
-          
-          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.dax.description}</Text>
-          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.dax.updated}</Text>
-        </View>
-      )}
+      {/* Materias primas y divisa */}
+      <Panel legend="Materias primas y divisa" title="Otros mercados" padded={false}>
+        <QuoteRow
+          name={data.gold.name}
+          ticker={data.gold.ticker}
+          value={data.gold.current_value}
+          change={data.gold.change}
+          changePercent={data.gold.change_percent}
+          unit={data.gold.unit}
+        />
+        <QuoteRow
+          name={data.oil.name}
+          ticker={data.oil.ticker}
+          value={data.oil.current_value}
+          change={data.oil.change}
+          changePercent={data.oil.change_percent}
+          unit={data.oil.unit}
+        />
+        <QuoteRow
+          name={data.eur_usd.name}
+          ticker={data.eur_usd.ticker}
+          value={data.eur_usd.rate}
+          change={data.eur_usd.change}
+          changePercent={data.eur_usd.change_percent}
+          decimals={4}
+          last
+        />
+      </Panel>
 
-      {/* NASDAQ Card */}
-      {data.nasdaq && (
-        <View style={[styles.indicatorCard, { borderLeftColor: '#00BFFF', backgroundColor: colors.card }]}>
-          <View style={styles.indicatorHeader}>
-            <View>
-              <Text style={[styles.indicatorName, { color: colors.text }]}>🇺🇸 {data.nasdaq.name}</Text>
-              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.nasdaq.ticker}</Text>
-            </View>
-            <View style={[
-              styles.changeContainer,
-              { backgroundColor: data.nasdaq.change >= 0 ? '#34C75915' : '#FF3B3015' }
-            ]}>
-              <Ionicons 
-                name={data.nasdaq.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={18} 
-                color={data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.changeText,
-                { color: data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.nasdaq.change >= 0 ? '+' : ''}{data.nasdaq.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          
-          <View style={styles.valueRow}>
-            <Text style={[styles.currentValue, { color: colors.text }]}>{data.nasdaq.current_value.toFixed(2)}</Text>
-            <Text style={[
-              styles.changeAmount,
-              { color: data.nasdaq.change >= 0 ? '#34C759' : '#FF3B30' }
-            ]}>
-              {data.nasdaq.change >= 0 ? '+' : ''}{data.nasdaq.change.toFixed(2)} pts
-            </Text>
-          </View>
-          
-          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.nasdaq.description}</Text>
-          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.nasdaq.updated}</Text>
-        </View>
-      )}
-
-      {/* MSCI World Card */}
-      {data.msci_world && (
-        <View style={[styles.indicatorCard, { borderLeftColor: '#9B59B6', backgroundColor: colors.card }]}>
-          <View style={styles.indicatorHeader}>
-            <View>
-              <Text style={[styles.indicatorName, { color: colors.text }]}>🌍 {data.msci_world.name}</Text>
-              <Text style={[styles.tickerLabel, { color: colors.textSecondary }]}>{data.msci_world.ticker}</Text>
-            </View>
-            <View style={[
-              styles.changeContainer,
-              { backgroundColor: data.msci_world.change >= 0 ? '#34C75915' : '#FF3B3015' }
-            ]}>
-              <Ionicons 
-                name={data.msci_world.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={18} 
-                color={data.msci_world.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.changeText,
-                { color: data.msci_world.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.msci_world.change >= 0 ? '+' : ''}{data.msci_world.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          
-          <View style={styles.valueRow}>
-            <Text style={[styles.currentValue, { color: colors.text }]}>{data.msci_world.current_value.toFixed(2)}</Text>
-            <Text style={[
-              styles.changeAmount,
-              { color: data.msci_world.change >= 0 ? '#34C759' : '#FF3B30' }
-            ]}>
-              {data.msci_world.change >= 0 ? '+' : ''}{data.msci_world.change.toFixed(2)} pts
-            </Text>
-          </View>
-          
-          <Text style={[styles.indicatorDescription, { color: colors.textSecondary }]}>{data.msci_world.description}</Text>
-          <Text style={[styles.updateTime, { color: colors.textSecondary }]}>Actualizado: {data.msci_world.updated}</Text>
-        </View>
-      )}
-
-      {/* Crypto Section */}
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionHeaderEmoji}>₿</Text>
-        <Text style={styles.sectionHeaderTitle}>Criptomonedas</Text>
-      </View>
-      
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.cryptoScroll}
-      >
-        {/* Bitcoin */}
-        {data.bitcoin && (
-          <View style={[styles.cryptoCard, { borderColor: '#F7931A' }]}>
-            <View style={styles.cryptoHeader}>
-              <Text style={styles.cryptoEmoji}>₿</Text>
-              <View>
-                <Text style={styles.cryptoName}>{data.bitcoin.name}</Text>
-                <Text style={styles.cryptoSymbol}>{data.bitcoin.symbol}</Text>
-              </View>
-            </View>
-            <Text style={styles.cryptoPrice}>${data.bitcoin.current_value.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
-            <View style={[
-              styles.cryptoChange,
-              { backgroundColor: data.bitcoin.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.bitcoin.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.bitcoin.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.cryptoChangeText,
-                { color: data.bitcoin.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.bitcoin.change >= 0 ? '+' : ''}{data.bitcoin.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* Hedera */}
-        {data.hedera && (
-          <View style={[styles.cryptoCard, { borderColor: '#F7931A' }]}>
-            <View style={styles.cryptoHeader}>
-              <Text style={styles.cryptoEmoji}></Text>
-              <View>
-                <Text style={styles.cryptoName}>{data.hedera.name}</Text>
-                <Text style={styles.cryptoSymbol}>{data.hedera.symbol}</Text>
-              </View>
-            </View>
-            <Text style={styles.cryptoPrice}>${data.hedera.current_value.toLocaleString('en-US', { maximumFractionDigits: 6 })}</Text>
-            <View style={[
-              styles.cryptoChange,
-              { backgroundColor: data.hedera.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.hedera.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.hedera.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.cryptoChangeText,
-                { color: data.hedera.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.hedera.change >= 0 ? '+' : ''}{data.hedera.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-
-
-        
-        {/* Ethereum */}
-        {data.ethereum && (
-          <View style={[styles.cryptoCard, { borderColor: '#627EEA' }]}>
-            <View style={styles.cryptoHeader}>
-              <Text style={styles.cryptoEmoji}>Ξ</Text>
-              <View>
-                <Text style={styles.cryptoName}>{data.ethereum.name}</Text>
-                <Text style={styles.cryptoSymbol}>{data.ethereum.symbol}</Text>
-              </View>
-            </View>
-            <Text style={styles.cryptoPrice}>${data.ethereum.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
-            <View style={[
-              styles.cryptoChange,
-              { backgroundColor: data.ethereum.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.ethereum.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.ethereum.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.cryptoChangeText,
-                { color: data.ethereum.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.ethereum.change >= 0 ? '+' : ''}{data.ethereum.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* Solana */}
-        {data.solana && (
-          <View style={[styles.cryptoCard, { borderColor: '#627EEA' }]}>
-            <View style={styles.cryptoHeader}>
-              <Text style={styles.cryptoEmoji}>Ξ</Text>
-              <View>
-                <Text style={styles.cryptoName}>{data.solana.name}</Text>
-                <Text style={styles.cryptoSymbol}>{data.solana.symbol}</Text>
-              </View>
-            </View>
-            <Text style={styles.cryptoPrice}>${data.solana.current_value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</Text>
-            <View style={[
-              styles.cryptoChange,
-              { backgroundColor: data.solana.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.solana.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.solana.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.cryptoChangeText,
-                { color: data.solana.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.solana.change >= 0 ? '+' : ''}{data.solana.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-
-
-
-
-      </ScrollView>
-
-      {/* Commodities Section */}
-      <View style={styles.sectionHeader}>
-        <Ionicons name="cube" size={22} color="#FF9500" />
-        <Text style={styles.sectionHeaderTitle}>Commodities</Text>
-      </View>
-      
-      <View style={styles.commoditiesRow}>
-        {/* Gold Card */}
-        {data.gold && (
-          <View style={[styles.commodityCard, { backgroundColor: '#FFD70015', borderColor: '#FFD700' }]}>
-            <View style={styles.commodityHeader}>
-              <Text style={styles.commodityEmoji}>🥇</Text>
-              <Text style={styles.commodityName}>Oro</Text>
-            </View>
-            <Text style={styles.commodityPrice}>${data.gold.current_value.toFixed(2)}</Text>
-            <Text style={styles.commodityUnit}>{data.gold.unit}</Text>
-            <View style={[
-              styles.commodityChange,
-              { backgroundColor: data.gold.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.gold.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.gold.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.commodityChangeText,
-                { color: data.gold.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.gold.change >= 0 ? '+' : ''}{data.gold.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-        
-        {/* Oil Card */}
-        {data.oil && (
-          <View style={[styles.commodityCard, { backgroundColor: '#1a1a1a10', borderColor: '#1a1a1a' }]}>
-            <View style={styles.commodityHeader}>
-              <Text style={styles.commodityEmoji}>🛢️</Text>
-              <Text style={styles.commodityName}>Petróleo WTI</Text>
-            </View>
-            <Text style={styles.commodityPrice}>${data.oil.current_value.toFixed(2)}</Text>
-            <Text style={styles.commodityUnit}>{data.oil.unit}</Text>
-            <View style={[
-              styles.commodityChange,
-              { backgroundColor: data.oil.change >= 0 ? '#34C75920' : '#FF3B3020' }
-            ]}>
-              <Ionicons 
-                name={data.oil.change >= 0 ? 'trending-up' : 'trending-down'} 
-                size={14} 
-                color={data.oil.change >= 0 ? '#34C759' : '#FF3B30'} 
-              />
-              <Text style={[
-                styles.commodityChangeText,
-                { color: data.oil.change >= 0 ? '#34C759' : '#FF3B30' }
-              ]}>
-                {data.oil.change >= 0 ? '+' : ''}{data.oil.change_percent.toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-        )}
-      </View>
-
-      {/* Currency Section */}
-      {data.eur_usd && (
-        <View style={styles.currencySection}>
-          <View style={styles.sectionHeader}>
-            <Ionicons name="swap-horizontal" size={22} color="#007AFF" />
-            <Text style={styles.sectionHeaderTitle}>Divisas</Text>
-          </View>
-          
-          <View style={styles.currencyCard}>
-            <View style={styles.currencyInfo}>
-              <View style={styles.currencyFlags}>
-                <Text style={styles.currencyFlag}>🇪🇺</Text>
-                <Ionicons name="swap-horizontal" size={16} color="#8E8E93" />
-                <Text style={styles.currencyFlag}>🇺🇸</Text>
-              </View>
-              <Text style={styles.currencyPairName}>EUR/USD</Text>
-            </View>
-            <View style={styles.currencyRateContainer}>
-              <Text style={styles.currencyRate}>{data.eur_usd.rate.toFixed(4)}</Text>
-              <View style={[
-                styles.currencyChangeContainer,
-                { backgroundColor: data.eur_usd.change >= 0 ? '#34C75920' : '#FF3B3020' }
-              ]}>
-                <Ionicons 
-                  name={data.eur_usd.change >= 0 ? 'trending-up' : 'trending-down'} 
-                  size={12} 
-                  color={data.eur_usd.change >= 0 ? '#34C759' : '#FF3B30'} 
-                />
-                <Text style={[
-                  styles.currencyChangeText,
-                  { color: data.eur_usd.change >= 0 ? '#34C759' : '#FF3B30' }
-                ]}>
-                  {data.eur_usd.change >= 0 ? '+' : ''}{data.eur_usd.change_percent.toFixed(2)}%
-                </Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Market Hours Section */}
+      {/* Horarios */}
       {data.market_hours && data.market_hours.length > 0 && (
-        <View style={styles.marketHoursSection}>
-          <View style={styles.sectionHeader}>
-            <Ionicons name="time" size={22} color="#AF52DE" />
-            <Text style={styles.sectionHeaderTitle}>Horarios de Mercado</Text>
-          </View>
-          
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.marketHoursScroll}
-          >
-            {data.market_hours.map((market, index) => (
-              <View key={index} style={styles.marketHourCard}>
-                <View style={styles.marketHourHeader}>
-                  <Text style={styles.marketHourName} numberOfLines={1}>{market.market_name}</Text>
-                  <View style={[
-                    styles.marketStatusBadge,
-                    { backgroundColor: market.status.includes('Abierto') ? '#34C75920' : 
-                                      market.status.includes('Pre') ? '#FF950020' : '#8E8E9320' }
-                  ]}>
-                    <View style={[
-                      styles.marketStatusDot,
-                      { backgroundColor: market.status.includes('Abierto') ? '#34C759' : 
-                                        market.status.includes('Pre') ? '#FF9500' : '#8E8E93' }
-                    ]} />
-                    <Text style={[
-                      styles.marketStatusText,
-                      { color: market.status.includes('Abierto') ? '#34C759' : 
-                               market.status.includes('Pre') ? '#FF9500' : '#8E8E93' }
-                    ]} numberOfLines={1}>
-                      {market.status.length > 12 ? market.status.substring(0, 12) : market.status}
+        <Panel legend="Sesiones" title="Horarios de mercado" padded={false}>
+          {data.market_hours.map((m, i) => {
+            const open = m.status.includes('Abierto');
+            const pre = m.status.includes('Pre');
+            const tone: Tone = open ? 'up' : pre ? 'caution' : 'neutral';
+            const fg = tone === 'neutral' ? colors.inkMuted : toneColors(palette, tone).fg;
+            return (
+              <View key={`${m.market_name}-${i}`}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: space.md,
+                    paddingVertical: space.md,
+                    paddingHorizontal: space.lg,
+                  }}
+                >
+                  <View style={{ width: 3, height: 22, backgroundColor: fg, opacity: open ? 1 : 0.45 }} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[type.label, { color: colors.ink }]} numberOfLines={1}>
+                      {m.market_name}
+                    </Text>
+                    <Text style={[type.legend, { color: colors.inkFaint, letterSpacing: 0 }]} numberOfLines={1}>
+                      {m.location} · {m.timezone}
                     </Text>
                   </View>
+                  <Text style={[type.caption, numeric, { color: colors.inkMuted }]}>
+                    {m.open_time} – {m.close_time}
+                  </Text>
+                  <Text style={[type.caption, { color: fg, fontWeight: '700', minWidth: 74, textAlign: 'right' }]} numberOfLines={1}>
+                    {m.status}
+                  </Text>
                 </View>
-                <Text style={styles.marketLocation}>{market.location}</Text>
-                <View style={styles.marketTimeRow}>
-                  <Ionicons name="enter-outline" size={14} color="#34C759" />
-                  <Text style={styles.marketTimeText}>{market.open_time}</Text>
-                  <Ionicons name="exit-outline" size={14} color="#FF3B30" />
-                  <Text style={styles.marketTimeText}>{market.close_time}</Text>
+                {i < data.market_hours.length - 1 ? <Rule /> : null}
+              </View>
+            );
+          })}
+        </Panel>
+      )}
+
+      {/* Guía de lectura */}
+      <Panel legend="Guía" title="Cómo leer estos indicadores">
+        <View style={{ gap: space.sm }}>
+          {[
+            ['VIX por encima de 25', 'la volatilidad esperada es alta; suele coincidir con periodos de tensión.'],
+            ['VIX por debajo de 15', 'la volatilidad esperada es baja; el mercado descuenta calma.'],
+            ['Bono 10 años alto', 'la renta fija compite mejor con las acciones.'],
+            ['Bono 10 años bajo', 'la renta variable gana atractivo relativo.'],
+          ].map(([head, tail]) => (
+            <View key={head} style={{ flexDirection: 'row', gap: space.sm }}>
+              <View style={{ width: 3, height: 16, backgroundColor: colors.ruleStrong, marginTop: 3 }} />
+              <Text style={[type.caption, { color: colors.inkMuted, flex: 1 }]}>
+                <Text style={{ color: colors.ink, fontWeight: '700' }}>{head}: </Text>
+                {tail}
+              </Text>
+            </View>
+          ))}
+          <Text style={[type.caption, { color: colors.inkFaint, marginTop: space.xs }]}>
+            Descripciones de los indicadores, no recomendaciones de operación.
+          </Text>
+        </View>
+      </Panel>
+
+      {/* Noticias */}
+      <Panel legend="Yahoo Finance" title="Noticias del mercado" padded={false}>
+        {newsLoading ? (
+          <View style={{ padding: space.lg, gap: space.lg }}>
+            {[0, 1, 2].map((i) => (
+              <View key={i} style={{ flexDirection: 'row', gap: space.md }}>
+                <Skeleton width={72} height={56} />
+                <View style={{ flex: 1, gap: space.sm }}>
+                  <Skeleton />
+                  <Skeleton width="60%" />
                 </View>
-                <Text style={styles.marketTimezone}>{market.timezone}</Text>
               </View>
             ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Info Section */}
-      <View style={styles.infoSection}>
-        <View style={styles.infoCard}>
-          <Ionicons name="bulb" size={24} color="#FF9500" />
-          <View style={styles.infoContent}>
-            <Text style={styles.infoTitle}>¿Cómo usar estos indicadores?</Text>
-            <Text style={styles.infoText}>
-              • VIX alto (&gt;25): Considera reducir riesgo{'\n'}
-              • VIX bajo (&lt;15): Puede ser momento de invertir{'\n'}
-              • Treasury alto: Bonos más atractivos vs acciones{'\n'}
-              • Treasury bajo: Acciones pueden ser más atractivas
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Market News Section */}
-      <View style={styles.newsSection}>
-        <View style={styles.newsSectionHeader}>
-          <Ionicons name="newspaper" size={24} color="#007AFF" />
-          <Text style={styles.newsSectionTitle}>Noticias del Mercado</Text>
-        </View>
-        
-        {newsLoading ? (
-          <View style={styles.newsLoadingContainer}>
-            <ActivityIndicator size="small" color="#007AFF" />
-            <Text style={styles.newsLoadingText}>Cargando noticias...</Text>
           </View>
         ) : news.length === 0 ? (
-          <View style={styles.noNewsContainer}>
-            <Ionicons name="newspaper-outline" size={40} color="#8E8E93" />
-            <Text style={styles.noNewsText}>No hay noticias disponibles</Text>
-          </View>
+          <EmptyState
+            icon="newspaper-outline"
+            title="Sin noticias ahora mismo"
+            body="El proveedor no ha devuelto titulares para este momento. Desliza hacia abajo para volver a pedirlos."
+          />
         ) : (
           news.map((article, index) => (
-            <TouchableOpacity
-              key={index}
-              style={styles.newsCard}
-              onPress={() => openNewsLink(article.link)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.newsCardContent}>
-                {article.thumbnail && (
+            <View key={`${article.link}-${index}`}>
+              <Pressable
+                onPress={() => openNewsLink(article.link)}
+                accessibilityRole="link"
+                accessibilityLabel={article.title}
+                style={({ pressed }) => [
+                  {
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: space.md,
+                    padding: space.lg,
+                    backgroundColor: pressed ? colors.accentWash : 'transparent',
+                  },
+                  Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+                ]}
+              >
+                {article.thumbnail ? (
                   <Image
                     source={{ uri: article.thumbnail }}
-                    style={styles.newsThumbnail}
+                    style={{
+                      width: 72,
+                      height: 56,
+                      borderRadius: radius.xs,
+                      borderWidth: hairline,
+                      borderColor: colors.rule,
+                      backgroundColor: colors.surfaceSunken,
+                    }}
                     resizeMode="cover"
                   />
-                )}
-                <View style={[styles.newsTextContainer, !article.thumbnail && styles.newsTextContainerFull]}>
-                  <Text style={styles.newsTitle} numberOfLines={2}>
+                ) : null}
+                <View style={{ flex: 1, gap: 3 }}>
+                  <Text style={[type.label, { color: colors.ink }]} numberOfLines={2}>
                     {article.title}
                   </Text>
-                  {article.summary && (
-                    <Text style={styles.newsSummary} numberOfLines={2}>
+                  {article.summary ? (
+                    <Text style={[type.caption, { color: colors.inkMuted }]} numberOfLines={2}>
                       {article.summary}
                     </Text>
-                  )}
-                  <View style={styles.newsMetaContainer}>
-                    <Text style={styles.newsPublisher}>{article.publisher}</Text>
-                    <Text style={styles.newsDate}>{article.published_date}</Text>
-                  </View>
+                  ) : null}
+                  <Text style={[type.legend, { color: colors.inkFaint, letterSpacing: 0 }]}>
+                    {article.publisher} · {article.published_date}
+                  </Text>
                 </View>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#C7C7CC" style={styles.newsChevron} />
-            </TouchableOpacity>
+                <Ionicons name="open-outline" size={15} color={colors.inkFaint} />
+              </Pressable>
+              {index < news.length - 1 ? <Rule /> : null}
+            </View>
           ))
         )}
-      </View>
+      </Panel>
+
+      <Text style={[type.legend, { color: colors.inkFaint, textAlign: 'center' }]}>
+        Datos de Yahoo Finance
+      </Text>
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#6E6E73',
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-    padding: 20,
-  },
-  errorText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#6E6E73',
-    textAlign: 'center',
-  },
-  retryButton: {
-    marginTop: 20,
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  sentimentCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  sentimentHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sentimentTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginLeft: 12,
-  },
-  sentimentContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-  },
-  sentimentItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  sentimentDivider: {
-    width: 1,
-    height: 40,
-    backgroundColor: '#E0E0E0',
-  },
-  sentimentLabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginBottom: 4,
-  },
-  sentimentValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  indicatorCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  indicatorHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  indicatorTitleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  indicatorIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  indicatorName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  indicatorTicker: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginTop: 2,
-  },
-  indicatorValueContainer: {
-    alignItems: 'flex-end',
-  },
-  indicatorValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  changeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    marginTop: 4,
-  },
-  changeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 4,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginBottom: 16,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  statusText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  vixScale: {
-    marginBottom: 16,
-    position: 'relative',
-  },
-  vixScaleBar: {
-    flexDirection: 'row',
-    height: 8,
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  vixScaleSection: {
-    height: '100%',
-  },
-  vixScaleLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  vixScaleLabel: {
-    fontSize: 10,
-    color: '#8E8E93',
-  },
-  vixIndicator: {
-    position: 'absolute',
-    top: -4,
-    transform: [{ translateX: -6 }],
-  },
-  vixIndicatorDot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#1D1D1F',
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  treasuryInfo: {
-    backgroundColor: '#F5F5F7',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-  },
-  treasuryItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  treasuryItemText: {
-    fontSize: 13,
-    color: '#6E6E73',
-    marginLeft: 8,
-    flex: 1,
-  },
-  indicatorDescription: {
-    fontSize: 13,
-    color: '#6E6E73',
-    lineHeight: 18,
-    marginBottom: 8,
-  },
-  updateTime: {
-    fontSize: 11,
-    color: '#8E8E93',
-  },
-  infoSection: {
-    marginTop: 8,
-  },
-  infoCard: {
-    backgroundColor: '#FFF9E6',
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: 'row',
-  },
-  infoContent: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  infoTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-    marginBottom: 8,
-  },
-  infoText: {
-    fontSize: 13,
-    color: '#6E6E73',
-    lineHeight: 20,
-  },
-  // News Section Styles
-  newsSection: {
-    marginTop: 16,
-  },
-  newsSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  newsSectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginLeft: 10,
-  },
-  newsLoadingContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 30,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  newsLoadingText: {
-    marginLeft: 10,
-    fontSize: 14,
-    color: '#6E6E73',
-  },
-  noNewsContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 40,
-    alignItems: 'center',
-  },
-  noNewsText: {
-    marginTop: 10,
-    fontSize: 14,
-    color: '#8E8E93',
-  },
-  newsCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginBottom: 10,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  newsCardContent: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  newsThumbnail: {
-    width: 70,
-    height: 70,
-    borderRadius: 8,
-    marginRight: 12,
-    backgroundColor: '#F5F5F7',
-  },
-  newsTextContainer: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  newsTextContainerFull: {
-    paddingRight: 8,
-  },
-  newsTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-    lineHeight: 18,
-    marginBottom: 4,
-  },
-  newsSummary: {
-    fontSize: 12,
-    color: '#6E6E73',
-    lineHeight: 16,
-    marginBottom: 6,
-  },
-  newsMetaContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  newsPublisher: {
-    fontSize: 11,
-    color: '#007AFF',
-    fontWeight: '500',
-  },
-  newsDate: {
-    fontSize: 10,
-    color: '#8E8E93',
-  },
-  newsChevron: {
-    marginLeft: 8,
-  },
-  // New styles for commodities, currencies, and market hours
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 20,
-    marginBottom: 12,
-    gap: 8,
-  },
-  sectionHeaderTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  commoditiesRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  commodityCard: {
-    flex: 1,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-  },
-  commodityHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-  },
-  commodityEmoji: {
-    fontSize: 24,
-  },
-  commodityName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  commodityPrice: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginBottom: 2,
-  },
-  commodityUnit: {
-    fontSize: 11,
-    color: '#8E8E93',
-    marginBottom: 8,
-  },
-  commodityChange: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  commodityChangeText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  currencySection: {
-    marginTop: 8,
-  },
-  currencyCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    borderRadius: 16,
-    padding: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  currencyInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  currencyFlags: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  currencyFlag: {
-    fontSize: 24,
-  },
-  currencyPairName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  currencyRateContainer: {
-    alignItems: 'flex-end',
-  },
-  currencyRate: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#007AFF',
-    marginBottom: 4,
-  },
-  currencyChangeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  currencyChangeText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  marketHoursSection: {
-    marginTop: 8,
-  },
-  marketHoursScroll: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  marketHourCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    width: 170,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  marketHourHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 6,
-  },
-  marketHourName: {
-    fontSize: 13,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    flex: 1,
-    marginRight: 4,
-  },
-  marketStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
-    gap: 4,
-  },
-  marketStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  marketStatusText: {
-    fontSize: 9,
-    fontWeight: '600',
-  },
-  marketLocation: {
-    fontSize: 11,
-    color: '#6E6E73',
-    marginBottom: 8,
-  },
-  marketTimeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 4,
-  },
-  marketTimeText: {
-    fontSize: 12,
-    color: '#1D1D1F',
-    marginRight: 8,
-  },
-  marketTimezone: {
-    fontSize: 10,
-    color: '#8E8E93',
-  },
-  // Crypto Styles
-  sectionHeaderEmoji: {
-    fontSize: 22,
-  },
-  cryptoScroll: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  cryptoCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    width: 150,
-    borderWidth: 2,
-    borderLeftWidth: 4,
-    alignItems: 'center',
-  },
-  cryptoHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
-  },
-  cryptoEmoji: {
-    fontSize: 28,
-  },
-  cryptoName: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  cryptoSymbol: {
-    fontSize: 11,
-    color: '#8E8E93',
-  },
-  cryptoPrice: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginBottom: 8,
-  },
-  cryptoChange: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-    gap: 4,
-  },
-  cryptoChangeText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-});

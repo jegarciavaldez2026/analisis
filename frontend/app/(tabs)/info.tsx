@@ -2,9 +2,10 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
+import { inkOn, Palette } from '../../theme/tokens';
 
 export default function InfoScreen() {
-  const { isDark, toggleTheme, colors } = useTheme();
+  const { isDark, toggleTheme, colors, palette } = useTheme();
 
   return (
     <ScrollView 
@@ -21,8 +22,8 @@ export default function InfoScreen() {
           <Switch
             value={isDark}
             onValueChange={toggleTheme}
-            trackColor={{ false: '#E0E0E0', true: colors.primary }}
-            thumbColor="#FFFFFF"
+            trackColor={{ false: colors.rule, true: colors.accent }}
+            thumbColor={colors.surface}
           />
         </View>
       </View>
@@ -34,7 +35,7 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>📊 ¿Qué hace esta app?</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>¿Qué hace esta app?</Text>
         <Text style={[styles.sectionText, { backgroundColor: colors.card, color: colors.text }]}>
           Esta aplicación analiza acciones que cotizan en bolsa utilizando más de 100 ratios financieros clave.
           Proporciona una recomendación clara (Comprar, Mantener o Vender) basada en métricas fundamentales.
@@ -43,7 +44,7 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>🎯 Categorías de Análisis</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Categorías de análisis</Text>
         <View style={styles.categoryList}>
           <CategoryItem icon="trending-up" title="Rentabilidad" description="ROE, ROA, ROIC, Márgenes" colors={colors} />
           <CategoryItem icon="water" title="Liquidez" description="Ratios corrientes, rápidos y de efectivo" colors={colors} />
@@ -55,7 +56,7 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>🤖 Asistente IA</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Asistente IA</Text>
         <Text style={[styles.sectionText, { backgroundColor: colors.card, color: colors.text }]}>
           Después de analizar una acción, puedes usar el asistente de IA para:
           {'\n'}• Obtener una valoración detallada de las métricas
@@ -66,7 +67,7 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>📈 Cómo usar</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Cómo usar</Text>
         <View style={styles.stepsList}>
           <StepItem number="1" text="Ingresa el ticker de una acción (ej: AAPL, MSFT, GOOGL)" colors={colors} />
           <StepItem number="2" text="La app extrae datos financieros usando Yahoo Finance" colors={colors} />
@@ -76,26 +77,29 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>✅ Interpretación</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Interpretación</Text>
         <View style={styles.interpretationList}>
-          <InterpretationItem color={colors.success} label="COMPRAR" description="≥60% métricas favorables" colors={colors} />
-          <InterpretationItem color={colors.warning} label="MANTENER" description="40-60% métricas favorables" colors={colors} />
-          <InterpretationItem color={colors.danger} label="VENDER" description="<40% métricas favorables" colors={colors} />
+          <InterpretationItem color={colors.success} label="COMPRAR" description="≥60% métricas favorables" colors={colors} palette={palette} />
+          <InterpretationItem color={colors.warning} label="MANTENER" description="40-60% métricas favorables" colors={colors} palette={palette} />
+          <InterpretationItem color={colors.danger} label="VENDER" description="<40% métricas favorables" colors={colors} palette={palette} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>⚠️ Advertencia</Text>
-        <Text style={[styles.warningText, { backgroundColor: isDark ? '#3D2E00' : '#FFF3CD' }]}>
-          Esta aplicación proporciona análisis automatizado basado en ratios financieros históricos.
-          No constituye asesoramiento financiero. Siempre consulta con un profesional antes de tomar
-          decisiones de inversión.
-        </Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Advertencia</Text>
+        <View style={[styles.warningBox, { backgroundColor: colors.cautionWash, borderColor: colors.caution }]}>
+          <View style={[styles.warningMark, { backgroundColor: colors.caution }]} />
+          <Text style={[styles.warningText, { color: colors.text }]}>
+            Esta aplicación proporciona análisis automatizado basado en ratios financieros históricos.
+            No constituye asesoramiento financiero. Siempre consulta con un profesional antes de tomar
+            decisiones de inversión.
+          </Text>
+        </View>
       </View>
 
       {/* Support/Credits Section */}
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>📞 Soporte</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Soporte</Text>
         <View style={[styles.supportCard, { backgroundColor: colors.card }]}>
           <View style={styles.supportHeader}>
             <Ionicons name="business" size={28} color={colors.primary} />
@@ -139,18 +143,18 @@ function StepItem({ number, text, colors }: { number: string; text: string; colo
   return (
     <View style={[styles.stepItem, { backgroundColor: colors.card }]}>
       <View style={[styles.stepNumber, { backgroundColor: colors.primary }]}>
-        <Text style={styles.stepNumberText}>{number}</Text>
+        <Text style={[styles.stepNumberText, { color: colors.inkOnAccent }]}>{number}</Text>
       </View>
       <Text style={[styles.stepText, { color: colors.text }]}>{text}</Text>
     </View>
   );
 }
 
-function InterpretationItem({ color, label, description, colors }: { color: string; label: string; description: string; colors: any }) {
+function InterpretationItem({ color, label, description, colors, palette }: { color: string; label: string; description: string; colors: any; palette: Palette }) {
   return (
     <View style={[styles.interpretationItem, { backgroundColor: colors.card }]}>
       <View style={[styles.interpretationBadge, { backgroundColor: color }]}>
-        <Text style={styles.interpretationLabel}>{label}</Text>
+        <Text style={[styles.interpretationLabel, { color: inkOn(color, palette) }]}>{label}</Text>
       </View>
       <Text style={[styles.interpretationDescription, { color: colors.textSecondary }]}>{description}</Text>
     </View>
@@ -258,7 +262,6 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   stepNumberText: {
-    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: 'bold',
   },
@@ -286,7 +289,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   interpretationLabel: {
-    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: 'bold',
   },
@@ -294,14 +296,19 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
   },
-  warningText: {
-    fontSize: 14,
-    color: '#856404',
-    lineHeight: 20,
+  warningBox: {
+    flexDirection: 'row',
+    gap: 12,
     padding: 16,
-    borderRadius: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#FF9500',
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  /** Marca de índice: sustituye al borde lateral de color de 4 px. */
+  warningMark: { width: 3, alignSelf: 'stretch' },
+  warningText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
   },
   supportCard: {
     padding: 20,

@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useTheme } from '../../contexts/ThemeContext';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? 'http://TU_IP_LOCAL:8001';
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 type FilterType = 'TODOS' | 'COMPRAR' | 'MANTENER' | 'VENDER';
 
@@ -47,7 +47,9 @@ const getRecommendationColor = (r: string) => {
 
 function HistoryCard({ item }: { item: HistoryItem }) {
   const { colors } = useTheme();
-  const hasPrice = item.current_price != null && item.current_price > 0;
+  const price = item.current_price;
+  const changePct = item.price_change_percent;
+  const hasPrice = price != null && price > 0;
   const isPositive = hasPrice ? (item.price_change ?? 0) >= 0 : true;
   const color = isPositive ? '#34C759' : '#FF3B30';
   const arrow = isPositive ? '\u25b2' : '\u25bc';
@@ -66,10 +68,10 @@ function HistoryCard({ item }: { item: HistoryItem }) {
           {hasPrice ? (
             <>
               <Text style={styles.price}>
-                ${item.current_price.toFixed(2)}
+                ${price!.toFixed(2)}
               </Text>
               <Text style={[styles.change, { color }]}>
-                {arrow} {item.price_change_percent.toFixed(2)}%
+                {arrow} {(changePct ?? 0).toFixed(2)}%
               </Text>
             </>
           ) : (
@@ -163,7 +165,6 @@ export default function HistoryScreen() {
         data={history}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <HistoryCard item={item} />}
-        estimatedItemSize={160}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       />
     </View>

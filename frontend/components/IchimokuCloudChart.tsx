@@ -4,6 +4,8 @@ import { Svg, G, Line, Rect, Circle, Text as SvgText, Path, Defs, ClipPath } fro
 import axios from "axios";
 import { useTheme } from "../contexts/ThemeContext";
 
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
+
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const CHART_WIDTH = SCREEN_WIDTH - 32;
 const CHART_HEIGHT = 350;
@@ -72,7 +74,7 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
   const loadIchimoku = async () => {
     try {
       setLoading(true);
-      const { data: response } = await axios.get(`http://localhost:8002/api/ichimoku-chart/${ticker}`);
+      const { data: response } = await axios.get(`${BACKEND_URL}/api/ichimoku-chart/${ticker}`);
       setData(response);
     } catch (error) {
       console.error("Error loading Ichimoku:", error);

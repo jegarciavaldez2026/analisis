@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,15 +9,19 @@ import {
   ScrollView,
   Alert,
   Platform,
-  Dimensions,
+  Pressable,
+  TextInput,
+  useWindowDimensions,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useTheme } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../../contexts/ThemeContext';
+import { inkOn, Palette } from '../../theme/tokens';
+import HeatmapContainer from '../../components/Heatmap/HeatmapContainer';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-const SCREEN_W = Dimensions.get('window').width;
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -39,6 +43,24 @@ interface EnhancedHistoryItem extends HistoryItem {
   price_change: number;
   price_change_percent: number;
   sector: string;
+}
+
+/** Lo que devuelve `/api/history/metrics`. Todo opcional: cuando Yahoo no da un
+ *  dato viaja como `null` y la interfaz escribe «sin dato» en vez de un cero,
+ *  que significaría «no se movió». */
+interface MarketMetrics {
+  ticker: string;
+  change_1d?: number | null;
+  change_1w?: number | null;
+  change_1m?: number | null;
+  change_3m?: number | null;
+  change_ytd?: number | null;
+  volume?: number | null;
+  avg_volume_3m?: number | null;
+  relative_volume?: number | null;
+  fifty_two_week_low?: number | null;
+  fifty_two_week_high?: number | null;
+  current_price?: number | null;
 }
 
 interface PriceInfo {
@@ -73,364 +95,16 @@ interface FundamentalsInfo {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEATMAP HELPERS
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getPctColor(pct: number): string {
-  if (pct >= 5)    return '#00c853';
-  if (pct >= 4)    return '#00b848';
-  if (pct >= 3)    return '#00a83d';
-  if (pct >= 2.5)  return '#009632';
-  if (pct >= 2)    return '#008428';
-  if (pct >= 1.5)  return '#00721e';
-  if (pct >= 1)    return '#006014';
-  if (pct >= 0.5)  return '#004e0a';
-  if (pct >= 0.1)  return '#003d05';
-  if (pct > -0.1)  return '#2d2d2d';
-  if (pct > -0.5)  return '#3d0505';
-  if (pct > -1)    return '#4e0a0a';
-  if (pct > -1.5)  return '#601414';
-  if (pct > -2)    return '#721e1e';
-  if (pct > -2.5)  return '#842828';
-  if (pct > -3)    return '#963232';
-  if (pct > -4)    return '#a83d3d';
-  if (pct > -5)    return '#b84848';
-  return '#c85353';
+function getRecColor(r: string, c: ThemeColors): string {
+  if (r === 'COMPRAR')  return c.up;
+  if (r === 'MANTENER') return c.caution;
+  if (r === 'VENDER')   return c.down;
+  return c.inkFaint;
 }
 
-function getRecColor(r: string): string {
-  if (r === 'COMPRAR')  return '#34C759';
-  if (r === 'MANTENER') return '#FF9500';
-  if (r === 'VENDER')   return '#FF3B30';
-  return '#8E8E93';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COMPACT FINVIZ-STYLE HEATMAP
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface HeatmapProps {
-  stocks: EnhancedHistoryItem[];
-  colors: any;
-  isDark: boolean;
-}
-
-function CompactHeatmap({ stocks, colors, isDark }: HeatmapProps) {
-  const [activeTooltip, setActiveTooltip] = useState<EnhancedHistoryItem | null>(null);
-  const tooltipTimer = useRef<any>(null);
-  const [viewMode, setViewMode] = useState<'sector' | 'all'>('sector');
-  const containerW = SCREEN_W - 32;
-
-  // Group by sector
-  const sectorMap = React.useMemo(() => {
-    const map = new Map<string, EnhancedHistoryItem[]>();
-    stocks.forEach((s) => {
-      const key = s.sector && s.sector !== 'N/A' ? s.sector : 'Otros';
-      const list = map.get(key) || [];
-      list.push(s);
-      map.set(key, list);
-    });
-    return Array.from(map.entries())
-      .sort((a, b) => b[1].length - a[1].length);
-  }, [stocks]);
-
-  const showTooltip = (stock: EnhancedHistoryItem) => {
-    if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
-    setActiveTooltip(stock);
-    tooltipTimer.current = setTimeout(() => setActiveTooltip(null), 3500);
-  };
-
-  if (stocks.length === 0) return null;
-
-  // Fixed cell size like Finviz — each cell is a fixed rectangle
-  const CELL_W = viewMode === 'sector' ? Math.floor((containerW - 2) / Math.ceil(Math.sqrt(stocks.length))) : 56;
-  const CELL_H = 46;
-  const COLS   = viewMode === 'sector' ? Math.floor(containerW / CELL_W) : Math.floor(containerW / 58);
-
-  // Finviz layout: render sector groups as labeled blocks, cells inside
-  const renderSectorView = () => {
-    const cellW = Math.floor((containerW - 4) / Math.max(3, Math.ceil(stocks.length / 5)));
-    const clampedCellW = Math.max(44, Math.min(80, cellW));
-    const cols = Math.floor(containerW / (clampedCellW + 2));
-
-    return (
-      <View>
-        {sectorMap.map(([sector, items]) => {
-          const avgChange = items.reduce((s, i) => s + i.price_change_percent, 0) / items.length;
-          const colsInSector = Math.min(cols, items.length);
-          const rowCount = Math.ceil(items.length / colsInSector);
-          const blockW = colsInSector * (clampedCellW + 2);
-
-          return (
-            <View key={sector} style={[heatStyles.sectorBlock, { borderColor: colors.border, marginBottom: 6 }]}>
-              {/* Sector label bar */}
-              <View style={[heatStyles.sectorBar, { backgroundColor: isDark ? '#1c1c1e' : '#f0f0f0' }]}>
-                <Text style={[heatStyles.sectorBarLabel, { color: colors.text }]}>{sector}</Text>
-                <Text style={[
-                  heatStyles.sectorBarChange,
-                  { color: avgChange >= 0 ? '#27ae60' : '#d04040' },
-                ]}>
-                  {avgChange >= 0 ? '+' : ''}{avgChange.toFixed(2)}%
-                </Text>
-              </View>
-
-              {/* Cells grid */}
-              <View style={heatStyles.cellsRow}>
-                {items.map((stock) => {
-                  const bg = getPctColor(stock.price_change_percent);
-                  const isActive = activeTooltip?.ticker === stock.ticker;
-                  return (
-                    <TouchableOpacity
-                      key={stock.ticker}
-                      onPress={() => showTooltip(stock)}
-                      activeOpacity={0.8}
-                      style={[
-                        heatStyles.cell,
-                        {
-                          width: clampedCellW,
-                          height: CELL_H,
-                          backgroundColor: bg,
-                          borderWidth: isActive ? 2 : 0,
-                          borderColor: isActive ? '#fff' : 'transparent',
-                        },
-                      ]}
-                    >
-                      <Text style={heatStyles.cellTicker} numberOfLines={1}>
-                        {stock.ticker}
-                      </Text>
-                      <Text style={heatStyles.cellPct} numberOfLines={1}>
-                        {stock.price_change_percent >= 0 ? '+' : ''}
-                        {stock.price_change_percent.toFixed(2)}%
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          );
-        })}
-      </View>
-    );
-  };
-
-  const renderAllView = () => {
-    const cellW = Math.floor((containerW - (COLS - 1) * 2) / COLS);
-    return (
-      <View style={heatStyles.allGrid}>
-        {stocks.map((stock) => {
-          const bg = getPctColor(stock.price_change_percent);
-          const isActive = activeTooltip?.ticker === stock.ticker;
-          return (
-            <TouchableOpacity
-              key={stock.ticker}
-              onPress={() => showTooltip(stock)}
-              activeOpacity={0.8}
-              style={[
-                heatStyles.cell,
-                {
-                  width: cellW,
-                  height: CELL_H,
-                  backgroundColor: bg,
-                  margin: 1,
-                  borderWidth: isActive ? 2 : 0,
-                  borderColor: isActive ? '#fff' : 'transparent',
-                },
-              ]}
-            >
-              <Text style={heatStyles.cellTicker} numberOfLines={1}>{stock.ticker}</Text>
-              <Text style={heatStyles.cellPct} numberOfLines={1}>
-                {stock.price_change_percent >= 0 ? '+' : ''}
-                {stock.price_change_percent.toFixed(2)}%
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    );
-  };
-
-  return (
-    <View style={[heatStyles.root, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      {/* Header */}
-      <View style={heatStyles.header}>
-        <View style={heatStyles.headerLeft}>
-          <Ionicons name="grid-outline" size={14} color={colors.primary} />
-          <Text style={[heatStyles.title, { color: colors.text }]}>Mapa de Calor</Text>
-          <Text style={[heatStyles.count, { color: colors.textSecondary }]}>
-            {stocks.length} acciones
-          </Text>
-        </View>
-        <View style={heatStyles.toggle}>
-          {(['sector', 'all'] as const).map((m) => (
-            <TouchableOpacity
-              key={m}
-              style={[
-                heatStyles.toggleBtn,
-                viewMode === m && { backgroundColor: colors.primary },
-                { borderColor: colors.border },
-              ]}
-              onPress={() => setViewMode(m)}
-            >
-              <Text style={[
-                heatStyles.toggleText,
-                { color: viewMode === m ? '#fff' : colors.textSecondary },
-              ]}>
-                {m === 'sector' ? 'Sector' : 'Todo'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      {/* Legend */}
-      <View style={heatStyles.legend}>
-        <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>-</Text>
-        {[-5, -3, -1, 0, 1, 3, 5].map((v) => (
-          <View key={v} style={heatStyles.legendItem}>
-            <View style={[heatStyles.legendSwatch, { backgroundColor: getPctColor(v) }]} />
-            <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>
-              {v > 0 ? '+' : ''}{v}%
-            </Text>
-          </View>
-        ))}
-        <Text style={[heatStyles.legendLabel, { color: colors.textSecondary }]}>+</Text>
-      </View>
-
-      {/* Grid */}
-      <View style={heatStyles.gridContainer}>
-        {viewMode === 'sector' ? renderSectorView() : renderAllView()}
-      </View>
-
-      {/* Tooltip */}
-      {activeTooltip && (
-        <View style={[heatStyles.tooltip, { backgroundColor: colors.background, borderColor: colors.border }]}>
-          <View style={heatStyles.tooltipRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={[heatStyles.tooltipTicker, { color: colors.text }]}>
-                {activeTooltip.ticker}
-              </Text>
-              <Text style={[heatStyles.tooltipName, { color: colors.textSecondary }]} numberOfLines={1}>
-                {activeTooltip.company_name}
-              </Text>
-            </View>
-            <View style={{ alignItems: 'flex-end', gap: 4 }}>
-              <Text style={[heatStyles.tooltipPrice, { color: colors.text }]}>
-                ${activeTooltip.current_price.toFixed(2)}
-              </Text>
-              <Text style={[
-                heatStyles.tooltipChange,
-                { color: activeTooltip.price_change_percent >= 0 ? '#27ae60' : '#d04040' },
-              ]}>
-                {activeTooltip.price_change_percent >= 0 ? '▲' : '▼'}{' '}
-                {Math.abs(activeTooltip.price_change_percent).toFixed(2)}%
-              </Text>
-            </View>
-          </View>
-          <View style={heatStyles.tooltipMeta}>
-            <Text style={[heatStyles.tooltipSector, { color: colors.textSecondary }]}>
-              {activeTooltip.sector}
-            </Text>
-            <View style={[
-              heatStyles.tooltipRec,
-              { backgroundColor: getRecColor(activeTooltip.recommendation) + '22' },
-            ]}>
-              <Text style={[
-                heatStyles.tooltipRecText,
-                { color: getRecColor(activeTooltip.recommendation) },
-              ]}>
-                {activeTooltip.recommendation} · {activeTooltip.favorable_percentage.toFixed(0)}%
-              </Text>
-            </View>
-          </View>
-          <TouchableOpacity
-            style={heatStyles.tooltipClose}
-            onPress={() => setActiveTooltip(null)}
-          >
-            <Ionicons name="close" size={14} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </View>
-      )}
-    </View>
-  );
-}
-
-const heatStyles = StyleSheet.create({
-  root: {
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  title: { fontSize: 13, fontWeight: '600' },
-  count: { fontSize: 11 },
-  toggle: { flexDirection: 'row', borderRadius: 6, overflow: 'hidden', borderWidth: 1 },
-  toggleBtn: { paddingHorizontal: 10, paddingVertical: 4 },
-  toggleText: { fontSize: 11, fontWeight: '500' },
-  legend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-  },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  legendSwatch: { width: 11, height: 11, borderRadius: 2 },
-  legendLabel: { fontSize: 9 },
-  gridContainer: { paddingHorizontal: 6, paddingBottom: 6 },
-  sectorBlock: {
-    borderRadius: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: 'hidden',
-  },
-  sectorBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  sectorBarLabel: { fontSize: 11, fontWeight: '600' },
-  sectorBarChange: { fontSize: 11, fontWeight: '600' },
-  cellsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 2, padding: 2 },
-  allGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  cell: {
-    borderRadius: 3,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  cellTicker: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  cellPct:    { color: 'rgba(255,255,255,0.88)', fontSize: 9, fontWeight: '500' },
-  tooltip: {
-    margin: 6,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 10,
-  },
-  tooltipRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  tooltipTicker: { fontSize: 15, fontWeight: '700' },
-  tooltipName: { fontSize: 11, marginTop: 1 },
-  tooltipPrice: { fontSize: 14, fontWeight: '600' },
-  tooltipChange: { fontSize: 12, fontWeight: '600' },
-  tooltipMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  tooltipSector: { fontSize: 11 },
-  tooltipRec: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5 },
-  tooltipRecText: { fontSize: 11, fontWeight: '600' },
-  tooltipClose: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    padding: 2,
-  },
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HISTORY CARD HELPERS
@@ -465,11 +139,11 @@ function fmtNum(
   return `${prefix}${value.toFixed(decimals)}${suffix}`;
 }
 
-function beneishColor(s: number | null) {
-  if (s === null) return '#8E8E93';
-  if (s > -1.78) return '#FF3B30';
-  if (s > -2.22) return '#FF9500';
-  return '#34C759';
+function beneishColor(s: number | null, c: ThemeColors) {
+  if (s === null) return c.noSignal;
+  if (s > -1.78) return c.down;
+  if (s > -2.22) return c.caution;
+  return c.up;
 }
 function beneishLabel(s: number | null) {
   if (s === null) return '—';
@@ -477,29 +151,57 @@ function beneishLabel(s: number | null) {
   if (s > -2.22) return 'Zona gris';
   return 'Sin riesgo';
 }
-function piotroskiColor(s: number | null) {
-  if (s === null) return '#8E8E93';
-  if (s >= 7) return '#34C759';
-  if (s >= 4) return '#FF9500';
-  return '#FF3B30';
+function piotroskiColor(s: number | null, c: ThemeColors) {
+  if (s === null) return c.noSignal;
+  if (s >= 7) return c.up;
+  if (s >= 4) return c.caution;
+  return c.down;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HISTORY CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
+/*
+ * Nota sobre la comparación con el sector:
+ *
+ * `/api/sector-averages` ya existe y promedia de verdad sobre tus análisis
+ * (P/E, P/E adelantado, P/B, BPA, beta, rentabilidad por dividendo, PEG),
+ * contando cada empresa una sola vez. Pero las métricas que enseña ESTA ficha
+ * —Sharpe, EV/EBIT, Beneish, Piotroski, Montier, deuda neta, P/S— salen de
+ * otra llamada y no se guardan en `metadata`, así que no hay ninguna clave
+ * en común. Enganchar aquí la comparación habría dejado una rama que nunca se
+ * cumple: parecería conectada y no lo estaría.
+ *
+ * Para cerrarlo hay que persistir esas métricas en el análisis; entonces se
+ * añaden a CAMPOS en el backend y la comparación entra sin tocar la interfaz.
+ */
 function HistoryCard({
-  item, colors, onDelete, isDeleting,
+  item, mercado, colors, palette, onDelete, isDeleting,
 }: {
   item: HistoryItem;
-  colors: any;
+  /** Precio ya traído por `/api/history/enhanced`, si lo hay. */
+  mercado?: EnhancedHistoryItem;
+  colors: ThemeColors;
+  palette: Palette;
   onDelete: (id: string, ticker: string) => void;
   isDeleting: boolean;
 }) {
-  const [price, setPrice] = useState<PriceInfo>({
-    current_price: 0, change: 0, change_percent: 0,
-    currency: 'USD', loading: true, error: false,
-  });
+  const [price, setPrice] = useState<PriceInfo>(() =>
+    mercado
+      ? {
+          current_price: mercado.current_price,
+          change: mercado.price_change,
+          change_percent: mercado.price_change_percent,
+          currency: 'USD',
+          loading: false,
+          error: false,
+        }
+      : {
+          current_price: 0, change: 0, change_percent: 0,
+          currency: 'USD', loading: true, error: false,
+        },
+  );
   const [technical, setTechnical] = useState<TechnicalInfo>({
     recommendation: '', score: 0, trend: '',
     camarilla_zone: '', camarilla_interpretation: '',
@@ -513,7 +215,12 @@ function HistoryCard({
   });
   const [fundExpanded, setFundExpanded] = useState(false);
 
+  // El precio ya viene en la respuesta del historial enriquecido, que se pide
+  // una vez para toda la pantalla. Volver a pedirlo por tarjeta era una
+  // petición por empresa para repetir un número que ya estaba en memoria.
+  // Sólo se pide cuando esa respuesta no trajo la empresa.
   useEffect(() => {
+    if (mercado) return;
     let cancelled = false;
     axios.get(`${BACKEND_URL}/api/price/${item.ticker}`)
       .then(({ data }) => {
@@ -528,7 +235,7 @@ function HistoryCard({
       })
       .catch(() => { if (!cancelled) setPrice(p => ({ ...p, loading: false, error: true })); });
     return () => { cancelled = true; };
-  }, [item.ticker]);
+  }, [item.ticker, mercado]);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,7 +255,11 @@ function HistoryCard({
     return () => { cancelled = true; };
   }, [item.ticker]);
 
+  // Las métricas avanzadas están detrás de «Ver métricas», así que se piden
+  // cuando se abren y no antes: el análisis completo es el documento más
+  // pesado de la base y se descargaba entero para dejarlo sin mirar.
   useEffect(() => {
+    if (!fundExpanded) return;
     let cancelled = false;
     axios.get(`${BACKEND_URL}/api/analysis/${item.id}`)
       .then(({ data }) => {
@@ -567,7 +278,7 @@ function HistoryCard({
       })
       .catch(() => { if (!cancelled) setFundamentals(p => ({ ...p, loading: false, error: true })); });
     return () => { cancelled = true; };
-  }, [item.id]);
+  }, [item.id, fundExpanded]);
 
   const formatDate = (d: string) =>
     new Date(d).toLocaleDateString('es-ES', {
@@ -576,13 +287,13 @@ function HistoryCard({
     });
 
   const isPositive     = price.change >= 0;
-  const priceColor     = isPositive ? '#34C759' : '#FF3B30';
-  const priceBg        = isPositive ? '#34C75918' : '#FF3B3018';
+  const priceColor     = isPositive ? colors.up : colors.down;
+  const priceBg        = isPositive ? colors.upWash : colors.downWash;
   const changeSigned   = (isPositive ? '+' : '') + price.change_percent.toFixed(2) + '%';
   const currencySymbol = price.currency === 'USD' ? '$' : price.currency + '\u00A0';
 
-  const trendColor = technical.trend === 'ALCISTA' ? '#34C759'
-    : technical.trend === 'BAJISTA' ? '#FF3B30' : '#FF9500';
+  const trendColor = technical.trend === 'ALCISTA' ? colors.up
+    : technical.trend === 'BAJISTA' ? colors.down : colors.caution;
   const trendIcon  = technical.trend === 'ALCISTA' ? 'trending-up'
     : technical.trend === 'BAJISTA' ? 'trending-down' : 'remove-outline';
 
@@ -600,26 +311,26 @@ function HistoryCard({
       {
         label: 'Sharpe', value: fmtNum(fundamentals.sharpe_ratio),
         color: fundamentals.sharpe_ratio !== null
-          ? fundamentals.sharpe_ratio >= 1 ? '#34C759' : fundamentals.sharpe_ratio >= 0 ? '#FF9500' : '#FF3B30'
+          ? fundamentals.sharpe_ratio >= 1 ? colors.up : fundamentals.sharpe_ratio >= 0 ? colors.caution : colors.down
           : undefined,
         hint: 'Retorno ajustado al riesgo',
       },
       {
         label: 'EV/EBIT', value: fmtNum(fundamentals.ev_ebit, { suffix: 'x' }),
         color: fundamentals.ev_ebit !== null
-          ? fundamentals.ev_ebit < 15 ? '#34C759' : fundamentals.ev_ebit < 25 ? '#FF9500' : '#FF3B30'
+          ? fundamentals.ev_ebit < 15 ? colors.up : fundamentals.ev_ebit < 25 ? colors.caution : colors.down
           : undefined,
         hint: 'Valoración vs EBIT',
       },
       {
         label: 'Beneish M', value: fmtNum(fundamentals.beneish_m_score),
-        color: beneishColor(fundamentals.beneish_m_score),
+        color: beneishColor(fundamentals.beneish_m_score, colors),
         hint: beneishLabel(fundamentals.beneish_m_score),
       },
       {
         label: 'Piotroski',
         value: fundamentals.piotroski_score !== null ? `${Math.round(fundamentals.piotroski_score)}/9` : '—',
-        color: piotroskiColor(fundamentals.piotroski_score),
+        color: piotroskiColor(fundamentals.piotroski_score, colors),
         hint: fundamentals.piotroski_score !== null
           ? fundamentals.piotroski_score >= 7 ? 'Sólida' : fundamentals.piotroski_score >= 4 ? 'Moderada' : 'Débil'
           : undefined,
@@ -628,19 +339,19 @@ function HistoryCard({
         label: 'Montier C',
         value: fundamentals.montier_score !== null ? `${Math.round(fundamentals.montier_score)}/3` : '—',
         color: fundamentals.montier_score !== null
-          ? fundamentals.montier_score <= 1 ? '#34C759' : fundamentals.montier_score === 2 ? '#FF9500' : '#FF3B30'
+          ? fundamentals.montier_score <= 1 ? colors.up : fundamentals.montier_score === 2 ? colors.caution : colors.down
           : undefined,
         hint: 'Riesgo contable',
       },
       {
         label: 'Deuda Neta', value: fmtNum(fundamentals.net_debt, { isLarge: true, prefix: '$' }),
-        color: fundamentals.net_debt !== null ? fundamentals.net_debt < 0 ? '#34C759' : '#FF3B30' : undefined,
+        color: fundamentals.net_debt !== null ? fundamentals.net_debt < 0 ? colors.up : colors.down : undefined,
         hint: fundamentals.net_debt !== null && fundamentals.net_debt < 0 ? 'Caja neta +' : undefined,
       },
       {
         label: 'P/S', value: fmtNum(fundamentals.ps_ratio, { suffix: 'x' }),
         color: fundamentals.ps_ratio !== null
-          ? fundamentals.ps_ratio < 2 ? '#34C759' : fundamentals.ps_ratio < 5 ? '#FF9500' : '#FF3B30'
+          ? fundamentals.ps_ratio < 2 ? colors.up : fundamentals.ps_ratio < 5 ? colors.caution : colors.down
           : undefined,
         hint: 'Precio / Ventas',
       },
@@ -649,10 +360,26 @@ function HistoryCard({
     return (
       <View style={styles.metricsGrid}>
         {metrics.map((m, i) => (
-          <View key={i} style={[styles.metricCell, { backgroundColor: colors.background, borderColor: colors.border }]}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>{m.label}</Text>
-            <Text style={[styles.metricValue, { color: m.color ?? colors.text }]}>{m.value}</Text>
-            {m.hint ? <Text style={[styles.metricHint, { color: colors.textSecondary }]}>{m.hint}</Text> : null}
+          <View
+            key={i}
+            style={[styles.metricCellRef, { backgroundColor: colors.card, borderColor: colors.rule }]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {/* Marca de índice en el tono de la métrica: el estado no depende
+                  sólo del color de la cifra. */}
+              <View style={{ width: 3, height: 26, backgroundColor: m.color ?? colors.ruleStrong }} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={[styles.metricLabel, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {m.label}
+                </Text>
+                <Text style={[styles.metricValue, { color: m.color ?? colors.text }]}>{m.value}</Text>
+              </View>
+            </View>
+            {m.hint ? (
+              <Text style={[styles.metricHint, { color: colors.inkFaint }]} numberOfLines={2}>
+                {m.hint}
+              </Text>
+            ) : null}
           </View>
         ))}
       </View>
@@ -660,7 +387,7 @@ function HistoryCard({
   };
 
   return (
-    <View style={[styles.historyCard, { backgroundColor: colors.card }]}>
+    <View style={[styles.historyCard, { backgroundColor: colors.card, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.rule, shadowColor: colors.shadow }]}>
       {/* Fila 1: Ticker + Precio */}
       <View style={styles.topRow}>
         <View style={styles.tickerBlock}>
@@ -691,7 +418,10 @@ function HistoryCard({
 
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
-      {/* Fila 2: Badges Fundamental + Técnico */}
+      {/* Fundamental y técnico comparten placa: son dos lecturas del mismo
+          valor y separarlas en dos bloques sueltos hacía parecer que venían de
+          sitios distintos. Una tarjeta, dos columnas, una regla en medio. */}
+      <View style={[styles.veredictoCard, { borderColor: colors.rule, backgroundColor: colors.inputBackground }]}>
       <View style={styles.badgesRow}>
         {/* Fundamental */}
         <View style={styles.badgeGroup}>
@@ -699,8 +429,8 @@ function HistoryCard({
             <Ionicons name="bar-chart-outline" size={11} color={colors.textSecondary} />
             <Text style={[styles.badgeLabel, { color: colors.textSecondary }]}>Fundamental</Text>
           </View>
-          <View style={[styles.recBadge, { backgroundColor: getRecColor(item.recommendation) }]}>
-            <Text style={styles.recBadgeText}>{item.recommendation}</Text>
+          <View style={[styles.recBadge, { backgroundColor: getRecColor(item.recommendation, colors) }]}>
+            <Text style={[styles.recBadgeText, { color: inkOn(getRecColor(item.recommendation, colors), palette) }]}>{item.recommendation}</Text>
           </View>
           <Text style={[styles.scoreText, { color: colors.textSecondary }]}>
             {item.favorable_percentage.toFixed(1)}% favorable
@@ -736,8 +466,8 @@ function HistoryCard({
             </>
           ) : (
             <>
-              <View style={[styles.recBadge, { backgroundColor: getRecColor(technical.recommendation) }]}>
-                <Text style={styles.recBadgeText}>{technical.recommendation}</Text>
+              <View style={[styles.recBadge, { backgroundColor: getRecColor(technical.recommendation, colors) }]}>
+                <Text style={[styles.recBadgeText, { color: inkOn(getRecColor(technical.recommendation, colors), palette) }]}>{technical.recommendation}</Text>
               </View>
               {technical.trend ? (
                 <View style={styles.trendRow}>
@@ -764,6 +494,7 @@ function HistoryCard({
             </>
           )}
         </View>
+      </View>
       </View>
 
       {/* Métricas expandibles */}
@@ -806,6 +537,14 @@ function HistoryCard({
 // MAIN SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface SectorAverage {
+  sector: string;
+  /** Cuántas empresas distintas de ese sector has analizado. Con una sola, la
+   *  "media" es esa empresa y no se enseña la comparación. */
+  muestras: number;
+  metricas: Record<string, number>;
+}
+
 const FILTERS: { label: string; value: FilterType }[] = [
   { label: 'Todos',    value: 'TODOS'    },
   { label: 'COMPRAR',  value: 'COMPRAR'  },
@@ -814,21 +553,40 @@ const FILTERS: { label: string; value: FilterType }[] = [
 ];
 
 export default function HistoryScreen() {
-  const { colors, isDark } = useTheme();
+  const { colors, palette } = useTheme();
+  const { width: ancho } = useWindowDimensions();
   const [history,       setHistory]      = useState<HistoryItem[]>([]);
   const [enhanced,      setEnhanced]     = useState<EnhancedHistoryItem[]>([]);
   const [loading,       setLoading]      = useState(true);
   const [refreshing,    setRefreshing]   = useState(false);
   const [deleting,      setDeleting]     = useState<string | null>(null);
   const [activeFilter,  setActiveFilter] = useState<FilterType>('TODOS');
-  const [heatmapVisible, setHeatmapVisible] = useState(true);
+  const [busqueda,      setBusqueda]     = useState('');
+  /** Ticker abierto en la ficha. `null` = lista. */
+  const [seleccion,     setSeleccion]    = useState<string | null>(null);
+  /** Medias por sector, calculadas por el backend sobre tus propios análisis. */
+  const [medias, setMedias] = useState<SectorAverage[]>([]);
+  /** Momento en que llegaron los precios que pinta el mapa. */
+  const [actualizado, setActualizado] = useState<Date | null>(null);
+  /** Series de un año por ticker: variaciones por periodo, volumen y 52 semanas. */
+  const [metricas, setMetricas] = useState<Map<string, MarketMetrics>>(new Map());
+
+  useEffect(() => {
+    axios
+      .get(`${BACKEND_URL}/api/sector-averages`, { timeout: 12000 })
+      .then(r => setMedias(Array.isArray(r.data) ? r.data : []))
+      // Sin medias la ficha se muestra igual, sólo que sin comparación.
+      .catch(() => setMedias([]));
+  }, []);
 
   const fetchHistory = async () => {
     try {
-      // 1. Historial básico para las cards (ligero)
+      // Las dos listas se piden a la vez y con el mismo tope. Antes el básico
+      // traía 50 y el mapa hasta 200: tocar en el mapa una empresa que no
+      // estuviera entre los 50 últimos análisis abría una ficha vacía.
       const [basicRes, enhancedRes] = await Promise.allSettled([
-        axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000 }),
-        axios.get(`${BACKEND_URL}/api/history/enhanced`, { timeout: 20000 }),
+        axios.get(`${BACKEND_URL}/api/history`, { params: { limit: 200 }, timeout: 15000 }),
+        axios.get(`${BACKEND_URL}/api/history/enhanced`, { params: { limit: 200 }, timeout: 45000 }),
       ]);
 
       if (basicRes.status === 'fulfilled') setHistory(basicRes.value.data);
@@ -842,12 +600,36 @@ export default function HistoryScreen() {
           return true;
         });
         setEnhanced(unique);
+        // La hora que se enseña al pie del mapa es la de ESTOS precios, no la
+        // del reloj: si la petición falla, el mapa sigue diciendo cuándo se
+        // trajo lo que estás viendo.
+        setActualizado(new Date());
       }
     } catch (err) {
       console.error('Error fetching history:', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+
+    // Las series de un año van APARTE y después. `/history/enhanced` responde
+    // en un segundo con `fast_info` y es lo que pinta el mapa nada más abrir;
+    // `/history/metrics` descarga un año de cotizaciones y tarda bastante más.
+    // Encadenarlas habría hecho lento el camino rápido, así que el mapa se
+    // dibuja primero con la variación del día y se enriquece cuando llegan.
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/history/metrics`, {
+        params: { limit: 200 },
+        timeout: 90000,
+      });
+      const porTicker = new Map<string, MarketMetrics>(
+        (res.data as MarketMetrics[]).map((m) => [m.ticker, m]),
+      );
+      setMetricas(porTicker);
+    } catch (err) {
+      // Sin series el mapa sigue funcionando con la variación del día: los
+      // botones de periodo se quedan desactivados y nada miente.
+      console.warn('Métricas de mercado no disponibles:', err);
     }
   };
 
@@ -909,24 +691,78 @@ export default function HistoryScreen() {
           ? [styles.filterPill, { backgroundColor: colors.primary, borderColor: colors.primary }]
           : [styles.filterPill, { backgroundColor: colors.card,    borderColor: colors.border   }],
         text: isActive
-          ? [styles.filterText, { color: '#FFFFFF' }]
+          ? [styles.filterText, { color: colors.inkOnAccent }]
           : [styles.filterText, { color: colors.textSecondary }],
       };
     }
-    const color = getRecColor(filter);
+    const color = getRecColor(filter, colors);
     return {
       container: isActive
         ? [styles.filterPill, { backgroundColor: color,        borderColor: color }]
         : [styles.filterPill, { backgroundColor: color + '18', borderColor: color }],
       text: isActive
-        ? [styles.filterText, { color: '#FFFFFF' }]
+        ? [styles.filterText, { color: colors.inkOnAccent }]
         : [styles.filterText, { color }],
     };
   };
 
-  const filteredHistory = activeFilter === 'TODOS'
+  /** Universo del mapa: todo el historial, con una entrada por empresa.
+   *  Un mismo ticker analizado varias veces es una sola compañía; repetirlo
+   *  multiplicaría su área y falsearía el peso del sector. Se conserva el
+   *  análisis más reciente de cada uno. */
+  const universoMapa = useMemo(() => {
+    const porTicker = new Map<string, EnhancedHistoryItem>();
+    for (const it of enhanced) {
+      if (!porTicker.has(it.ticker)) porTicker.set(it.ticker, it);
+    }
+    // Se pegan las series encima, si ya llegaron. La variación del día se
+    // mantiene la de `enhanced`, que viene de la cotización en vivo y es más
+    // fresca que el último cierre de la serie diaria.
+    return [...porTicker.values()].map((it) => {
+      const m = metricas.get(it.ticker);
+      return m
+        ? {
+            ...it,
+            change_1w: m.change_1w,
+            change_1m: m.change_1m,
+            change_3m: m.change_3m,
+            change_ytd: m.change_ytd,
+            volume: m.volume,
+            avg_volume_3m: m.avg_volume_3m,
+            relative_volume: m.relative_volume,
+            fifty_two_week_low: m.fifty_two_week_low,
+            fifty_two_week_high: m.fifty_two_week_high,
+          }
+        : it;
+    });
+  }, [enhanced, metricas]);
+
+  /** Índice por ticker para que cada tarjeta lea el precio que ya está en
+   *  memoria en vez de pedirlo otra vez. */
+  const porTicker = useMemo(
+    () => new Map(universoMapa.map(it => [it.ticker, it])),
+    [universoMapa],
+  );
+
+  /** Contadores reales por recomendación: el chip dice cuántos hay, no adorna. */
+  const conteos = useMemo(() => ({
+    TODOS: history.length,
+    COMPRAR: history.filter(i => i.recommendation === 'COMPRAR').length,
+    MANTENER: history.filter(i => i.recommendation === 'MANTENER').length,
+    VENDER: history.filter(i => i.recommendation === 'VENDER').length,
+  }), [history]);
+
+  const filteredHistoryBase = activeFilter === 'TODOS'
     ? history
     : history.filter(i => i.recommendation === activeFilter);
+
+  const filteredHistory = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return filteredHistoryBase;
+    return filteredHistoryBase.filter(
+      i => i.ticker.toLowerCase().includes(q) || (i.company_name ?? '').toLowerCase().includes(q),
+    );
+  }, [filteredHistoryBase, busqueda]);
 
   if (loading) {
     return (
@@ -940,45 +776,160 @@ export default function HistoryScreen() {
   const ListHeader = () => (
     <View>
       {/* Heatmap (collapsible) */}
-      {enhanced.length > 0 && (
-        <View style={styles.heatmapWrapper}>
-          <TouchableOpacity
-            style={[styles.heatmapToggle, { backgroundColor: colors.card, borderColor: colors.border }]}
-            onPress={() => setHeatmapVisible(v => !v)}
-            activeOpacity={0.7}
+      {enhanced.length === 0 && history.length > 0 && !loading && (
+        <View style={[styles.heatmapWrapper, { paddingBottom: 12 }]}>
+          <View
+            style={{
+              flexDirection: 'row', gap: 10, padding: 12,
+              borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
+              borderColor: colors.caution, backgroundColor: colors.cautionWash,
+            }}
           >
-            <View style={styles.heatmapToggleLeft}>
-              <Ionicons name="grid" size={13} color={colors.primary} />
-              <Text style={[styles.heatmapToggleText, { color: colors.text }]}>Mapa de calor</Text>
+            <View style={{ width: 3, alignSelf: 'stretch', backgroundColor: colors.caution }} />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.caution }}>
+                El mapa de calor no se pudo cargar
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.inkMuted, lineHeight: 17 }}>
+                Necesita precios y capitalización en vivo de cada empresa. Si el backend tarda o no
+                responde, el historial de abajo se muestra igual. Desliza hacia abajo para reintentar.
+              </Text>
             </View>
-            <Ionicons
-              name={heatmapVisible ? 'chevron-up' : 'chevron-down'}
-              size={14}
-              color={colors.textSecondary}
-            />
-          </TouchableOpacity>
-          {heatmapVisible && (
-            <CompactHeatmap stocks={enhanced} colors={colors} isDark={isDark} />
-          )}
+          </View>
         </View>
       )}
 
-      {/* Filters */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filterContainer}
-        style={[styles.filterWrapper, { backgroundColor: colors.card, borderBottomColor: colors.border }]}
-      >
-        {FILTERS.map(f => {
-          const fs = getFilterStyle(f.value);
-          return (
-            <TouchableOpacity key={f.value} style={fs.container} onPress={() => setActiveFilter(f.value)} activeOpacity={0.7}>
-              <Text style={fs.text}>{f.label}</Text>
+      {/* Lo primero de la pantalla: el mapa por sector. Responde a "¿cómo va
+          hoy lo que sigo?" antes que a "¿qué analicé?".
+          Había dos mapas de calor, uno debajo del otro, midiendo lo mismo: el
+          nuevo por área y el viejo con celdas de tamaño fijo. Dos lecturas
+          distintas del mismo dato en la misma pantalla se contradicen; queda
+          la que dimensiona por capitalización. */}
+      {universoMapa.length > 0 && (
+        <View style={styles.heatmapWrapper}>
+          <HeatmapContainer
+            items={universoMapa}
+            onSelect={(it) => setSeleccion(it.ticker)}
+            actualizado={actualizado}
+            onRecargar={onRefresh}
+            recargando={refreshing}
+            periodosListos={metricas.size > 0}
+          />
+        </View>
+      )}
+
+      {/* Medias por sector: sólo los sectores con más de una empresa, porque
+          con una sola la media es esa empresa y no compara nada. */}
+      {medias.filter(m => m.muestras > 1).length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingBottom: 12 }}
+        >
+          {medias.filter(m => m.muestras > 1).map(m => (
+            <View
+              key={m.sector}
+              style={[styles.recentCard, { backgroundColor: colors.card, borderColor: colors.border, minWidth: 190 }]}
+            >
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={[styles.recentName, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {m.sector}
+                </Text>
+                <Text style={[styles.recentTicker, { color: colors.text }]}>
+                  P/E {m.metricas.pe_ratio != null ? m.metricas.pe_ratio.toFixed(1) : '—'}
+                </Text>
+              </View>
+              <Text style={[styles.recentDelta, { color: colors.inkFaint }]}>
+                {m.muestras} emp.
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      )}
+
+      {/* Analizados recientemente: acceso directo a lo último, sin scroll */}
+      {enhanced.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 10, paddingHorizontal: 16, paddingBottom: 12 }}
+        >
+          {enhanced.slice(0, 6).map(item => {
+            const sube = (item.price_change_percent ?? 0) >= 0;
+            return (
+              <TouchableOpacity
+                key={item.ticker}
+                onPress={() => setSeleccion(item.ticker)}
+                activeOpacity={0.75}
+                style={[styles.recentCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+              >
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.recentTicker, { color: colors.text }]} numberOfLines={1}>
+                    {item.ticker}
+                  </Text>
+                  <Text style={[styles.recentName, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {item.company_name}
+                  </Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[styles.recentPrice, { color: colors.text }]}>
+                    ${(item.current_price ?? 0).toFixed(2)}
+                  </Text>
+                  <Text style={[styles.recentDelta, { color: sube ? colors.up : colors.down }]}>
+                    {sube ? '+' : '−'}{Math.abs(item.price_change_percent ?? 0).toFixed(2)}%
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {/* Filtros con su contador y buscador */}
+      <View style={[styles.filterWrapper, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterContainer}
+        >
+          {FILTERS.map(f => {
+            const fs = getFilterStyle(f.value);
+            const n = conteos[f.value as keyof typeof conteos] ?? 0;
+            const activo = f.value === activeFilter;
+            return (
+              <TouchableOpacity key={f.value} style={fs.container} onPress={() => setActiveFilter(f.value)} activeOpacity={0.7}>
+                <Text style={fs.text}>{f.label}</Text>
+                <View
+                  style={[
+                    styles.filterCount,
+                    { backgroundColor: activo ? colors.inkOnAccent + '30' : colors.inputBackground },
+                  ]}
+                >
+                  <Text style={[styles.filterCountText, fs.text]}>{n}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        <View style={[styles.searchBox, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
+          <Ionicons name="search" size={15} color={colors.inkFaint} />
+          <TextInput
+            value={busqueda}
+            onChangeText={setBusqueda}
+            placeholder="Buscar en el historial…"
+            placeholderTextColor={colors.inkFaint}
+            style={[styles.searchInput, { color: colors.text }]}
+            autoCapitalize="characters"
+            autoCorrect={false}
+          />
+          {busqueda.length > 0 && (
+            <TouchableOpacity onPress={() => setBusqueda('')} hitSlop={10}>
+              <Ionicons name="close-circle" size={16} color={colors.inkFaint} />
             </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+          )}
+        </View>
+      </View>
 
       {/* Count + Delete all */}
       <View style={[styles.headerBar, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
@@ -996,6 +947,111 @@ export default function HistoryScreen() {
       </View>
     </View>
   );
+
+  // ── Ficha de una empresa ────────────────────────────────────────────────
+  const abierta = seleccion
+    ? (history.find(h => h.ticker === seleccion) ?? null)
+    : null;
+  const datosMercado = seleccion
+    ? (enhanced.find(e => e.ticker === seleccion) ?? null)
+    : null;
+
+  if (abierta) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          <TouchableOpacity
+            onPress={() => setSeleccion(null)}
+            accessibilityRole="button"
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44 }}
+          >
+            <Ionicons name="arrow-back" size={20} color={colors.accent} />
+            <Text style={{ color: colors.accent, fontSize: 14, fontWeight: '600' }}>
+              Volver al historial
+            </Text>
+          </TouchableOpacity>
+
+          {/* Cabecera de la ficha: quién es, qué dice el fundamental y a cuánto cotiza */}
+          <View
+            style={{
+              flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 20,
+              marginTop: 12, marginBottom: 16, padding: 20,
+              borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
+              borderColor: colors.rule, backgroundColor: colors.card,
+            }}
+          >
+            <View style={{ minWidth: 180, gap: 6 }}>
+              <Text style={{ fontSize: 30, fontWeight: '700', color: colors.text }}>
+                {abierta.ticker}
+              </Text>
+              <Text style={{ fontSize: 13, color: colors.textSecondary }} numberOfLines={2}>
+                {abierta.company_name}
+              </Text>
+              {datosMercado?.sector && datosMercado.sector !== 'N/A' ? (
+                <View
+                  style={{
+                    alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5,
+                    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 3,
+                    borderWidth: StyleSheet.hairlineWidth, borderColor: colors.rule,
+                    backgroundColor: colors.inputBackground,
+                  }}
+                >
+                  <Ionicons name="pricetag-outline" size={11} color={colors.inkFaint} />
+                  <Text style={{ fontSize: 11, color: colors.inkMuted }}>{datosMercado.sector}</Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={{ alignItems: 'center', gap: 6, minWidth: 150 }}>
+              <Text style={{ fontSize: 10, fontWeight: '700', letterSpacing: 1, color: colors.inkFaint }}>
+                ANÁLISIS FUNDAMENTAL
+              </Text>
+              <View
+                style={{
+                  paddingHorizontal: 14, paddingVertical: 5, borderRadius: 3,
+                  backgroundColor: getRecColor(abierta.recommendation, colors),
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: '700', color: inkOn(getRecColor(abierta.recommendation, colors), palette) }}>
+                  {abierta.recommendation}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+                {abierta.favorable_percentage.toFixed(1)} % favorables
+              </Text>
+            </View>
+
+            {datosMercado ? (
+              <View style={{ marginLeft: 'auto', alignItems: 'flex-end', gap: 4 }}>
+                <Text style={{ fontSize: 24, fontWeight: '700', color: colors.text, fontVariant: ['tabular-nums'] }}>
+                  ${(datosMercado.current_price ?? 0).toFixed(2)}
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'],
+                    color: (datosMercado.price_change_percent ?? 0) >= 0 ? colors.up : colors.down,
+                  }}
+                >
+                  {(datosMercado.price_change_percent ?? 0) >= 0 ? '+' : '−'}
+                  {Math.abs(datosMercado.price_change_percent ?? 0).toFixed(2)} %
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {/* El resto ya lo resuelve la tarjeta: técnico, métricas y fecha */}
+          <HistoryCard
+            item={abierta}
+            mercado={datosMercado ?? undefined}
+            colors={colors}
+            palette={palette}
+            onDelete={deleteAnalysis}
+            isDeleting={deleting === abierta.id}
+          />
+        </ScrollView>
+      </View>
+    );
+  }
 
   if (filteredHistory.length === 0) {
     return (
@@ -1022,14 +1078,22 @@ export default function HistoryScreen() {
         data={filteredHistory}
         keyExtractor={item => item.id}
         renderItem={({ item }) => (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setSeleccion(item.ticker)}
+            accessibilityRole="button"
+            accessibilityLabel={`Abrir la ficha de ${item.ticker}`}
+          >
           <HistoryCard
             item={item}
+            mercado={porTicker.get(item.ticker)}
             colors={colors}
+            palette={palette}
             onDelete={deleteAnalysis}
             isDeleting={deleting === item.id}
           />
+          </TouchableOpacity>
         )}
-        estimatedItemSize={240}
         contentContainerStyle={styles.listContent}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
@@ -1052,13 +1116,28 @@ const styles = StyleSheet.create({
   emptySubtitle:    { fontSize: 16, textAlign: 'center' },
 
   heatmapWrapper:    { paddingHorizontal: 16, paddingTop: 12 },
-  heatmapToggle:     {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 12, paddingVertical: 8,
-    borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, marginBottom: 8,
+
+  /* ── Recientes, filtros con contador y buscador ── */
+  recentCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    minWidth: 210, paddingHorizontal: 12, paddingVertical: 10,
+    borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
   },
-  heatmapToggleLeft: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  heatmapToggleText: { fontSize: 13, fontWeight: '500' },
+  recentTicker: { fontSize: 14, fontWeight: '700' },
+  recentName:   { fontSize: 11 },
+  recentPrice:  { fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  recentDelta:  { fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  filterCount: {
+    minWidth: 22, paddingHorizontal: 5, paddingVertical: 1,
+    borderRadius: 3, alignItems: 'center',
+  },
+  filterCountText: { fontSize: 10, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  searchBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 12, paddingHorizontal: 12,
+    minHeight: 40, borderRadius: 5, borderWidth: StyleSheet.hairlineWidth,
+  },
+  searchInput: { flex: 1, fontSize: 13, paddingVertical: 8 },
 
   filterWrapper:    { borderBottomWidth: 1 },
   filterContainer:  { flexDirection: 'row', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
@@ -1073,7 +1152,7 @@ const styles = StyleSheet.create({
   deleteAllText:    { fontSize: 14, fontWeight: '600' },
   listContent:      { padding: 16 },
 
-  historyCard:      { borderRadius: 12, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
+  historyCard:      { borderRadius: 12, padding: 16, marginBottom: 12, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 1, shadowRadius: 4, elevation: 2 },
   topRow:           { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   tickerBlock:      { flex: 1, marginRight: 12 },
   ticker:           { fontSize: 20, fontWeight: 'bold', marginBottom: 2 },
@@ -1084,12 +1163,20 @@ const styles = StyleSheet.create({
   changeText:       { fontSize: 12, fontWeight: '700' },
   priceError:       { fontSize: 14 },
   divider:          { height: 1, marginBottom: 12 },
+  /** Placa que contiene fundamental y técnico juntos. */
+  veredictoCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+
   badgesRow:        { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', marginBottom: 12 },
   badgeGroup:       { flex: 1, alignItems: 'center', gap: 5 },
   badgeLabelRow:    { flexDirection: 'row', alignItems: 'center', gap: 4 },
   badgeLabel:       { fontSize: 11, fontWeight: '500', textTransform: 'uppercase', letterSpacing: 0.4 },
   recBadge:         { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14 },
-  recBadgeText:     { color: '#FFFFFF', fontSize: 12, fontWeight: 'bold' },
+  recBadgeText:     { fontSize: 12, fontWeight: 'bold' },
   badgeSeparator:   { width: 1, height: 50, marginHorizontal: 8, alignSelf: 'center' },
   trendRow:         { flexDirection: 'row', alignItems: 'center', gap: 3 },
   trendText:        { fontSize: 10, fontWeight: '700', letterSpacing: 0.3 },
@@ -1101,6 +1188,11 @@ const styles = StyleSheet.create({
   fundMetricsTitle:   { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   fundErrorText:      { fontSize: 11, fontStyle: 'italic', textAlign: 'center', paddingVertical: 4 },
   metricsGrid:      { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  metricCellRef: {
+    flexBasis: '48%', flexGrow: 1, minWidth: 150,
+    padding: 12, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, gap: 3,
+  },
+
   metricCell:       { width: '48%', borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8, gap: 2 },
   metricLabel:      { fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
   metricValue:      { fontSize: 15, fontWeight: '700', letterSpacing: -0.3 },

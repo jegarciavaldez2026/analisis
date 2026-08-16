@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,8 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '../contexts/ThemeContext';
+import type { ThemeColors } from '../contexts/ThemeContext';
 import axios from 'axios';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -76,10 +78,11 @@ function runFCFF(
 // Sub-components
 // ─────────────────────────────────────────────
 function InputField({
-  label, value, onChangeText, placeholder, suffix, isAutoFilled,
+  label, value, onChangeText, placeholder, suffix, isAutoFilled, s, colors,
 }: {
   label: string; value: string; onChangeText: (v: string) => void;
   placeholder?: string; suffix?: string; isAutoFilled?: boolean;
+  s: Styles; colors: ThemeColors;
 }) {
   return (
     <View style={s.inputField}>
@@ -97,7 +100,7 @@ function InputField({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder ?? '0'}
-          placeholderTextColor="#C7C7CC"
+          placeholderTextColor={colors.inkFaint}
           keyboardType="decimal-pad"
         />
         {suffix ? <Text style={s.inputSuffix}>{suffix}</Text> : null}
@@ -106,7 +109,7 @@ function InputField({
   );
 }
 
-function Tile({ label, value, color, sub }: { label: string; value: string; color?: string; sub?: string }) {
+function Tile({ label, value, color, sub, s }: { label: string; value: string; color?: string; sub?: string; s: Styles }) {
   return (
     <View style={s.tile}>
       <Text style={s.tileLabel}>{label}</Text>
@@ -126,6 +129,9 @@ export default function FCFFValuationCard({
   rfRate = 4.5,
   taxRate = 21,
 }: FCFFValuationCardProps) {
+  const { colors } = useTheme();
+  const s = useMemo(() => makeStyles(colors), [colors]);
+
 
   const defaultInputs = (): FCFFInputs => ({
     ebit: '', tax: taxRate.toFixed(1), da: '', capex: '', wc: '0',
@@ -276,9 +282,9 @@ export default function FCFFValuationCard({
 
   const targetPrice = result ? result.pricePerShare * (1 - margin / 100) : 0;
   const VC = {
-    buy:  { bg: '#F0FDF4', border: '#86EFAC', text: '#15803D', badge: '#DCFCE7', badgeText: '#166534' },
-    hold: { bg: '#FFFBEB', border: '#FCD34D', text: '#92400E', badge: '#FEF3C7', badgeText: '#92400E' },
-    sell: { bg: '#FFF1F2', border: '#FECDD3', text: '#BE123C', badge: '#FFE4E6', badgeText: '#9F1239' },
+    buy:  { bg: colors.upWash, border: colors.upWash, text: colors.up, badge: colors.upWash, badgeText: colors.up },
+    hold: { bg: colors.cautionWash, border: colors.cautionWash, text: colors.caution, badge: colors.cautionWash, badgeText: colors.caution },
+    sell: { bg: colors.downWash, border: colors.downWash, text: colors.down, badge: colors.downWash, badgeText: colors.down },
   };
   const vc = result ? VC[result.verdict] : VC.hold;
 
@@ -305,7 +311,7 @@ export default function FCFFValuationCard({
             onPress={() => fetchFinancialData()}
             activeOpacity={0.7}
           >
-            <Ionicons name="refresh" size={16} color="#007AFF" />
+            <Ionicons name="refresh" size={16} color={colors.accent} />
           </TouchableOpacity>
         )}
       </View>
@@ -316,36 +322,36 @@ export default function FCFFValuationCard({
       {/* Banner estado datos */}
       {fetching ? (
         <View style={s.banner}>
-          <ActivityIndicator size="small" color="#007AFF" />
+          <ActivityIndicator size="small" color={colors.accent} />
           <Text style={s.bannerText}>Cargando datos financieros reales de {ticker}…</Text>
         </View>
       ) : fetchError ? (
-        <View style={[s.banner, { backgroundColor: '#FFF1F2', borderColor: '#FECDD3' }]}>
-          <Ionicons name="alert-circle-outline" size={14} color="#BE123C" />
+        <View style={[s.banner, { backgroundColor: colors.downWash, borderColor: colors.downWash }]}>
+          <Ionicons name="alert-circle-outline" size={14} color={colors.down} />
           <View style={{ flex: 1 }}>
-            <Text style={[s.bannerText, { color: '#BE123C' }]}>{fetchError}</Text>
-            <Text style={[s.bannerText, { color: '#BE123C', marginTop: 2 }]}>
+            <Text style={[s.bannerText, { color: colors.down }]}>{fetchError}</Text>
+            <Text style={[s.bannerText, { color: colors.down, marginTop: 2 }]}>
               Introduce los datos del 10-K manualmente. Los campos con * son obligatorios.
             </Text>
           </View>
         </View>
       ) : autoCount > 0 ? (
-        <View style={[s.banner, { backgroundColor: '#F0FDF4', borderColor: '#86EFAC' }]}>
-          <Ionicons name="checkmark-circle" size={14} color="#15803D" />
+        <View style={[s.banner, { backgroundColor: colors.upWash, borderColor: colors.upWash }]}>
+          <Ionicons name="checkmark-circle" size={14} color={colors.up} />
           <View style={{ flex: 1 }}>
-            <Text style={[s.bannerText, { color: '#15803D', fontWeight: '600' }]}>
+            <Text style={[s.bannerText, { color: colors.up, fontWeight: '600' }]}>
               {autoCount} campos completados automáticamente
               {autoMeta?.fiscal_year ? ` · FY ${autoMeta.fiscal_year.slice(0, 7)}` : ''}
             </Text>
-            <Text style={[s.bannerText, { color: '#15803D' }]}>
+            <Text style={[s.bannerText, { color: colors.up }]}>
               Datos reales de Yahoo Finance. Puedes editar cualquier campo libremente.
             </Text>
           </View>
         </View>
       ) : (
-        <View style={[s.banner, { backgroundColor: '#FFF7ED', borderColor: '#FCD34D' }]}>
-          <Ionicons name="information-circle-outline" size={14} color="#92400E" />
-          <Text style={[s.bannerText, { color: '#92400E' }]}>
+        <View style={[s.banner, { backgroundColor: colors.cautionWash, borderColor: colors.cautionWash }]}>
+          <Ionicons name="information-circle-outline" size={14} color={colors.caution} />
+          <Text style={[s.bannerText, { color: colors.caution }]}>
             Introduce los datos del 10-K en millones ($). Los campos con * son obligatorios.
           </Text>
         </View>
@@ -363,7 +369,7 @@ export default function FCFFValuationCard({
               <Text style={s.autoCountText}>{autoCount} auto</Text>
             </View>
           )}
-          <Ionicons name={exp.inputs1 ? 'chevron-up' : 'chevron-down'} size={20} color="#8E8E93" />
+          <Ionicons name={exp.inputs1 ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkFaint} />
         </View>
       </TouchableOpacity>
       {exp.inputs1 && (
@@ -375,7 +381,7 @@ export default function FCFFValuationCard({
               onChangeText={set('ebit')}
               placeholder="ej. 120"
               isAutoFilled={isAuto('ebit')}
-            />
+             s={s} colors={colors} />
             <InputField
               label="Tasa impositiva (%)"
               value={inputs.tax}
@@ -383,7 +389,7 @@ export default function FCFFValuationCard({
               placeholder="ej. 21"
               suffix="%"
               isAutoFilled={isAuto('tax')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
             <InputField
@@ -392,14 +398,14 @@ export default function FCFFValuationCard({
               onChangeText={set('da')}
               placeholder="ej. 30"
               isAutoFilled={isAuto('da')}
-            />
+             s={s} colors={colors} />
             <InputField
               label="Capex (M$)"
               value={inputs.capex}
               onChangeText={set('capex')}
               placeholder="ej. 45"
               isAutoFilled={isAuto('capex')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
             <InputField
@@ -408,14 +414,14 @@ export default function FCFFValuationCard({
               onChangeText={set('wc')}
               placeholder="ej. 10"
               isAutoFilled={isAuto('wc')}
-            />
+             s={s} colors={colors} />
             <InputField
               label="Deuda neta (M$) *"
               value={inputs.debt}
               onChangeText={set('debt')}
               placeholder="ej. 200"
               isAutoFilled={isAuto('debt')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
             <InputField
@@ -424,7 +430,7 @@ export default function FCFFValuationCard({
               onChangeText={set('shares')}
               placeholder="ej. 50"
               isAutoFilled={isAuto('shares')}
-            />
+             s={s} colors={colors} />
             <InputField
               label="Precio actual ($)"
               value={inputs.price}
@@ -432,7 +438,7 @@ export default function FCFFValuationCard({
               placeholder="ej. 85"
               suffix="$"
               isAutoFilled={isAuto('price')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.helpBox}>
             <Text style={s.helpText}>
@@ -446,7 +452,7 @@ export default function FCFFValuationCard({
       {/* Inputs: WACC */}
       <TouchableOpacity style={s.toggle} onPress={() => setExp(p => ({ ...p, inputs2: !p.inputs2 }))} activeOpacity={0.7}>
         <View style={s.toggleLeft}><Text style={s.toggleIcon}>⚙️</Text><Text style={s.toggleTitle}>Parámetros WACC y crecimiento</Text></View>
-        <Ionicons name={exp.inputs2 ? 'chevron-up' : 'chevron-down'} size={20} color="#8E8E93" />
+        <Ionicons name={exp.inputs2 ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkFaint} />
       </TouchableOpacity>
       {exp.inputs2 && (
         <View style={s.inputsCard}>
@@ -455,24 +461,24 @@ export default function FCFFValuationCard({
             <Text style={s.waccFormulaSub}>WACC = We·ke + Wd·kd·(1-t)</Text>
           </View>
           <View style={s.inputRow}>
-            <InputField label="rf (%)" value={inputs.rf} onChangeText={set('rf')} suffix="%" />
+            <InputField label="rf (%)" value={inputs.rf} onChangeText={set('rf')} suffix="%"  s={s} colors={colors} />
             <InputField
               label="Beta (β)"
               value={inputs.beta}
               onChangeText={set('beta')}
               placeholder="ej. 1.2"
               isAutoFilled={isAuto('beta')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
-            <InputField label="ERP (%)" value={inputs.erp} onChangeText={set('erp')} suffix="%" />
+            <InputField label="ERP (%)" value={inputs.erp} onChangeText={set('erp')} suffix="%"  s={s} colors={colors} />
             <InputField
               label="kd (%)"
               value={inputs.kd}
               onChangeText={set('kd')}
               suffix="%"
               isAutoFilled={isAuto('kd')}
-            />
+             s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
             <InputField
@@ -481,12 +487,12 @@ export default function FCFFValuationCard({
               onChangeText={set('we')}
               suffix="%"
               isAutoFilled={isAuto('we')}
-            />
-            <InputField label="Crecimiento g1 (%)" value={inputs.g1} onChangeText={set('g1')} suffix="%" />
+             s={s} colors={colors} />
+            <InputField label="Crecimiento g1 (%)" value={inputs.g1} onChangeText={set('g1')} suffix="%"  s={s} colors={colors} />
           </View>
           <View style={s.inputRow}>
-            <InputField label="Años fase alta" value={inputs.years} onChangeText={set('years')} placeholder="ej. 7" />
-            <InputField label="g∞ terminal (%)" value={inputs.gterm} onChangeText={set('gterm')} suffix="%" />
+            <InputField label="Años fase alta" value={inputs.years} onChangeText={set('years')} placeholder="ej. 7"  s={s} colors={colors} />
+            <InputField label="g∞ terminal (%)" value={inputs.gterm} onChangeText={set('gterm')} suffix="%"  s={s} colors={colors} />
           </View>
         </View>
       )}
@@ -494,9 +500,9 @@ export default function FCFFValuationCard({
       {/* Botón calcular */}
       <TouchableOpacity style={s.calcBtn} onPress={calculate} disabled={loading} activeOpacity={0.85}>
         {loading
-          ? <ActivityIndicator color="#FFFFFF" />
+          ? <ActivityIndicator color={colors.surface} />
           : <>
-              <Ionicons name="calculator-outline" size={18} color="#FFFFFF" />
+              <Ionicons name="calculator-outline" size={18} color={colors.surface} />
               <Text style={s.calcBtnText}>Calcular valoración FCFF</Text>
             </>
         }
@@ -550,7 +556,7 @@ export default function FCFFValuationCard({
           {/* Desglose */}
           <TouchableOpacity style={s.toggle} onPress={() => setExp(p => ({ ...p, result: !p.result }))} activeOpacity={0.7}>
             <View style={s.toggleLeft}><Text style={s.toggleIcon}>📊</Text><Text style={s.toggleTitle}>Desglose WACC y flujos</Text></View>
-            <Ionicons name={exp.result ? 'chevron-up' : 'chevron-down'} size={20} color="#8E8E93" />
+            <Ionicons name={exp.result ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkFaint} />
           </TouchableOpacity>
           {exp.result && (
             <View style={s.resultsCard}>
@@ -563,34 +569,34 @@ export default function FCFFValuationCard({
                   { l: 'kd',   v: `${parseFloat(inputs.kd).toFixed(1)}%` },
                   { l: 'WACC', v: `${result.wacc.toFixed(2)}%` },
                 ].map(({ l, v }) => (
-                  <View key={l} style={[s.waccChip, l === 'WACC' && { backgroundColor: '#EEF4FF' }]}>
+                  <View key={l} style={[s.waccChip, l === 'WACC' && { backgroundColor: colors.accentWash }]}>
                     <Text style={s.waccChipLabel}>{l}</Text>
-                    <Text style={[s.waccChipValue, l === 'WACC' && { color: '#185FA5' }]}>{v}</Text>
+                    <Text style={[s.waccChipValue, l === 'WACC' && { color: colors.accent }]}>{v}</Text>
                   </View>
                 ))}
               </View>
               <View style={s.divider} />
               <View style={s.tilesGrid}>
-                <Tile label="WACC"      value={`${result.wacc.toFixed(2)}%`}              sub="Coste capital" />
-                <Tile label="ke (CAPM)" value={`${result.ke.toFixed(2)}%`}                sub="Rentab. equity" />
-                <Tile label="NOPAT"     value={`$${result.nopat.toFixed(1)}M`}            sub="EBIT×(1-t)" />
-                <Tile label="FCFF año0" value={`$${result.fcff0.toFixed(1)}M`}            sub="FCF base" />
-                <Tile label="EV total"  value={evFmt(result.ev)}                          sub="Valor empresa" />
+                <Tile label="WACC"      value={`${result.wacc.toFixed(2)}%`}              sub="Coste capital"  s={s} />
+                <Tile label="ke (CAPM)" value={`${result.ke.toFixed(2)}%`}                sub="Rentab. equity"  s={s} />
+                <Tile label="NOPAT"     value={`$${result.nopat.toFixed(1)}M`}            sub="EBIT×(1-t)"  s={s} />
+                <Tile label="FCFF año0" value={`$${result.fcff0.toFixed(1)}M`}            sub="FCF base"  s={s} />
+                <Tile label="EV total"  value={evFmt(result.ev)}                          sub="Valor empresa"  s={s} />
                 <Tile label="Upside"
                   value={`${result.updown >= 0 ? '+' : ''}${result.updown.toFixed(1)}%`}
-                  color={result.updown >= 0 ? '#1A7F37' : '#CF222E'}
-                  sub="vs. precio actual" />
+                  color={result.updown >= 0 ? colors.up : colors.down}
+                  sub="vs. precio actual" s={s} />
               </View>
               <View style={s.divider} />
               <Text style={s.phaseTitle}>Composición del valor empresa</Text>
               <View style={s.phaseBar}>
-                <View style={[s.phaseSeg, { flex: Math.max(1, 100 - result.tvPct), backgroundColor: '#34C759' }]} />
-                <View style={[s.phaseSeg, { flex: Math.max(1, result.tvPct),        backgroundColor: '#007AFF' }]} />
+                <View style={[s.phaseSeg, { flex: Math.max(1, 100 - result.tvPct), backgroundColor: colors.up }]} />
+                <View style={[s.phaseSeg, { flex: Math.max(1, result.tvPct),        backgroundColor: colors.accent }]} />
               </View>
               <View style={s.phaseLegend}>
                 {[
-                  { color: '#34C759', label: `FCF fase alta (${(100 - result.tvPct).toFixed(0)}%)` },
-                  { color: '#007AFF', label: `Valor terminal (${result.tvPct.toFixed(0)}%)` },
+                  { color: colors.up, label: `FCF fase alta (${(100 - result.tvPct).toFixed(0)}%)` },
+                  { color: colors.accent, label: `Valor terminal (${result.tvPct.toFixed(0)}%)` },
                 ].map(({ color, label }) => (
                   <View key={label} style={s.phaseLegendItem}>
                     <View style={[s.phaseDot, { backgroundColor: color }]} />
@@ -600,7 +606,7 @@ export default function FCFFValuationCard({
               </View>
               {result.tvPct > 75 && (
                 <View style={s.warnBox}>
-                  <Ionicons name="warning-outline" size={14} color="#92400E" />
+                  <Ionicons name="warning-outline" size={14} color={colors.caution} />
                   <Text style={s.warnText}>
                     Valor terminal = {result.tvPct.toFixed(0)}% del EV. Alta sensibilidad a WACC y g∞ — revisa la tabla.
                   </Text>
@@ -612,14 +618,14 @@ export default function FCFFValuationCard({
           {/* Sensibilidad */}
           <TouchableOpacity style={s.toggle} onPress={() => setExp(p => ({ ...p, sens: !p.sens }))} activeOpacity={0.7}>
             <View style={s.toggleLeft}><Text style={s.toggleIcon}>🎯</Text><Text style={s.toggleTitle}>Tabla de sensibilidad</Text></View>
-            <Ionicons name={exp.sens ? 'chevron-up' : 'chevron-down'} size={20} color="#8E8E93" />
+            <Ionicons name={exp.sens ? 'chevron-up' : 'chevron-down'} size={20} color={colors.inkFaint} />
           </TouchableOpacity>
           {exp.sens && (
             <View style={s.sensCard}>
               <Text style={s.sensSubtitle}>Precio intrínseco ($) · WACC ±2pp × g∞ ±1pp</Text>
               <View style={s.sensLegRow}>
-                {[{ c: '#15803D', l: 'Alcista' }, { c: '#B91C1C', l: 'Sobrevalorado' },
-                  { c: '#92400E', l: 'Justo' }, { c: '#1D4ED8', l: 'Base' }].map(({ c, l }) => (
+                {[{ c: colors.up, l: 'Alcista' }, { c: colors.down, l: 'Sobrevalorado' },
+                  { c: colors.caution, l: 'Justo' }, { c: colors.accent, l: 'Base' }].map(({ c, l }) => (
                   <View key={l} style={s.sensLegItem}>
                     <View style={[s.sensLegDot, { backgroundColor: c }]} />
                     <Text style={s.sensLegText}>{l}</Text>
@@ -648,10 +654,10 @@ export default function FCFFValuationCard({
                         ]}>
                           <Text style={[
                             s.sensCellText,
-                            cell.signal === 'buy'     && { color: '#15803D' },
-                            cell.signal === 'sell'    && { color: '#B91C1C' },
-                            cell.signal === 'hold'    && { color: '#92400E' },
-                            cell.signal === 'invalid' && { color: '#C7C7CC' },
+                            cell.signal === 'buy'     && { color: colors.up },
+                            cell.signal === 'sell'    && { color: colors.down },
+                            cell.signal === 'hold'    && { color: colors.caution },
+                            cell.signal === 'invalid' && { color: colors.inkFaint },
                             cell.isBase && s.sensCellBase,
                           ]}>
                             {cell.signal === 'invalid' ? '—' : `$${cell.price.toFixed(0)}`}
@@ -677,187 +683,195 @@ export default function FCFFValuationCard({
 // ─────────────────────────────────────────────
 // Styles
 // ─────────────────────────────────────────────
-const s = StyleSheet.create({
-  container:    { marginHorizontal: 16, marginBottom: 24 },
-  header:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
-  headerIcon:   { fontSize: 22 },
-  headerTitle:  { fontSize: 20, fontWeight: 'bold', color: '#1D1D1F' },
-  headerSub:    { fontSize: 12, color: '#6E6E73', marginTop: 1 },
-  methodNote:   { fontSize: 12, color: '#6E6E73', lineHeight: 17, marginBottom: 10, fontStyle: 'italic' },
+/**
+ * Estilos de la tarjeta de valoración FCFF. Reciben la paleta activa: antes
+ * eran 103 literales fijos y la tarjeta se quedaba blanca sobre el chasis.
+ */
+type Styles = ReturnType<typeof makeStyles>;
 
-  reloadBtn: {
-    width: 34, height: 34, borderRadius: 17,
-    backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: '#BFDBFE',
-  },
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    container:    { marginHorizontal: 16, marginBottom: 24 },
+    header:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
+    headerIcon:   { fontSize: 22 },
+    headerTitle:  { fontSize: 20, fontWeight: 'bold', color: c.ink },
+    headerSub:    { fontSize: 12, color: c.inkMuted, marginTop: 1 },
+    methodNote:   { fontSize: 12, color: c.inkMuted, lineHeight: 17, marginBottom: 10, fontStyle: 'italic' },
 
-  banner: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: '#F5F5F7', borderRadius: 10,
-    borderWidth: 1, borderColor: '#E5E5EA',
-    padding: 10, marginBottom: 12,
-  },
-  bannerText: { fontSize: 12, color: '#6E6E73', flex: 1, lineHeight: 16 },
+    reloadBtn: {
+      width: 34, height: 34, borderRadius: 17,
+      backgroundColor: c.accentWash, alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: c.accentWash,
+    },
 
-  autoTag: {
-    backgroundColor: '#EFF6FF', borderRadius: 4,
-    paddingHorizontal: 4, paddingVertical: 1,
-  },
-  autoTagText: { fontSize: 9, color: '#2563EB', fontWeight: '700' },
+    banner: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+      backgroundColor: c.surfaceSunken, borderRadius: 10,
+      borderWidth: 1, borderColor: c.rule,
+      padding: 10, marginBottom: 12,
+    },
+    bannerText: { fontSize: 12, color: c.inkMuted, flex: 1, lineHeight: 16 },
 
-  autoCountBadge: {
-    backgroundColor: '#EFF6FF', borderRadius: 10,
-    paddingHorizontal: 7, paddingVertical: 2,
-  },
-  autoCountText: { fontSize: 10, color: '#2563EB', fontWeight: '600' },
+    autoTag: {
+      backgroundColor: c.accentWash, borderRadius: 4,
+      paddingHorizontal: 4, paddingVertical: 1,
+    },
+    autoTagText: { fontSize: 9, color: c.accent, fontWeight: '700' },
 
-  toggle: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#FFFFFF', borderRadius: 12,
-    paddingHorizontal: 16, paddingVertical: 14,
-    marginBottom: 2, borderWidth: 1, borderColor: '#E5E5EA',
-  },
-  toggleLeft:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  toggleIcon:  { fontSize: 16 },
-  toggleTitle: { fontSize: 15, fontWeight: '600', color: '#1D1D1F' },
+    autoCountBadge: {
+      backgroundColor: c.accentWash, borderRadius: 10,
+      paddingHorizontal: 7, paddingVertical: 2,
+    },
+    autoCountText: { fontSize: 10, color: c.accent, fontWeight: '600' },
 
-  inputsCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14,
-    marginBottom: 8, borderWidth: 1, borderColor: '#E5E5EA', gap: 10,
-  },
-  inputRow:     { flexDirection: 'row', gap: 10 },
-  inputField:   { flex: 1, gap: 4 },
-  inputLabel:   { fontSize: 11, color: '#6E6E73', fontWeight: '500' },
-  inputWrapper: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#F5F5F7', borderRadius: 8,
-    borderWidth: 1, borderColor: '#E5E5EA', paddingHorizontal: 10, height: 38,
-  },
-  inputWrapperAuto: {
-    backgroundColor: '#F0F9FF',
-    borderColor: '#BAE6FD',
-  },
-  input:        { flex: 1, fontSize: 14, color: '#1D1D1F', padding: 0 },
-  inputSuffix:  { fontSize: 13, color: '#8E8E93', marginLeft: 4 },
-  helpBox:      { backgroundColor: '#F0F5FF', borderRadius: 8, padding: 10, marginTop: 2 },
-  helpText:     { fontSize: 11, color: '#185FA5', lineHeight: 16 },
+    toggle: {
+      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+      backgroundColor: c.surface, borderRadius: 12,
+      paddingHorizontal: 16, paddingVertical: 14,
+      marginBottom: 2, borderWidth: 1, borderColor: c.rule,
+    },
+    toggleLeft:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    toggleIcon:  { fontSize: 16 },
+    toggleTitle: { fontSize: 15, fontWeight: '600', color: c.ink },
 
-  waccFormulaRow: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    backgroundColor: '#F0F5FF', borderRadius: 8, padding: 10, marginBottom: 4,
-  },
-  waccFormula:    { fontSize: 12, color: '#007AFF', fontWeight: '600', fontStyle: 'italic' },
-  waccFormulaSub: { fontSize: 11, color: '#5E82C7', fontStyle: 'italic' },
+    inputsCard: {
+      backgroundColor: c.surface, borderRadius: 12, padding: 14,
+      marginBottom: 8, borderWidth: 1, borderColor: c.rule, gap: 10,
+    },
+    inputRow:     { flexDirection: 'row', gap: 10 },
+    inputField:   { flex: 1, gap: 4 },
+    inputLabel:   { fontSize: 11, color: c.inkMuted, fontWeight: '500' },
+    inputWrapper: {
+      flexDirection: 'row', alignItems: 'center',
+      backgroundColor: c.surfaceSunken, borderRadius: 8,
+      borderWidth: 1, borderColor: c.rule, paddingHorizontal: 10, height: 38,
+    },
+    inputWrapperAuto: {
+      backgroundColor: c.accentWash,
+      borderColor: c.accentWash,
+    },
+    input:        { flex: 1, fontSize: 14, color: c.ink, padding: 0 },
+    inputSuffix:  { fontSize: 13, color: c.inkFaint, marginLeft: 4 },
+    helpBox:      { backgroundColor: c.accentWash, borderRadius: 8, padding: 10, marginTop: 2 },
+    helpText:     { fontSize: 11, color: c.accent, lineHeight: 16 },
 
-  calcBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#007AFF', borderRadius: 12,
-    paddingVertical: 14, gap: 8, marginVertical: 10,
-  },
-  calcBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
+    waccFormulaRow: {
+      flexDirection: 'row', justifyContent: 'space-between',
+      backgroundColor: c.accentWash, borderRadius: 8, padding: 10, marginBottom: 4,
+    },
+    waccFormula:    { fontSize: 12, color: c.accent, fontWeight: '600', fontStyle: 'italic' },
+    waccFormulaSub: { fontSize: 11, color: c.accent, fontStyle: 'italic' },
 
-  verdictCard: { borderRadius: 16, borderWidth: 1, marginBottom: 10, overflow: 'hidden' },
-  verdictTop: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'flex-start', padding: 16,
-  },
-  verdictLabel:     { fontSize: 12, fontWeight: '500', marginBottom: 4 },
-  verdictPrice:     { fontSize: 34, fontWeight: 'bold', letterSpacing: -0.5 },
-  verdictSub:       { fontSize: 12, marginTop: 4, opacity: 0.8 },
-  verdictBadge:     { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  verdictBadgeText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
+    calcBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      backgroundColor: c.accent, borderRadius: 12,
+      paddingVertical: 14, gap: 8, marginVertical: 10,
+    },
+    calcBtnText: { color: c.surface, fontSize: 15, fontWeight: '600' },
 
-  msBox:        { borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
-  msRow:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  msLabel:      { fontSize: 12, fontWeight: '500' },
-  msValue:      { fontSize: 14, fontWeight: '700' },
-  msChips:      { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  msChip: {
-    paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20,
-    borderWidth: 1, borderColor: 'rgba(0,0,0,0.12)', backgroundColor: 'rgba(255,255,255,0.5)',
-  },
-  msChipText:    { fontSize: 12, fontWeight: '500', color: '#6E6E73' },
-  msTarget:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  msTargetLabel: { fontSize: 12, opacity: 0.8 },
-  msTargetPrice: { fontSize: 18, fontWeight: '700' },
+    verdictCard: { borderRadius: 16, borderWidth: 1, marginBottom: 10, overflow: 'hidden' },
+    verdictTop: {
+      flexDirection: 'row', justifyContent: 'space-between',
+      alignItems: 'flex-start', padding: 16,
+    },
+    verdictLabel:     { fontSize: 12, fontWeight: '500', marginBottom: 4 },
+    verdictPrice:     { fontSize: 34, fontWeight: 'bold', letterSpacing: -0.5 },
+    verdictSub:       { fontSize: 12, marginTop: 4, opacity: 0.8 },
+    verdictBadge:     { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+    verdictBadgeText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
 
-  resultsCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 12, padding: 16,
-    marginBottom: 8, borderWidth: 1, borderColor: '#E5E5EA',
-  },
-  waccChips:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 4 },
-  waccChip: {
-    backgroundColor: '#F5F5F7', borderRadius: 8,
-    paddingHorizontal: 10, paddingVertical: 5,
-    flexDirection: 'row', gap: 4, alignItems: 'center',
-  },
-  waccChipLabel: { fontSize: 11, color: '#8E8E93', fontWeight: '500' },
-  waccChipValue: { fontSize: 12, color: '#1D1D1F', fontWeight: '600' },
-  divider:       { height: 1, backgroundColor: '#F0F0F5', marginVertical: 12 },
-  tilesGrid:     { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tile: {
-    width: '30%', flexGrow: 1, backgroundColor: '#F5F5F7',
-    borderRadius: 10, padding: 10, alignItems: 'center',
-  },
-  tileLabel:  { fontSize: 10, color: '#8E8E93', marginBottom: 4, textAlign: 'center' },
-  tileValue:  { fontSize: 15, fontWeight: '700', color: '#1D1D1F' },
-  tileSub:    { fontSize: 10, color: '#8E8E93', marginTop: 2, textAlign: 'center' },
-  phaseTitle: { fontSize: 12, color: '#6E6E73', fontWeight: '500', marginBottom: 8 },
-  phaseBar: {
-    height: 10, borderRadius: 5, overflow: 'hidden',
-    flexDirection: 'row', backgroundColor: '#F0F0F5', marginBottom: 6,
-  },
-  phaseSeg:      { height: '100%' },
-  phaseLegend:   { flexDirection: 'row', gap: 16, marginBottom: 4 },
-  phaseLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  phaseDot:      { width: 8, height: 8, borderRadius: 2 },
-  phaseLegendText: { fontSize: 11, color: '#6E6E73' },
-  warnBox: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
-    backgroundColor: '#FFFBEB', borderRadius: 8, padding: 10,
-    marginTop: 12, borderWidth: 1, borderColor: '#FCD34D',
-  },
-  warnText: { fontSize: 11, color: '#92400E', flex: 1, lineHeight: 16 },
+    msBox:        { borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
+    msRow:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    msLabel:      { fontSize: 12, fontWeight: '500' },
+    msValue:      { fontSize: 14, fontWeight: '700' },
+    msChips:      { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+    msChip: {
+      paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20,
+      borderWidth: 1, borderColor: 'rgba(0,0,0,0.12)', backgroundColor: 'rgba(255,255,255,0.5)',
+    },
+    msChipText:    { fontSize: 12, fontWeight: '500', color: c.inkMuted },
+    msTarget:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+    msTargetLabel: { fontSize: 12, opacity: 0.8 },
+    msTargetPrice: { fontSize: 18, fontWeight: '700' },
 
-  sensCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14,
-    marginBottom: 8, borderWidth: 1, borderColor: '#E5E5EA',
-  },
-  sensSubtitle: { fontSize: 11, color: '#6E6E73', marginBottom: 8 },
-  sensLegRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 10 },
-  sensLegItem:  { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  sensLegDot:   { width: 8, height: 8, borderRadius: 2 },
-  sensLegText:  { fontSize: 10, color: '#6E6E73' },
-  sensWrapper:  { borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E5EA' },
-  sensRow:      { flexDirection: 'row' },
-  sensHCell: {
-    width: 56, backgroundColor: '#F5F5F7', paddingVertical: 7, paddingHorizontal: 3,
-    borderBottomWidth: 1, borderRightWidth: 1, borderColor: '#E5E5EA',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  sensCorner:   { width: 50 },
-  sensHText:    { fontSize: 10, color: '#6E6E73', fontWeight: '600', textAlign: 'center' },
-  sensRH: {
-    width: 50, backgroundColor: '#F5F5F7', paddingVertical: 8, paddingHorizontal: 3,
-    alignItems: 'center', justifyContent: 'center',
-    borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#E5E5EA',
-  },
-  sensRHText:    { fontSize: 10, fontWeight: '600', color: '#6E6E73', textAlign: 'center' },
-  sensCell: {
-    width: 56, paddingVertical: 8, paddingHorizontal: 3,
-    alignItems: 'center', justifyContent: 'center',
-    borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#E5E5EA',
-  },
-  sensCellText:  { fontSize: 10, fontWeight: '500', textAlign: 'center' },
-  sensCellBase:  { fontWeight: '800', fontSize: 11 },
-  sensBuy:       { backgroundColor: '#F0FDF4' },
-  sensSell:      { backgroundColor: '#FFF1F2' },
-  sensHold:      { backgroundColor: '#FFFBEB' },
-  sensBase:      { backgroundColor: '#EFF6FF', borderWidth: 2, borderColor: '#007AFF' },
-  sensInvalid:   { backgroundColor: '#F5F5F7' },
+    resultsCard: {
+      backgroundColor: c.surface, borderRadius: 12, padding: 16,
+      marginBottom: 8, borderWidth: 1, borderColor: c.rule,
+    },
+    waccChips:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 4 },
+    waccChip: {
+      backgroundColor: c.surfaceSunken, borderRadius: 8,
+      paddingHorizontal: 10, paddingVertical: 5,
+      flexDirection: 'row', gap: 4, alignItems: 'center',
+    },
+    waccChipLabel: { fontSize: 11, color: c.inkFaint, fontWeight: '500' },
+    waccChipValue: { fontSize: 12, color: c.ink, fontWeight: '600' },
+    divider:       { height: 1, backgroundColor: c.rule, marginVertical: 12 },
+    tilesGrid:     { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    tile: {
+      width: '30%', flexGrow: 1, backgroundColor: c.surfaceSunken,
+      borderRadius: 10, padding: 10, alignItems: 'center',
+    },
+    tileLabel:  { fontSize: 10, color: c.inkFaint, marginBottom: 4, textAlign: 'center' },
+    tileValue:  { fontSize: 15, fontWeight: '700', color: c.ink },
+    tileSub:    { fontSize: 10, color: c.inkFaint, marginTop: 2, textAlign: 'center' },
+    phaseTitle: { fontSize: 12, color: c.inkMuted, fontWeight: '500', marginBottom: 8 },
+    phaseBar: {
+      height: 10, borderRadius: 5, overflow: 'hidden',
+      flexDirection: 'row', backgroundColor: c.rule, marginBottom: 6,
+    },
+    phaseSeg:      { height: '100%' },
+    phaseLegend:   { flexDirection: 'row', gap: 16, marginBottom: 4 },
+    phaseLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    phaseDot:      { width: 8, height: 8, borderRadius: 2 },
+    phaseLegendText: { fontSize: 11, color: c.inkMuted },
+    warnBox: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+      backgroundColor: c.cautionWash, borderRadius: 8, padding: 10,
+      marginTop: 12, borderWidth: 1, borderColor: c.cautionWash,
+    },
+    warnText: { fontSize: 11, color: c.caution, flex: 1, lineHeight: 16 },
 
-  disclaimer: {
-    fontSize: 10, color: '#8E8E93', lineHeight: 15,
-    textAlign: 'center', marginTop: 8, paddingHorizontal: 4,
-  },
-});
+    sensCard: {
+      backgroundColor: c.surface, borderRadius: 12, padding: 14,
+      marginBottom: 8, borderWidth: 1, borderColor: c.rule,
+    },
+    sensSubtitle: { fontSize: 11, color: c.inkMuted, marginBottom: 8 },
+    sensLegRow:   { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 10 },
+    sensLegItem:  { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    sensLegDot:   { width: 8, height: 8, borderRadius: 2 },
+    sensLegText:  { fontSize: 10, color: c.inkMuted },
+    sensWrapper:  { borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: c.rule },
+    sensRow:      { flexDirection: 'row' },
+    sensHCell: {
+      width: 56, backgroundColor: c.surfaceSunken, paddingVertical: 7, paddingHorizontal: 3,
+      borderBottomWidth: 1, borderRightWidth: 1, borderColor: c.rule,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    sensCorner:   { width: 50 },
+    sensHText:    { fontSize: 10, color: c.inkMuted, fontWeight: '600', textAlign: 'center' },
+    sensRH: {
+      width: 50, backgroundColor: c.surfaceSunken, paddingVertical: 8, paddingHorizontal: 3,
+      alignItems: 'center', justifyContent: 'center',
+      borderRightWidth: 1, borderBottomWidth: 1, borderColor: c.rule,
+    },
+    sensRHText:    { fontSize: 10, fontWeight: '600', color: c.inkMuted, textAlign: 'center' },
+    sensCell: {
+      width: 56, paddingVertical: 8, paddingHorizontal: 3,
+      alignItems: 'center', justifyContent: 'center',
+      borderRightWidth: 1, borderBottomWidth: 1, borderColor: c.rule,
+    },
+    sensCellText:  { fontSize: 10, fontWeight: '500', textAlign: 'center' },
+    sensCellBase:  { fontWeight: '800', fontSize: 11 },
+    sensBuy:       { backgroundColor: c.upWash },
+    sensSell:      { backgroundColor: c.downWash },
+    sensHold:      { backgroundColor: c.cautionWash },
+    sensBase:      { backgroundColor: c.accentWash, borderWidth: 2, borderColor: c.accent },
+    sensInvalid:   { backgroundColor: c.surfaceSunken },
+
+    disclaimer: {
+      fontSize: 10, color: c.inkFaint, lineHeight: 15,
+      textAlign: 'center', marginTop: 8, paddingHorizontal: 4,
+    },
+  });
+}

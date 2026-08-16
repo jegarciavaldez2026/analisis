@@ -16,7 +16,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import axios from 'axios';
 import ResultsScreen from './ResultsScreen';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 export default function SearchScreen() {
   const { colors, isDark } = useTheme();

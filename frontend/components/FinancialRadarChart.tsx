@@ -7,6 +7,10 @@ import {
   Dimensions,
 } from 'react-native';
 
+import { useTheme } from '../contexts/ThemeContext';
+import type { ThemeColors } from '../contexts/ThemeContext';
+import { mix, Palette } from '../theme/tokens';
+
 const screenWidth = Dimensions.get('window').width;
 
 // ─────────────────────────────────────────────
@@ -36,27 +40,35 @@ interface FinancialRadarChartProps {
 // ─────────────────────────────────────────────
 // Color palette
 // ─────────────────────────────────────────────
-const CATEGORY_COLORS = [
-  '#2ecc8f',
-  '#3b9ef5',
-  '#e8765c',
-  '#f5c842',
-  '#8e5cf5',
-  '#e05ca0',
-  '#54c4c4',
-  '#fa9b3d',
-  '#6abf69',
-  '#c77dff',
-];
+/**
+ * Rampa de las diez categorias de ratios. Antes eran diez hex fijos pensados
+ * para fondo claro; en el tema oscuro se iban a saturaciones ilegibles.
+ * Ahora se deriva del acento y de los tonos semanticos de la paleta activa,
+ * alternando intensidad para que diez puntos sigan siendo distinguibles.
+ */
+function categoryRamp(c: ThemeColors, p: Palette): string[] {
+  return [
+    c.accent,
+    c.up,
+    c.caution,
+    c.down,
+    mix(c.accent, c.ink, 0.35),
+    mix(c.up, c.ink, 0.35),
+    mix(c.caution, c.ink, 0.3),
+    mix(c.down, c.ink, 0.3),
+    c.inkMuted,
+    c.ruleStrong,
+  ];
+}
 
 // ─────────────────────────────────────────────
 // Score label helper
 // ─────────────────────────────────────────────
-function getScoreLabel(score: number): { label: string; color: string; bg: string } {
-  if (score >= 80) return { label: 'Excelente', color: '#1a9e6e', bg: '#2ecc8f22' };
-  if (score >= 60) return { label: 'Bueno',     color: '#1a5fa0', bg: '#3b9ef522' };
-  if (score >= 40) return { label: 'Moderado',  color: '#a07a00', bg: '#f5c84222' };
-  return                  { label: 'Débil',     color: '#a03010', bg: '#e8765c22' };
+function getScoreLabel(score: number, c: ThemeColors): { label: string; color: string; bg: string } {
+  if (score >= 80) return { label: 'Excelente', color: c.up,      bg: c.upWash };
+  if (score >= 60) return { label: 'Bueno',     color: c.accent,  bg: c.accentWash };
+  if (score >= 40) return { label: 'Moderado',  color: c.caution, bg: c.cautionWash };
+  return                  { label: 'Débil',     color: c.down,    bg: c.downWash };
 }
 
 // ─────────────────────────────────────────────
@@ -89,7 +101,7 @@ function extractGrahamValue(ratios: RatioCategory[]): number | null {
 function RadarSVG({
   values,
   labels,
-  colors,
+  colors: categoryColors,
   size = 340,
 }: {
   values: number[];
@@ -97,6 +109,7 @@ function RadarSVG({
   colors: string[];
   size?: number;
 }) {
+  const { colors: theme } = useTheme();
   const n   = values.length;
   const cx  = size / 2;
   const cy  = size / 2;
@@ -130,14 +143,14 @@ function RadarSVG({
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ display: 'block' }}>
       {rings.map((d, i) => (
-        <path key={`ring-${i}`} d={d} fill="none" stroke="#e0e0e0" strokeWidth="0.8" />
+        <path key={`ring-${i}`} d={d} fill="none" stroke={theme.rule} strokeWidth="0.8" />
       ))}
       {axes.map((d, i) => (
-        <path key={`axis-${i}`} d={d} fill="none" stroke="#e0e0e0" strokeWidth="0.8" />
+        <path key={`axis-${i}`} d={d} fill="none" stroke={theme.rule} strokeWidth="0.8" />
       ))}
-      <path d={polyPath} fill="rgba(46,204,143,0.18)" stroke="#2ecc8f" strokeWidth="2" strokeLinejoin="round" />
+      <path d={polyPath} fill={theme.accentWash} stroke={theme.accent} strokeWidth="2" strokeLinejoin="round" />
       {dataPts.map((p, i) => (
-        <circle key={`dot-${i}`} cx={p.x} cy={p.y} r={5} fill={colors[i % colors.length]} stroke="#fff" strokeWidth="2" />
+        <circle key={`dot-${i}`} cx={p.x} cy={p.y} r={5} fill={categoryColors[i % categoryColors.length]} stroke={theme.surface} strokeWidth="2" />
       ))}
       {labels.map((label, i) => {
         const p      = { x: cx + labelR * Math.cos(angle(i)), y: cy + labelR * Math.sin(angle(i)) };
@@ -146,102 +159,13 @@ function RadarSVG({
         const line1  = words.slice(0, 2).join(' ');
         const line2  = words.slice(2).join(' ');
         return (
-          <text key={`lbl-${i}`} x={p.x} y={p.y} textAnchor={anchor} dominantBaseline="middle" fontSize="9" fill="#333" fontFamily="system-ui, sans-serif">
+          <text key={`lbl-${i}`} x={p.x} y={p.y} textAnchor={anchor} dominantBaseline="middle" fontSize="9" fill={theme.inkMuted} fontFamily="system-ui, sans-serif">
             <tspan x={p.x} dy={line2 ? '-7' : '0'}>{line1}</tspan>
             {line2 && <tspan x={p.x} dy="13">{line2}</tspan>}
           </text>
         );
       })}
     </svg>
-  );
-}
-
-// ─────────────────────────────────────────────
-// Web Chart.js radar — bigger with label padding
-// ─────────────────────────────────────────────
-function RadarWeb({
-  labels,
-  normalizedScores,
-  colors,
-  size,
-}: {
-  labels: string[];
-  normalizedScores: number[];
-  colors: string[];
-  size: number;
-}) {
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: transparent; display: flex; align-items: center; justify-content: center; height: ${size}px; overflow: hidden; }
-</style>
-</head>
-<body>
-<canvas id="r" width="${size}" height="${size}"></canvas>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"><\/script>
-<script>
-new Chart(document.getElementById('r'), {
-  type: 'radar',
-  data: {
-    labels: ${JSON.stringify(labels)},
-    datasets: [{
-      data: ${JSON.stringify(normalizedScores)},
-      backgroundColor: 'rgba(46,204,143,0.18)',
-      borderColor: '#2ecc8f',
-      borderWidth: 2.5,
-      pointBackgroundColor: ${JSON.stringify(colors)},
-      pointBorderColor: '#fff',
-      pointBorderWidth: 2,
-      pointRadius: 6,
-      pointHoverRadius: 8,
-    }]
-  },
-  options: {
-    responsive: false,
-    layout: { padding: { top: 55, bottom: 55, left: 90, right: 90 } },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        callbacks: {
-          label: ctx => ' ' + ctx.parsed.r.toFixed(1) + ' / 10'
-        }
-      }
-    },
-    scales: {
-      r: {
-        min: 0,
-        max: 10,
-        ticks: {
-          stepSize: 2,
-          font: { size: 11 },
-          color: '#aaa',
-          backdropColor: 'transparent'
-        },
-        pointLabels: {
-          font: { size: 12, weight: '500' },
-          color: '#333',
-          padding: 16,
-        },
-        grid: { color: '#e8e8e8' },
-        angleLines: { color: '#e0e0e0' }
-      }
-    }
-  }
-});
-<\/script>
-</body>
-</html>`;
-
-  return (
-    <iframe
-      srcDoc={html}
-      style={{ width: size, height: size, border: 'none', background: 'transparent' } as any}
-      scrolling="no"
-      title="Radar financiero"
-    />
   );
 }
 
@@ -255,15 +179,17 @@ function GrahamCard({
   grahamValue: number | null;
   currentPrice?: number | null;
 }) {
+  const { colors } = useTheme();
+  const s = useMemo(() => makeGrahamStyles(colors), [colors]);
   if (!grahamValue) return null;
 
   const hasPrice      = currentPrice != null && currentPrice > 0;
   const discount      = hasPrice ? ((grahamValue - currentPrice!) / grahamValue) * 100 : null;
   const isUndervalued = discount != null && discount > 0;
 
-  const statusColor = isUndervalued ? '#1a9e6e' : '#a03010';
-  const statusBg    = isUndervalued ? '#2ecc8f18' : '#e8765c18';
-  const statusEmoji = isUndervalued ? '✅' : '⚠️';
+  const statusColor = isUndervalued ? colors.up : colors.down;
+  const statusBg    = isUndervalued ? colors.upWash : colors.downWash;
+  const statusIcon = isUndervalued ? 'arrow-down' : 'arrow-up';
   const statusLabel = discount == null
     ? '—'
     : isUndervalued
@@ -271,34 +197,34 @@ function GrahamCard({
       : `Sobrevalorada ${Math.abs(discount).toFixed(1)}%`;
 
   return (
-    <View style={[grahamStyles.card, { backgroundColor: statusBg, borderColor: statusColor + '40' }]}>
+    <View style={[s.card, { backgroundColor: statusBg, borderColor: statusColor + '40' }]}>
       {/* Title */}
-      <Text style={grahamStyles.title}>📐 Valoración Graham</Text>
+      <Text style={s.title}>Valoración Graham</Text>
 
       {/* Prices row */}
-      <View style={grahamStyles.pricesRow}>
-        <View style={grahamStyles.priceCol}>
-          <Text style={grahamStyles.priceLabel}>Valor intrínseco</Text>
-          <Text style={[grahamStyles.priceMain, { color: statusColor }]}>
+      <View style={s.pricesRow}>
+        <View style={s.priceCol}>
+          <Text style={s.priceLabel}>Valor intrínseco</Text>
+          <Text style={[s.priceMain, { color: statusColor }]}>
             ${grahamValue.toFixed(2)}
           </Text>
         </View>
         {hasPrice && (
-          <View style={grahamStyles.divider} />
+          <View style={s.divider} />
         )}
         {hasPrice && (
-          <View style={grahamStyles.priceCol}>
-            <Text style={grahamStyles.priceLabel}>Precio actual</Text>
-            <Text style={grahamStyles.priceCurrent}>${currentPrice!.toFixed(2)}</Text>
+          <View style={s.priceCol}>
+            <Text style={s.priceLabel}>Precio actual</Text>
+            <Text style={s.priceCurrent}>${currentPrice!.toFixed(2)}</Text>
           </View>
         )}
         {hasPrice && (
-          <View style={grahamStyles.divider} />
+          <View style={s.divider} />
         )}
         {hasPrice && (
-          <View style={grahamStyles.priceCol}>
-            <Text style={grahamStyles.priceLabel}>Margen</Text>
-            <Text style={[grahamStyles.priceMargin, { color: statusColor }]}>
+          <View style={s.priceCol}>
+            <Text style={s.priceLabel}>Margen</Text>
+            <Text style={[s.priceMargin, { color: statusColor }]}>
               {isUndervalued ? '+' : ''}{discount!.toFixed(1)}%
             </Text>
           </View>
@@ -306,88 +232,93 @@ function GrahamCard({
       </View>
 
       {/* Status badge */}
-      <View style={[grahamStyles.statusBadge, { backgroundColor: statusColor + '20', borderColor: statusColor + '50' }]}>
-        <Text style={[grahamStyles.statusText, { color: statusColor }]}>
-          {statusEmoji}  {statusLabel}
+      <View style={[s.statusBadge, { backgroundColor: statusColor + '20', borderColor: statusColor + '50' }]}>
+        <Text style={[s.statusText, { color: statusColor }]}>
+          {statusLabel}
         </Text>
       </View>
 
       {/* Disclaimer */}
-      <Text style={grahamStyles.disclaimer}>
+      <Text style={s.disclaimer}>
         Estimación teórica basada en BPA y valor en libros. No constituye asesoramiento de inversión.
       </Text>
     </View>
   );
 }
 
-const grahamStyles = StyleSheet.create({
-  card: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 16,
-    marginTop: 14,
-    gap: 12,
-  },
-  title: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#1D1D1F',
-  },
-  pricesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 0,
-  },
-  priceCol: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 2,
-  },
-  divider: {
-    width: 1,
-    height: 40,
-    backgroundColor: '#00000015',
-  },
-  priceLabel: {
-    fontSize: 11,
-    color: '#6E6E73',
-  },
-  priceMain: {
-    fontSize: 20,
-    fontWeight: '500',
-  },
-  priceCurrent: {
-    fontSize: 18,
-    fontWeight: '500',
-    color: '#1D1D1F',
-  },
-  priceMargin: {
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  statusBadge: {
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-  },
-  statusText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  disclaimer: {
-    fontSize: 10,
-    color: '#8E8E93',
-    fontStyle: 'italic',
-    lineHeight: 14,
-    textAlign: 'center',
-  },
-});
+function makeGrahamStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    card: {
+      borderRadius: 12,
+      borderWidth: 1,
+      padding: 16,
+      marginTop: 14,
+      gap: 12,
+    },
+    title: {
+      fontSize: 15,
+      fontWeight: '500',
+      color: c.ink,
+    },
+    pricesRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 0,
+    },
+    priceCol: {
+      flex: 1,
+      alignItems: 'center',
+      gap: 2,
+    },
+    divider: {
+      width: 1,
+      height: 40,
+      backgroundColor: c.surfaceSunken,
+    },
+    priceLabel: {
+      fontSize: 11,
+      color: c.inkMuted,
+    },
+    priceMain: {
+      fontSize: 20,
+      fontWeight: '500',
+    },
+    priceCurrent: {
+      fontSize: 18,
+      fontWeight: '500',
+      color: c.ink,
+    },
+    priceMargin: {
+      fontSize: 18,
+      fontWeight: '500',
+    },
+    statusBadge: {
+      borderRadius: 10,
+      borderWidth: 1,
+      paddingVertical: 8,
+      alignItems: 'center',
+    },
+    statusText: {
+      fontSize: 14,
+      fontWeight: '500',
+    },
+    disclaimer: {
+      fontSize: 10,
+      color: c.inkFaint,
+      fontStyle: 'italic',
+      lineHeight: 14,
+      textAlign: 'center',
+    },
+  });
+}
 
 // ─────────────────────────────────────────────
 // Main component
 // ─────────────────────────────────────────────
 export default function FinancialRadarChart({ ratios, ticker, currentPrice }: FinancialRadarChartProps) {
+  const { colors, palette } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const CATEGORY_COLORS = useMemo(() => categoryRamp(colors, palette), [colors, palette]);
   const radarSize = Platform.OS === 'web'
     ? Math.min(screenWidth - 80, 560)
     : Math.min(screenWidth - 40, 340);
@@ -397,7 +328,7 @@ export default function FinancialRadarChart({ ratios, ticker, currentPrice }: Fi
     passedArr,
     totalArr,
     normalizedScores,
-    colors,
+    categoryColors,
     globalScore,
     grahamValue,
   } = useMemo(() => {
@@ -410,15 +341,15 @@ export default function FinancialRadarChart({ ratios, ticker, currentPrice }: Fi
     const normalizedScores = ratios.map((_, i) =>
       totalArr[i] > 0 ? parseFloat(((passedArr[i] / totalArr[i]) * 10).toFixed(2)) : 0
     );
-    const colors     = ratios.map((_, i) => CATEGORY_COLORS[i % CATEGORY_COLORS.length]);
+    const categoryColors = ratios.map((_, i) => CATEGORY_COLORS[i % CATEGORY_COLORS.length]);
     const globalScore = Math.round(
       (normalizedScores.reduce((a, b) => a + b, 0) / normalizedScores.length) * 10
     );
     const grahamValue = extractGrahamValue(ratios);
-    return { labels, passedArr, totalArr, normalizedScores, colors, globalScore, grahamValue };
+    return { labels, passedArr, totalArr, normalizedScores, categoryColors, globalScore, grahamValue };
   }, [ratios]);
 
-  const { label: scoreLabel, color: scoreColor, bg: scoreBg } = getScoreLabel(globalScore);
+  const { label: scoreLabel, color: scoreColor, bg: scoreBg } = getScoreLabel(globalScore, colors);
   const totalPassed = passedArr.reduce((a, b) => a + b, 0);
   const totalAll    = totalArr.reduce((a, b) => a + b, 0);
 
@@ -439,28 +370,23 @@ export default function FinancialRadarChart({ ratios, ticker, currentPrice }: Fi
 
       {/* Radar */}
       <View style={styles.radarContainer}>
-        {Platform.OS === 'web' ? (
-          <RadarWeb
-            labels={labels}
-            normalizedScores={normalizedScores}
-            colors={colors}
-            size={radarSize}
-          />
-        ) : (
-          <RadarSVG
+        {/* Un solo radar, en SVG. Antes la version web cargaba Chart.js de un
+            CDN dentro de un iframe: si la red o una CSP lo bloqueaban, el
+            grafico quedaba en blanco sin decir nada, y el iframe no heredaba
+            el tema. Esta version no depende de nada externo. */}
+        <RadarSVG
             values={normalizedScores.map(v => v / 10)}
             labels={labels}
-            colors={colors}
+            colors={categoryColors}
             size={radarSize}
-          />
-        )}
+        />
       </View>
 
       {/* Legend — two columns */}
       <View style={styles.legendGrid}>
         {ratios.map((cat, i) => (
           <View key={cat.category} style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: colors[i] }]} />
+            <View style={[styles.legendDot, { backgroundColor: categoryColors[i] }]} />
             <Text style={styles.legendText} numberOfLines={1}>
               {cat.category}:{' '}
               <Text style={styles.legendValue}>{passedArr[i]}/{totalArr[i]}</Text>
@@ -494,85 +420,87 @@ export default function FinancialRadarChart({ ratios, ticker, currentPrice }: Fi
 // ─────────────────────────────────────────────
 // Styles
 // ─────────────────────────────────────────────
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  scoreTitle: {
-    fontSize: 22,
-    fontWeight: '500',
-  },
-  badge: {
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  badgeText: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#6E6E73',
-    marginBottom: 8,
-  },
-  radarContainer: {
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  legendGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 14,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    width: '47%',
-  },
-  legendDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 2,
-    flexShrink: 0,
-  },
-  legendText: {
-    fontSize: 11,
-    color: '#6E6E73',
-    flex: 1,
-  },
-  legendValue: {
-    fontWeight: '500',
-    color: '#1D1D1F',
-  },
-  progressBg: {
-    height: 6,
-    backgroundColor: '#E0E0E0',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 6,
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  progressLabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    textAlign: 'center',
-  },
-});
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    card: {
+      backgroundColor: c.surface,
+      borderRadius: 16,
+      padding: 20,
+      marginBottom: 16,
+      borderWidth: 0.5,
+      borderColor: c.rule,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 4,
+    },
+    scoreTitle: {
+      fontSize: 22,
+      fontWeight: '500',
+    },
+    badge: {
+      paddingHorizontal: 14,
+      paddingVertical: 4,
+      borderRadius: 20,
+      borderWidth: 1,
+    },
+    badgeText: {
+      fontSize: 13,
+      fontWeight: '500',
+    },
+    subtitle: {
+      fontSize: 13,
+      color: c.inkMuted,
+      marginBottom: 8,
+    },
+    radarContainer: {
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+    legendGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 14,
+    },
+    legendItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      width: '47%',
+    },
+    legendDot: {
+      width: 9,
+      height: 9,
+      borderRadius: 2,
+      flexShrink: 0,
+    },
+    legendText: {
+      fontSize: 11,
+      color: c.inkMuted,
+      flex: 1,
+    },
+    legendValue: {
+      fontWeight: '500',
+      color: c.ink,
+    },
+    progressBg: {
+      height: 6,
+      backgroundColor: c.rule,
+      borderRadius: 3,
+      overflow: 'hidden',
+      marginBottom: 6,
+    },
+    progressFill: {
+      height: '100%',
+      borderRadius: 3,
+    },
+    progressLabel: {
+      fontSize: 12,
+      color: c.inkMuted,
+      textAlign: 'center',
+    },
+  });
+}

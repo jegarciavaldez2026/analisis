@@ -15,7 +15,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,9 @@ import {
   LayoutChangeEvent,
 } from 'react-native';
 import axios from 'axios';
+
+import { useTheme } from '../contexts/ThemeContext';
+import type { ThemeColors } from '../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
@@ -58,31 +61,49 @@ interface ChartData {
   swing_low: number;
 }
 
-// ─── Constantes de diseño ────────────────────────────────────────────────────
-const PALETTE = {
-  bg:          '#0d0d0f',
-  bgPanel:     '#111114',
-  border:      '#2a2a30',
-  gridLine:    '#1e1e24',
-  candle_bull: '#26a69a',
-  candle_bear: '#ef5350',
-  vol_bull:    '#26a69a55',
-  vol_bear:    '#ef535055',
-  poc:         '#4fc3f7',
-  vwap:        '#ff6b9d',
-  vama:        '#e0e0e0',
-  vol_ema:     '#ffb300',
-  rsi:         '#7986cb',
-  rsi_ema:     '#ffb300',
-  rsi_30:      '#4caf50',
-  rsi_70:      '#ef5350',
-  copp:        '#66bb6a',
-  copp_ema:    '#ef5350',
-  text:        '#c8c8d0',
-  textDim:     '#55555f',
-  accent:      '#4fc3f7',
-  zero:        '#333340',
-};
+/* ── Paleta del gráfico ─────────────────────────────────────────────────────
+ * Antes eran veintitrés hex fijos de un terminal oscuro: en el tema claro el
+ * panel seguía negro sobre el esmalte. Ahora se deriva de la paleta activa,
+ * así que en claro adopta el mismo tratamiento que «Cotización frente al
+ * S&P 500» —pozo hundido, reglas de un pelo, acento petróleo— y en oscuro
+ * sigue siendo el panel retroiluminado que era.
+ *
+ * Verde y rojo salen del código semántico del producto: son los mismos que
+ * usan las velas, el histograma de volumen y las bandas del RSI.
+ * ------------------------------------------------------------------------ */
+function makeChartPalette(c: ThemeColors) {
+  return {
+    bg:          c.canvas,
+    bgPanel:     c.surfaceSunken,
+    border:      c.rule,
+    gridLine:    c.rule,
+    candle_bull: c.up,
+    candle_bear: c.down,
+    vol_bull:    c.upWash,
+    vol_bear:    c.downWash,
+    poc:         c.accent,
+    vwap:        c.caution,
+    vama:        c.ink,
+    vol_ema:     c.caution,
+    rsi:         c.accent,
+    rsi_ema:     c.caution,
+    rsi_30:      c.up,
+    rsi_70:      c.down,
+    copp:        c.up,
+    copp_ema:    c.down,
+    text:        c.inkMuted,
+    textDim:     c.inkFaint,
+    accent:      c.accent,
+    zero:        c.ruleStrong,
+  };
+}
+type ChartPalette = ReturnType<typeof makeChartPalette>;
+
+/** Atajo: cada subcomponente lee la paleta derivada del tema activo. */
+function useChartPalette(): ChartPalette {
+  const { colors } = useTheme();
+  return useMemo(() => makeChartPalette(colors), [colors]);
+}
 
 const PERIODS = ['30wk', '60wk', '1y', '2y'] as const;
 type Period = typeof PERIODS[number];
@@ -114,6 +135,7 @@ function validPts(arr: Pt[]): number[] {
 // ─── Sub-componentes SVG ──────────────────────────────────────────────────────
 
 function YAxis({ min, max, h, w = 52 }: { min: number; max: number; h: number; w?: number }) {
+  const PALETTE = useChartPalette();
   const steps = 4;
   const labels = Array.from({ length: steps + 1 }, (_, i) => {
     const v = min + (max - min) * (i / steps);
@@ -132,6 +154,7 @@ function YAxis({ min, max, h, w = 52 }: { min: number; max: number; h: number; w
 }
 
 function Grid({ min, max, h, w, steps = 4 }: { min: number; max: number; h: number; w: number; steps?: number }) {
+  const PALETTE = useChartPalette();
   return (
     <g>
       {Array.from({ length: steps + 1 }, (_, i) => {
@@ -147,6 +170,7 @@ function Grid({ min, max, h, w, steps = 4 }: { min: number; max: number; h: numb
 function CandlePanel({ data, xs, w, h, yAxisW }: {
   data: ChartData; xs: number[]; w: number; h: number; yAxisW: number;
 }) {
+  const PALETTE = useChartPalette();
   const innerW = w - yAxisW;
   const cH = Math.round(h * 0.68);
   const vH = h - cH - 4;
@@ -232,6 +256,7 @@ function CandlePanel({ data, xs, w, h, yAxisW }: {
 function RSIPanel({ data, xs, w, h, yAxisW }: {
   data: ChartData; xs: number[]; w: number; h: number; yAxisW: number;
 }) {
+  const PALETTE = useChartPalette();
   const innerW = w - yAxisW;
   const rMin = 0, rMax = 100;
 
@@ -244,7 +269,7 @@ function RSIPanel({ data, xs, w, h, yAxisW }: {
         {(() => {
           const y30 = scaleY(30, rMin, rMax, h);
           const y70 = scaleY(70, rMin, rMax, h);
-          return <rect x={0} y={y70} width={innerW} height={y30 - y70} fill="#ffffff08" />;
+          return <rect x={0} y={y70} width={innerW} height={y30 - y70} fill={PALETTE.gridLine} fillOpacity={0.35} />;
         })()}
 
         {[30, 50, 70].map(v => (
@@ -276,6 +301,7 @@ function RSIPanel({ data, xs, w, h, yAxisW }: {
 function CoppockPanel({ data, xs, w, h, yAxisW }: {
   data: ChartData; xs: number[]; w: number; h: number; yAxisW: number;
 }) {
+  const PALETTE = useChartPalette();
   const innerW = w - yAxisW;
   const validC = validPts(data.coppock);
   const validE = validPts(data.coppock_ema);
@@ -331,6 +357,7 @@ function CoppockPanel({ data, xs, w, h, yAxisW }: {
 
 // ─── Leyenda inline ───────────────────────────────────────────────────────────
 function LegendItem({ x, color, label, dashed }: { x: number; color: string; label: string; dashed?: boolean }) {
+  const PALETTE = useChartPalette();
   return (
     <g transform={`translate(${x},0)`}>
       <line x1={0} y1={0} x2={14} y2={0} stroke={color} strokeWidth={1.5}
@@ -344,6 +371,7 @@ function LegendItem({ x, color, label, dashed }: { x: number; color: string; lab
 function XAxis({ candles, xs, w, yAxisW, h = 20 }: {
   candles: Candle[]; xs: number[]; w: number; yAxisW: number; h?: number;
 }) {
+  const PALETTE = useChartPalette();
   const n = candles.length;
   const every = Math.max(1, Math.floor(n / 7));
   return (
@@ -367,6 +395,9 @@ function XAxis({ candles, xs, w, yAxisW, h = 20 }: {
 interface Props { ticker: string }
 
 export default function IndicatorsChartCard({ ticker }: Props) {
+  const { colors } = useTheme();
+  const PALETTE = useChartPalette();
+  const styles = useMemo(() => makeStyles(PALETTE, colors), [PALETTE, colors]);
   const [data,       setData]       = useState<ChartData | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState<string | null>(null);
@@ -517,6 +548,8 @@ export default function IndicatorsChartCard({ ticker }: Props) {
       )}
 
       {/* Disclaimer */}
+      {data && <DireccionPanel data={data} period={period} />}
+
       <Text style={styles.disclaimer}>
         Los indicadores se calculan sobre datos históricos y no constituyen asesoramiento financiero.
       </Text>
@@ -524,8 +557,239 @@ export default function IndicatorsChartCard({ ticker }: Props) {
   );
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Lectura direccional
+ *
+ * NO es una prediccion de precio. Es la suma ponderada de lo que dicen los
+ * indicadores que ya estan dibujados arriba, expresada como sesgo y como
+ * banda de recorrido esperable. Dos decisiones deliberadas:
+ *
+ *  - Sesgo, no objetivo. Un precio objetivo concreto seria inventarse una
+ *    precision que estos indicadores no tienen. Se da direccion e intensidad.
+ *  - Banda por volatilidad realizada, no por extrapolar la tendencia. El
+ *    ancho sale de la desviacion tipica de los retornos diarios recientes
+ *    escalada a raiz del horizonte, que es como se propaga la incertidumbre.
+ *
+ * Cada senal se muestra por separado con su voto: el usuario puede ver de
+ * donde sale el numero y estar en desacuerdo con una parte.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+interface Senal {
+  label: string;
+  detalle: string;
+  voto: -1 | 0 | 1;
+  peso: number;
+}
+
+interface Lectura {
+  score: number;              // -100 … +100
+  etiqueta: string;
+  tono: 'up' | 'down' | 'caution' | 'neutral';
+  senales: Senal[];
+  banda: { bajo: number; alto: number; sigma: number; sesiones: number } | null;
+  aviso: string | null;
+}
+
+const ultimoValido = (pts: Pt[]): number | null => {
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const v = pts[i]?.value;
+    if (v != null && Number.isFinite(v)) return v;
+  }
+  return null;
+};
+
+/** Sesiones que cubre el horizonte segun el periodo elegido en el grafico. */
+const horizonteDe = (period: Period): number =>
+  period === '30wk' ? 10 : period === '60wk' ? 20 : period === '1y' ? 20 : 40;
+
+function leerDireccion(data: ChartData, period: Period): Lectura {
+  const precio = data.current_price;
+  const vwap = ultimoValido(data.vwap);
+  const vama = ultimoValido(data.vama);
+  const rsi = ultimoValido(data.rsi);
+  const rsiEma = ultimoValido(data.rsi_ema);
+  const copp = ultimoValido(data.coppock);
+  const coppEma = ultimoValido(data.coppock_ema);
+
+  const senales: Senal[] = [];
+  const push = (label: string, detalle: string, voto: -1 | 0 | 1, peso: number) =>
+    senales.push({ label, detalle, voto, peso });
+
+  if (vwap != null) {
+    const dif = ((precio - vwap) / vwap) * 100;
+    push('Precio vs VWAP',
+      `${dif >= 0 ? '+' : '−'}${Math.abs(dif).toFixed(1)} % respecto al precio medio ponderado`,
+      dif > 0.5 ? 1 : dif < -0.5 ? -1 : 0, 2);
+  }
+  if (vama != null) {
+    const dif = ((precio - vama) / vama) * 100;
+    push('Precio vs VAMA',
+      `${dif >= 0 ? '+' : '−'}${Math.abs(dif).toFixed(1)} % respecto a la media adaptativa`,
+      dif > 0.5 ? 1 : dif < -0.5 ? -1 : 0, 2);
+  }
+  if (data.poc_price) {
+    const dif = ((precio - data.poc_price) / data.poc_price) * 100;
+    push('Precio vs POC',
+      `${dif >= 0 ? 'Por encima' : 'Por debajo'} del punto de control de volumen`,
+      dif > 0 ? 1 : dif < 0 ? -1 : 0, 1);
+  }
+  if (rsi != null && rsiEma != null) {
+    push('RSI vs su media',
+      `RSI ${rsi.toFixed(1)} ${rsi > rsiEma ? 'por encima' : 'por debajo'} de la EMA 10`,
+      rsi > rsiEma ? 1 : rsi < rsiEma ? -1 : 0, 1.5);
+  }
+  if (copp != null && coppEma != null) {
+    push('Coppock vs su media',
+      `${copp > coppEma ? 'Cruce al alza' : 'Cruce a la baja'} sobre la EMA 13`,
+      copp > coppEma ? 1 : copp < coppEma ? -1 : 0, 2);
+    push('Signo de Coppock',
+      `Curva en terreno ${copp >= 0 ? 'positivo' : 'negativo'} (${copp.toFixed(2)})`,
+      copp > 0 ? 1 : copp < 0 ? -1 : 0, 1.5);
+  }
+
+  const pesoTotal = senales.reduce((a, s) => a + s.peso, 0) || 1;
+  const score = Math.round((senales.reduce((a, s) => a + s.voto * s.peso, 0) / pesoTotal) * 100);
+
+  // El RSI extremo no vota direccion: avisa de que la senal puede agotarse.
+  let aviso: string | null = null;
+  if (rsi != null && rsi >= 70) {
+    aviso = `RSI en ${rsi.toFixed(1)}: zona de sobrecompra. Las lecturas alcistas pierden fiabilidad aqui.`;
+  } else if (rsi != null && rsi <= 30) {
+    aviso = `RSI en ${rsi.toFixed(1)}: zona de sobreventa. Las lecturas bajistas pierden fiabilidad aqui.`;
+  }
+
+  const etiqueta =
+    score >= 50 ? 'Sesgo alcista' :
+    score >= 20 ? 'Sesgo alcista debil' :
+    score > -20 ? 'Sin sesgo claro' :
+    score > -50 ? 'Sesgo bajista debil' : 'Sesgo bajista';
+  const tono: Lectura['tono'] =
+    score >= 20 ? 'up' : score <= -20 ? 'down' : 'caution';
+
+  // ── Banda de recorrido: volatilidad realizada, no extrapolacion ──────────
+  const cierres = data.candles.map((c) => c.close).filter((v) => Number.isFinite(v) && v > 0);
+  let banda: Lectura['banda'] = null;
+  if (cierres.length > 20) {
+    const ventana = cierres.slice(-Math.min(60, cierres.length));
+    const rets: number[] = [];
+    for (let i = 1; i < ventana.length; i++) rets.push(Math.log(ventana[i] / ventana[i - 1]));
+    const media = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const varianza = rets.reduce((a, r) => a + (r - media) ** 2, 0) / rets.length;
+    const sigmaDia = Math.sqrt(varianza);
+    const sesiones = horizonteDe(period);
+    const sigma = sigmaDia * Math.sqrt(sesiones);
+    if (Number.isFinite(sigma) && sigma > 0) {
+      banda = {
+        bajo: precio * Math.exp(-sigma),
+        alto: precio * Math.exp(sigma),
+        sigma: sigma * 100,
+        sesiones,
+      };
+    }
+  }
+
+  return { score, etiqueta, tono, senales, banda, aviso };
+}
+
+function DireccionPanel({ data, period }: { data: ChartData; period: Period }) {
+  const { colors } = useTheme();
+  const PALETTE = useChartPalette();
+  const styles = useMemo(() => makeStyles(PALETTE, colors), [PALETTE, colors]);
+  const lectura = useMemo(() => leerDireccion(data, period), [data, period]);
+
+  if (!lectura.senales.length) return null;
+
+  const tonoColor =
+    lectura.tono === 'up' ? colors.up :
+    lectura.tono === 'down' ? colors.down : colors.caution;
+
+  // La aguja recorre −100…+100 sobre la misma escala calibrada del resto de la app.
+  const posicion = ((lectura.score + 100) / 200) * 100;
+
+  return (
+    <View style={styles.direccionCard}>
+      <View style={styles.direccionHeader}>
+        <View>
+          <Text style={styles.direccionLabel}>LECTURA DE LOS INDICADORES</Text>
+          <Text style={[styles.direccionTitulo, { color: tonoColor }]}>{lectura.etiqueta}</Text>
+        </View>
+        <View style={[styles.direccionScore, { borderColor: tonoColor }]}>
+          <Text style={[styles.direccionScoreTexto, { color: tonoColor }]}>
+            {lectura.score > 0 ? '+' : ''}{lectura.score}
+          </Text>
+        </View>
+      </View>
+
+      {/* Escala del sesgo */}
+      <View style={styles.sesgoPista}>
+        <View style={[styles.sesgoMitad, { backgroundColor: colors.downWash }]} />
+        <View style={[styles.sesgoMitad, { backgroundColor: colors.upWash }]} />
+        <View style={[styles.sesgoCentro, { backgroundColor: colors.ruleStrong }]} />
+        <View style={[styles.sesgoIndice, { left: `${posicion}%`, backgroundColor: tonoColor }]} />
+      </View>
+      <View style={styles.sesgoRotulos}>
+        <Text style={styles.sesgoRotulo}>BAJISTA</Text>
+        <Text style={styles.sesgoRotulo}>NEUTRAL</Text>
+        <Text style={styles.sesgoRotulo}>ALCISTA</Text>
+      </View>
+
+      {/* Banda de recorrido */}
+      {lectura.banda && (
+        <View style={styles.bandaCaja}>
+          <Text style={styles.bandaTitulo}>
+            Recorrido esperable a {lectura.banda.sesiones} sesiones
+          </Text>
+          <View style={styles.bandaFila}>
+            <Text style={[styles.bandaValor, { color: colors.down }]}>
+              ${lectura.banda.bajo.toFixed(2)}
+            </Text>
+            <Text style={styles.bandaActual}>${data.current_price.toFixed(2)}</Text>
+            <Text style={[styles.bandaValor, { color: colors.up }]}>
+              ${lectura.banda.alto.toFixed(2)}
+            </Text>
+          </View>
+          <Text style={styles.bandaNota}>
+            Una desviacion tipica (±{lectura.banda.sigma.toFixed(1)} %) segun la volatilidad de las
+            ultimas sesiones. Dos de cada tres veces el precio se queda dentro; no es un objetivo.
+          </Text>
+        </View>
+      )}
+
+      {lectura.aviso && (
+        <View style={[styles.avisoCaja, { borderColor: colors.caution, backgroundColor: colors.cautionWash }]}>
+          <View style={[styles.avisoMarca, { backgroundColor: colors.caution }]} />
+          <Text style={[styles.avisoTexto, { color: colors.caution }]}>{lectura.aviso}</Text>
+        </View>
+      )}
+
+      {/* De donde sale el numero */}
+      <View style={styles.senalesLista}>
+        {lectura.senales.map((s) => {
+          const c = s.voto > 0 ? colors.up : s.voto < 0 ? colors.down : colors.inkFaint;
+          return (
+            <View key={s.label} style={styles.senalFila}>
+              <View style={[styles.senalMarca, { backgroundColor: c }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.senalLabel}>{s.label}</Text>
+                <Text style={styles.senalDetalle}>{s.detalle}</Text>
+              </View>
+              <Text style={[styles.senalVoto, { color: c }]}>
+                {s.voto > 0 ? 'ALCISTA' : s.voto < 0 ? 'BAJISTA' : 'NEUTRO'}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 // ─── Micro-componentes ────────────────────────────────────────────────────────
 function PanelLabel({ label }: { label: string }) {
+  const { colors } = useTheme();
+  const PALETTE = useChartPalette();
+  const styles = useMemo(() => makeStyles(PALETTE, colors), [PALETTE, colors]);
   return (
     <View style={styles.panelLabel}>
       <Text style={styles.panelLabelText}>{label}</Text>
@@ -534,6 +798,9 @@ function PanelLabel({ label }: { label: string }) {
 }
 
 function QuickMetric({ label, value, color }: { label: string; value: string; color: string }) {
+  const PALETTE = useChartPalette();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(PALETTE, colors), [PALETTE, colors]);
   return (
     <View style={styles.qm}>
       <Text style={styles.qmLabel}>{label}</Text>
@@ -543,139 +810,196 @@ function QuickMetric({ label, value, color }: { label: string; value: string; co
 }
 
 // ─── Estilos ──────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  card: {
-    marginHorizontal: 16,
-    marginBottom: 20,
-    borderRadius: 16,
-    backgroundColor: PALETTE.bg,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    // Sin width fija: se adapta al contenedor padre
-  },
-  header: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: PALETTE.border,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  title: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#f0f0f5',
-    marginBottom: 2,
-  },
-  subtitle: {
-    fontSize: 11,
-    color: PALETTE.textDim,
-    letterSpacing: 0.3,
-  },
-  periods: {
-    flexDirection: 'row',
-    gap: 4,
-    flexShrink: 0,
-  },
-  periodBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: '#1a1a22',
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  periodBtnActive: {
-    backgroundColor: PALETTE.accent + '25',
-    borderColor: PALETTE.accent,
-  },
-  periodText: {
-    fontSize: 11,
-    color: PALETTE.textDim,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  periodTextActive: {
-    color: PALETTE.accent,
-    fontWeight: '700',
-  },
-  center: {
-    padding: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 180,
-  },
-  loadingText: {
-    marginTop: 12,
-    color: PALETTE.textDim,
-    fontSize: 13,
-  },
-  errorEmoji: { fontSize: 36, marginBottom: 8 },
-  errorText: { color: '#ef5350', fontSize: 13, textAlign: 'center', marginBottom: 12 },
-  retryBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: PALETTE.accent + '20',
-    borderWidth: 1,
-    borderColor: PALETTE.accent,
-  },
-  retryText: { color: PALETTE.accent, fontSize: 13, fontWeight: '600' },
-  divider: {
-    height: 1,
-    backgroundColor: PALETTE.border,
-  },
-  panelLabel: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    backgroundColor: '#16161e',
-  },
-  panelLabelText: {
-    fontSize: 9,
-    color: PALETTE.textDim,
-    letterSpacing: 0.5,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  quickMetrics: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-    backgroundColor: '#0f0f14',
-  },
-  qm: {
-    alignItems: 'center',
-    minWidth: 70,
-    backgroundColor: '#16161e',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  qmLabel: {
-    fontSize: 9,
-    color: PALETTE.textDim,
-    marginBottom: 2,
-    letterSpacing: 0.3,
-  },
-  qmValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  disclaimer: {
-    fontSize: 10,
-    color: PALETTE.textDim,
-    textAlign: 'center',
-    padding: 10,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-    backgroundColor: '#0a0a0e',
-  },
-});
+function makeStyles(PALETTE: ChartPalette, c: ThemeColors) {
+  return StyleSheet.create({
+    card: {
+      marginHorizontal: 16,
+      marginBottom: 20,
+      borderRadius: 16,
+      backgroundColor: PALETTE.bg,
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: PALETTE.border,
+      // Sin width fija: se adapta al contenedor padre
+    },
+    header: {
+      padding: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: PALETTE.border,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      flexWrap: 'wrap',
+      gap: 10,
+    },
+    title: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: c.ink,
+      marginBottom: 2,
+    },
+    subtitle: {
+      fontSize: 11,
+      color: PALETTE.textDim,
+      letterSpacing: 0.3,
+    },
+    periods: {
+      flexDirection: 'row',
+      gap: 4,
+      flexShrink: 0,
+    },
+    periodBtn: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 8,
+      backgroundColor: c.surfaceSunken,
+      borderWidth: 1,
+      borderColor: PALETTE.border,
+    },
+    periodBtnActive: {
+      backgroundColor: PALETTE.accent + '25',
+      borderColor: PALETTE.accent,
+    },
+    periodText: {
+      fontSize: 11,
+      color: PALETTE.textDim,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    periodTextActive: {
+      color: PALETTE.accent,
+      fontWeight: '700',
+    },
+    center: {
+      padding: 40,
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 180,
+    },
+    loadingText: {
+      marginTop: 12,
+      color: PALETTE.textDim,
+      fontSize: 13,
+    },
+    errorEmoji: { fontSize: 36, marginBottom: 8 },
+    errorText: { color: c.down, fontSize: 13, textAlign: 'center', marginBottom: 12 },
+    retryBtn: {
+      paddingHorizontal: 20,
+      paddingVertical: 8,
+      borderRadius: 10,
+      backgroundColor: PALETTE.accent + '20',
+      borderWidth: 1,
+      borderColor: PALETTE.accent,
+    },
+    retryText: { color: PALETTE.accent, fontSize: 13, fontWeight: '600' },
+    divider: {
+      height: 1,
+      backgroundColor: PALETTE.border,
+    },
+    panelLabel: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      backgroundColor: c.surfaceSunken,
+    },
+    panelLabelText: {
+      fontSize: 9,
+      color: PALETTE.textDim,
+      letterSpacing: 0.5,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    quickMetrics: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      gap: 8,
+      borderTopWidth: 1,
+      borderTopColor: PALETTE.border,
+      backgroundColor: c.canvas,
+    },
+    qm: {
+      alignItems: 'center',
+      minWidth: 70,
+      backgroundColor: c.surfaceSunken,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderWidth: 1,
+      borderColor: PALETTE.border,
+    },
+    qmLabel: {
+      fontSize: 9,
+      color: PALETTE.textDim,
+      marginBottom: 2,
+      letterSpacing: 0.3,
+    },
+    qmValue: {
+      fontSize: 13,
+      fontWeight: '700',
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    direccionCard: {
+      marginTop: 12,
+      padding: 14,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.rule,
+      backgroundColor: c.surface,
+      gap: 10,
+    },
+    direccionHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+    direccionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.1, color: c.inkFaint },
+    direccionTitulo: { fontSize: 18, fontWeight: '700', marginTop: 2 },
+    direccionScore: {
+      minWidth: 56, paddingVertical: 4, paddingHorizontal: 8,
+      borderRadius: 3, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center',
+    },
+    direccionScoreTexto: { fontSize: 17, fontWeight: '700', fontVariant: ['tabular-nums'] },
+
+    sesgoPista: {
+      height: 22, flexDirection: 'row', borderRadius: 3,
+      borderWidth: StyleSheet.hairlineWidth, borderColor: c.ruleStrong, overflow: 'hidden',
+    },
+    sesgoMitad: { flex: 1 },
+    sesgoCentro: { position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1 },
+    sesgoIndice: { position: 'absolute', top: 0, bottom: 0, width: 3, marginLeft: -1.5 },
+    sesgoRotulos: { flexDirection: 'row', justifyContent: 'space-between', marginTop: -4 },
+    sesgoRotulo: { fontSize: 9, fontWeight: '700', letterSpacing: 0.8, color: c.inkFaint },
+
+    bandaCaja: {
+      borderRadius: 5, borderWidth: StyleSheet.hairlineWidth, borderColor: c.rule,
+      backgroundColor: c.surfaceSunken, padding: 10, gap: 6,
+    },
+    bandaTitulo: { fontSize: 10, fontWeight: '700', letterSpacing: 1, color: c.inkFaint },
+    bandaFila: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+    bandaValor: { fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
+    bandaActual: { fontSize: 16, fontWeight: '700', color: c.ink, fontVariant: ['tabular-nums'] },
+    bandaNota: { fontSize: 10, color: c.inkMuted, lineHeight: 14 },
+
+    avisoCaja: {
+      flexDirection: 'row', gap: 8, padding: 9,
+      borderRadius: 5, borderWidth: StyleSheet.hairlineWidth,
+    },
+    avisoMarca: { width: 3, alignSelf: 'stretch' },
+    avisoTexto: { flex: 1, fontSize: 11, lineHeight: 15, fontWeight: '500' },
+
+    senalesLista: { gap: 2 },
+    senalFila: {
+      flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6,
+      borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.rule,
+    },
+    senalMarca: { width: 3, height: 20 },
+    senalLabel: { fontSize: 12, fontWeight: '600', color: c.ink },
+    senalDetalle: { fontSize: 10, color: c.inkMuted },
+    senalVoto: { fontSize: 9, fontWeight: '700', letterSpacing: 0.6, minWidth: 54, textAlign: 'right' },
+
+    disclaimer: {
+      fontSize: 10,
+      color: PALETTE.textDim,
+      textAlign: 'center',
+      padding: 10,
+      borderTopWidth: 1,
+      borderTopColor: PALETTE.border,
+      backgroundColor: c.canvas,
+    },
+  });
+}

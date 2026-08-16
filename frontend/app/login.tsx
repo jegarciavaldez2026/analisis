@@ -1,17 +1,29 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ActivityIndicator, Platform, Dimensions
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../contexts/AuthContext';
-import { useTheme } from '../contexts/ThemeContext';
+import Svg, { Line, Rect } from 'react-native-svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const { width } = Dimensions.get('window');
+import { useAuth } from '../contexts/AuthContext';
+import { useTheme, ThemeMode } from '../contexts/ThemeContext';
+import { Button, Field, Legend, Notice, Panel, Rule } from '../components/ui';
+import { decisionBands } from '../theme/tokens';
 
 export default function LoginScreen() {
   const { login, register } = useAuth();
-  const { colors, isDark, toggleTheme } = useTheme();
+  const { colors, mode, setMode, space, type, radius, hairline } = useTheme();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+
   const [isLogin, setIsLogin] = useState(true);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -19,12 +31,34 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [invalidField, setInvalidField] = useState<'name' | 'email' | 'password' | null>(null);
 
   const handleSubmit = async () => {
     setError('');
-    if (!email.trim() || !password.trim()) { setError('Completa todos los campos'); return; }
-    if (!isLogin && !name.trim()) { setError('Ingresa tu nombre'); return; }
-    if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return; }
+    setInvalidField(null);
+
+    // Los errores nombran el problema y la salida, no sólo que algo falta.
+    if (!email.trim()) {
+      setInvalidField('email');
+      setError('Falta el email. Escribe la dirección con la que te registraste.');
+      return;
+    }
+    if (!password.trim()) {
+      setInvalidField('password');
+      setError('Falta la contraseña.');
+      return;
+    }
+    if (!isLogin && !name.trim()) {
+      setInvalidField('name');
+      setError('Falta tu nombre. Es el que aparecerá en tu cuenta.');
+      return;
+    }
+    if (password.length < 6) {
+      setInvalidField('password');
+      setError('La contraseña necesita al menos 6 caracteres. Añade unos cuantos más.');
+      return;
+    }
+
     setLoading(true);
     try {
       if (isLogin) {
@@ -33,288 +67,332 @@ export default function LoginScreen() {
         await register(email.trim(), password, name.trim());
       }
     } catch (e: any) {
-      setError(e.response?.data?.detail || 'Error al conectar con el servidor');
+      setError(
+        e.response?.data?.detail ||
+          'No se pudo conectar con el servidor. Comprueba tu conexión y vuelve a intentarlo.',
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const isWeb = Platform.OS === 'web';
+  const wide = width >= 900;
+
+  const appearanceOptions: { key: ThemeMode; icon: keyof typeof Ionicons.glyphMap; label: string }[] = [
+    { key: 'system', icon: 'phone-portrait-outline', label: 'Sistema' },
+    { key: 'light', icon: 'sunny-outline', label: 'Claro' },
+    { key: 'dark', icon: 'moon-outline', label: 'Oscuro' },
+  ];
 
   return (
-    <View style={[styles.root, { backgroundColor: isDark ? '#0f1117' : '#f5f5f7' }]}>
-
-      {/* Theme toggle top right */}
-      <TouchableOpacity
-        style={styles.themeBtn}
-        onPress={toggleTheme}
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.canvas }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingTop: insets.top + space.xl,
+            paddingBottom: insets.bottom + space.xl,
+            paddingHorizontal: space.xl,
+          },
+        ]}
       >
-        <Text style={{ fontSize: 18 }}>{isDark ? '☀️' : '🌙'}</Text>
-      </TouchableOpacity>
-
-      {/* Center card */}
-      <View style={[
-        styles.card,
-        { backgroundColor: isDark ? '#1a1d2e' : '#ffffff' },
-        isWeb && styles.cardWeb
-      ]}>
-
-        {/* Logo */}
-        <View style={styles.logoRow}>
-          <View style={[styles.logoIcon, { backgroundColor: colors.primary }]}>
-            <Text style={styles.logoText}>FA</Text>
+        {/* Control de apariencia, arriba a la derecha */}
+        <View style={[styles.appearance, { top: insets.top + space.md, right: space.xl }]}>
+          <View
+            style={{
+              flexDirection: 'row',
+              borderWidth: hairline,
+              borderColor: colors.rule,
+              borderRadius: radius.xs,
+              backgroundColor: colors.surfaceSunken,
+              overflow: 'hidden',
+            }}
+          >
+            {appearanceOptions.map((o, i) => {
+              const on = mode === o.key;
+              return (
+                <Pressable
+                  key={o.key}
+                  onPress={() => setMode(o.key)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={`Apariencia: ${o.label}`}
+                  style={({ pressed }) => [
+                    {
+                      width: 44,
+                      height: 34,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: on ? colors.accent : pressed ? colors.accentWash : 'transparent',
+                      borderLeftWidth: i === 0 ? 0 : hairline,
+                      borderLeftColor: colors.rule,
+                    },
+                    Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+                  ]}
+                >
+                  <Ionicons name={o.icon} size={15} color={on ? colors.inkOnAccent : colors.inkMuted} />
+                </Pressable>
+              );
+            })}
           </View>
-          <Text style={[styles.appName, { color: isDark ? '#ffffff' : '#0f1117' }]}>FinAnalysis</Text>
         </View>
 
-        <Text style={[styles.welcomeText, { color: isDark ? '#ffffff' : '#0f1117' }]}>
-          {isLogin ? 'Bienvenido de nuevo' : 'Crear cuenta'}
-        </Text>
-        <Text style={[styles.subText, { color: colors.textSecondary }]}>
-          {isLogin ? 'Ingresa tus credenciales para continuar' : 'Regístrate para empezar a analizar'}
-        </Text>
+        <View style={[styles.stage, wide && styles.stageWide]}>
+          {/* Placa de especificación: qué mide este instrumento. Sólo hechos. */}
+          {wide && (
+            <View style={{ flex: 1, maxWidth: 420, gap: space.xl, paddingTop: space.h2 }}>
+              <Text style={[type.display, { color: colors.ink }]}>
+                Un veredicto que se puede desarmar.
+              </Text>
+              <Text style={[type.body, { color: colors.inkMuted, maxWidth: 380 }]}>
+                FinAnalysis calcula más de 50 ratios fundamentales sobre datos de Yahoo Finance, los
+                compara con sus umbrales y coloca el resultado en una escala. Cada punto de esa escala
+                se puede seguir hasta la métrica que lo produjo.
+              </Text>
 
-        {/* Formulario */}
-        <View style={styles.form}>
-          {!isLogin && (
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textSecondary }]}>Nombre completo</Text>
-              <View style={[styles.inputRow, {
-                backgroundColor: isDark ? '#0f1117' : '#f9fafb',
-                borderColor: isDark ? '#2d3148' : '#e5e7eb',
-              }]}>
-                <Ionicons name="person-outline" size={17} color={colors.textSecondary} />
-                <TextInput
-                  style={[styles.input, { color: isDark ? '#ffffff' : '#0f1117' }]}
-                  placeholder="Tu nombre"
-                  placeholderTextColor={colors.textSecondary}
-                  value={name}
-                  onChangeText={setName}
-                  autoCapitalize="words"
-                />
+              <View style={{ gap: space.md }}>
+                <Legend>Regla de decisión</Legend>
+                <View
+                  style={{
+                    borderWidth: hairline,
+                    borderColor: colors.rule,
+                    borderRadius: radius.sm,
+                    backgroundColor: colors.surface,
+                    overflow: 'hidden',
+                  }}
+                >
+                  {decisionBands
+                    .slice()
+                    .reverse()
+                    .map((b, i, arr) => {
+                      const fg =
+                        b.tone === 'up' ? colors.up : b.tone === 'down' ? colors.down : colors.caution;
+                      return (
+                        <View key={b.verdict}>
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: space.md,
+                              padding: space.md,
+                            }}
+                          >
+                            <View style={{ width: 3, height: 20, backgroundColor: fg }} />
+                            <Text style={[type.labelStrong, { color: fg, width: 96 }]}>{b.verdict}</Text>
+                            <Text style={[type.caption, { color: colors.inkMuted, flex: 1 }]}>
+                              {b.from === 60
+                                ? 'métricas favorables ≥ 60 %'
+                                : b.from === 40
+                                  ? 'métricas favorables 40 – 60 %'
+                                  : 'métricas favorables < 40 %'}
+                            </Text>
+                            <Text style={[type.caption, { color: colors.inkFaint }]}>
+                              riesgo {b.risk.toLowerCase()}
+                            </Text>
+                          </View>
+                          {i < arr.length - 1 ? <Rule /> : null}
+                        </View>
+                      );
+                    })}
+                </View>
+                <Text style={[type.caption, { color: colors.inkFaint }]}>
+                  Es una lectura de los números publicados, no un consejo de inversión.
+                </Text>
               </View>
             </View>
           )}
 
-          <View style={styles.fieldGroup}>
-            <Text style={[styles.label, { color: colors.textSecondary }]}>Email</Text>
-            <View style={[styles.inputRow, {
-              backgroundColor: isDark ? '#0f1117' : '#f9fafb',
-              borderColor: isDark ? '#2d3148' : '#e5e7eb',
-            }]}>
-              <Ionicons name="mail-outline" size={17} color={colors.textSecondary} />
-              <TextInput
-                style={[styles.input, { color: isDark ? '#ffffff' : '#0f1117' }]}
-                placeholder="tu@email.com"
-                placeholderTextColor={colors.textSecondary}
-                value={email}
-                onChangeText={setEmail}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                autoCorrect={false}
-                onSubmitEditing={handleSubmit}
-              />
+          {/* Panel de acceso */}
+          <View style={{ width: '100%', maxWidth: 400 }}>
+            <View style={{ marginBottom: space.xl, gap: space.md }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                <View
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: radius.xs,
+                    borderWidth: hairline,
+                    borderColor: colors.ruleStrong,
+                    backgroundColor: colors.surfaceSunken,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Svg width={26} height={26} viewBox="0 0 22 22">
+                    {[3, 7, 11, 15, 19].map((x, i) => (
+                      <Line
+                        key={x}
+                        x1={x}
+                        x2={x}
+                        y1={18}
+                        y2={i % 2 === 0 ? 10 : 13}
+                        stroke={colors.ruleStrong}
+                        strokeWidth={1.5}
+                      />
+                    ))}
+                    <Rect x={13.2} y={3} width={2.6} height={16} fill={colors.accent} />
+                  </Svg>
+                </View>
+                <View>
+                  <Text style={[type.title2, { color: colors.ink }]}>FinAnalysis</Text>
+                  <Legend>Lectura de fundamentales</Legend>
+                </View>
+              </View>
             </View>
-          </View>
 
-          <View style={styles.fieldGroup}>
-            <Text style={[styles.label, { color: colors.textSecondary }]}>Contraseña</Text>
-            <View style={[styles.inputRow, {
-              backgroundColor: isDark ? '#0f1117' : '#f9fafb',
-              borderColor: isDark ? '#2d3148' : '#e5e7eb',
-            }]}>
-              <Ionicons name="lock-closed-outline" size={17} color={colors.textSecondary} />
-              <TextInput
-                style={[styles.input, { color: isDark ? '#ffffff' : '#0f1117' }]}
-                placeholder="Mínimo 6 caracteres"
-                placeholderTextColor={colors.textSecondary}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                onSubmitEditing={handleSubmit}
-              />
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={17}
-                  color={colors.textSecondary}
+            <Panel level={2} padded={false}>
+              <View style={{ padding: space.xl, gap: space.lg }}>
+                <View style={{ gap: space.xxs }}>
+                  <Text style={[type.title2, { color: colors.ink }]}>
+                    {isLogin ? 'Entrar' : 'Crear cuenta'}
+                  </Text>
+                  <Text style={[type.caption, { color: colors.inkMuted }]}>
+                    {isLogin
+                      ? 'Tu historial de análisis queda asociado a esta cuenta.'
+                      : 'Con una cuenta se guarda tu historial de análisis.'}
+                  </Text>
+                </View>
+
+                {!isLogin && (
+                  <View style={{ gap: space.xs }}>
+                    <Legend>Nombre</Legend>
+                    <Field
+                      icon="person-outline"
+                      placeholder="Tu nombre"
+                      value={name}
+                      onChangeText={setName}
+                      autoCapitalize="words"
+                      invalid={invalidField === 'name'}
+                      textContentType="name"
+                    />
+                  </View>
+                )}
+
+                <View style={{ gap: space.xs }}>
+                  <Legend>Email</Legend>
+                  <Field
+                    icon="mail-outline"
+                    placeholder="tu@email.com"
+                    value={email}
+                    onChangeText={setEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    autoCorrect={false}
+                    autoComplete="email"
+                    textContentType="emailAddress"
+                    invalid={invalidField === 'email'}
+                    onSubmitEditing={handleSubmit}
+                  />
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <Legend>Contraseña</Legend>
+                  <Field
+                    icon="lock-closed-outline"
+                    placeholder="Mínimo 6 caracteres"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    textContentType={isLogin ? 'password' : 'newPassword'}
+                    invalid={invalidField === 'password'}
+                    onSubmitEditing={handleSubmit}
+                    right={
+                      <Pressable
+                        onPress={() => setShowPassword((v) => !v)}
+                        accessibilityRole="button"
+                        accessibilityLabel={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                        hitSlop={12}
+                        style={Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : undefined}
+                      >
+                        <Ionicons
+                          name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                          size={17}
+                          color={colors.inkMuted}
+                        />
+                      </Pressable>
+                    }
+                  />
+                </View>
+
+                {error ? <Notice tone="down" title="No se pudo continuar" body={error} /> : null}
+
+                <Button
+                  label={isLogin ? 'Iniciar sesión' : 'Crear cuenta'}
+                  onPress={handleSubmit}
+                  loading={loading}
+                  size="lg"
+                  full
                 />
-              </TouchableOpacity>
-            </View>
-          </View>
+              </View>
 
-          {error ? (
-            <View style={styles.errorBox}>
-              <Ionicons name="alert-circle" size={15} color="#FF3B30" />
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
+              <Rule />
 
-          <TouchableOpacity
-            style={[styles.submitBtn, { backgroundColor: colors.primary }, loading && { opacity: 0.7 }]}
-            onPress={handleSubmit}
-            disabled={loading}
-          >
-            {loading
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <Text style={styles.submitText}>{isLogin ? 'Iniciar sesión' : 'Crear cuenta'}</Text>
-            }
-          </TouchableOpacity>
-        </View>
+              <Pressable
+                onPress={() => {
+                  setIsLogin((v) => !v);
+                  setError('');
+                  setInvalidField(null);
+                }}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  {
+                    minHeight: 48,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 4,
+                    backgroundColor: pressed ? colors.accentWash : 'transparent',
+                  },
+                  Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+                ]}
+              >
+                <Text style={[type.caption, { color: colors.inkMuted }]}>
+                  {isLogin ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}
+                </Text>
+                <Text style={[type.caption, { color: colors.accent, fontWeight: '700' }]}>
+                  {isLogin ? 'Regístrate' : 'Inicia sesión'}
+                </Text>
+              </Pressable>
+            </Panel>
 
-        {/* Toggle login/register */}
-        <View style={styles.toggleRow}>
-          <Text style={[styles.toggleLabel, { color: colors.textSecondary }]}>
-            {isLogin ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}
-          </Text>
-          <TouchableOpacity onPress={() => { setIsLogin(!isLogin); setError(''); }}>
-            <Text style={[styles.toggleLink, { color: colors.primary }]}>
-              {isLogin ? ' Regístrate' : ' Inicia sesión'}
+            <Text
+              style={[
+                type.legend,
+                { color: colors.inkFaint, textAlign: 'center', marginTop: space.lg },
+              ]}
+            >
+              Datos de Yahoo Finance
             </Text>
-          </TouchableOpacity>
+          </View>
         </View>
-
-        {/* Footer */}
-        <Text style={[styles.footer, { color: isDark ? '#374151' : '#d1d5db' }]}>
-          FinAnalysis · Powered by Yahoo Finance
-        </Text>
-      </View>
-    </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
+  scroll: {
+    flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    minHeight: '100vh' as any,
   },
-  themeBtn: {
+  appearance: {
     position: 'absolute',
-    top: 20,
-    right: 20,
-    padding: 8,
-    borderRadius: 8,
     zIndex: 10,
   },
-  card: {
+  stage: {
     width: '100%',
-    maxWidth: 400,
-    borderRadius: 16,
-    padding: 40,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 8,
-  },
-  cardWeb: {
-    width: 400,
-  },
-  logoRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 28,
   },
-  logoIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+  stageWide: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  logoText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 16,
-    letterSpacing: 0.5,
-  },
-  appName: {
-    fontSize: 22,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  welcomeText: {
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 6,
-    letterSpacing: -0.3,
-  },
-  subText: {
-    fontSize: 14,
-    marginBottom: 28,
-    lineHeight: 20,
-  },
-  form: {
-    gap: 16,
-  },
-  fieldGroup: {
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    gap: 10,
-    height: 46,
-  },
-  input: {
-    flex: 1,
-    fontSize: 14,
-    height: 46,
-  },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    backgroundColor: '#FF3B3012',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#FF3B3030',
-  },
-  errorText: {
-    color: '#FF3B30',
-    fontSize: 13,
-    flex: 1,
-  },
-  submitBtn: {
-    borderRadius: 10,
-    height: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  submitText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: 24,
-    gap: 2,
-  },
-  toggleLabel: {
-    fontSize: 13,
-  },
-  toggleLink: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  footer: {
-    textAlign: 'center',
-    fontSize: 11,
-    marginTop: 24,
+    gap: 64,
+    maxWidth: 1000,
   },
 });

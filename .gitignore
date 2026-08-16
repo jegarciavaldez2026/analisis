@@ -97,3 +97,6 @@ frontend/.metro-cache/
 *.Zone.Identifier
 node_modules/
 backend/server.py.backup
+
+# Python wheels
+*.whl

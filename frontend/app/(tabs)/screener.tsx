@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useTheme } from '../../contexts/ThemeContext';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
 interface ScreenerResult {
   ticker: string;
@@ -105,9 +105,9 @@ export default function ScreenerScreen() {
 
   const getRecommendationColor = (rec: string) => {
     switch (rec) {
-      case 'COMPRAR': return '#34C759';
-      case 'VENDER': return '#FF3B30';
-      default: return '#FF9500';
+      case 'COMPRAR': return colors.up;
+      case 'VENDER': return colors.down;
+      default: return colors.caution;
     }
   };
 
@@ -133,7 +133,7 @@ export default function ScreenerScreen() {
         </View>
       </View>
       
-      <View style={styles.metricsGrid}>
+      <View style={[styles.metricsGrid, { borderTopColor: colors.border }]}>
         <View style={styles.metricItem}>
           <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>P/E</Text>
           <Text style={[styles.metricValue, { color: colors.text }]}>
@@ -168,7 +168,7 @@ export default function ScreenerScreen() {
       <ScrollView 
         horizontal 
         showsHorizontalScrollIndicator={false}
-        style={styles.presetsContainer}
+        style={[styles.presetsContainer, { borderBottomColor: colors.border }]}
         contentContainerStyle={styles.presetsContent}
       >
         {presets.map((preset) => (
@@ -182,13 +182,13 @@ export default function ScreenerScreen() {
           >
             <Text style={[
               styles.presetName,
-              { color: activePreset === preset.name ? '#FFF' : colors.text }
+              { color: activePreset === preset.name ? colors.inkOnAccent : colors.text }
             ]}>
               {preset.name}
             </Text>
             <Text style={[
               styles.presetDesc,
-              { color: activePreset === preset.name ? '#FFF' : colors.textSecondary }
+              { color: activePreset === preset.name ? colors.inkOnAccent : colors.textSecondary }
             ]} numberOfLines={1}>
               {preset.description}
             </Text>
@@ -206,7 +206,7 @@ export default function ScreenerScreen() {
 
       {/* Custom Filters */}
       {showFilters && (
-        <View style={[styles.filtersContainer, { backgroundColor: colors.card }]}>
+        <View style={[styles.filtersContainer, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
           <View style={styles.filtersGrid}>
             <View style={styles.filterItem}>
               <Text style={[styles.filterLabel, { color: colors.textSecondary }]}>Max P/E</Text>
@@ -320,8 +320,7 @@ const styles = StyleSheet.create({
   },
   presetsContainer: {
     maxHeight: 90,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   presetsContent: {
     padding: 12,
@@ -350,8 +349,7 @@ const styles = StyleSheet.create({
   },
   filtersContainer: {
     padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   filtersGrid: {
     flexDirection: 'row',
@@ -384,7 +382,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   filterButtonText: {
-    color: '#FFF',
+    // El color lo pone el render: depende del fondo de la píldora.
     fontWeight: '600',
   },
   clearButton: {
@@ -456,8 +454,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#E0E0E010',
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   metricItem: {
     alignItems: 'center',

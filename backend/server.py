@@ -32,6 +32,7 @@ except Exception:
 import numpy as np
 import pandas as pd
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 def sanitize_float(value, default=0.0):
     try:
@@ -43,6 +44,119 @@ def sanitize_float(value, default=0.0):
         return f
     except (TypeError, ValueError):
         return default
+
+
+# ── Cotizacion ligera y cache corta ──────────────────────────────────────────
+#
+# Por que existe esto:
+#
+#   `yf.Ticker(t).info` baja el quoteSummary entero de Yahoo -- decenas de
+#   campos, varias peticiones internas, entre 1 y 3 segundos por accion, y con
+#   docenas en paralelo Yahoo empieza a limitar y a reintentar. Para pintar el
+#   mapa de calor solo hacen falta tres numeros: ultimo precio, cierre anterior
+#   y capitalizacion. `fast_info` los saca del endpoint ligero de cotizacion,
+#   una peticion y del orden de 300 ms.
+#
+#   Encima, el historial se recarga cada vez que entras en la pantalla y los
+#   precios no cambian en dos segundos. Una cache de un minuto convierte la
+#   segunda visita en instantanea sin mentir sobre la frescura del dato.
+#
+import time as _time
+import threading as _threading
+
+_cache_lock = _threading.Lock()
+_cache: Dict[str, Tuple[float, Any]] = {}
+
+
+def cache_get(clave: str):
+    """Valor cacheado y aun vigente, o None."""
+    with _cache_lock:
+        entrada = _cache.get(clave)
+    if not entrada:
+        return None
+    caduca, valor = entrada
+    if _time.time() >= caduca:
+        with _cache_lock:
+            _cache.pop(clave, None)
+        return None
+    return valor
+
+
+def cache_put(clave: str, valor, segundos: float):
+    with _cache_lock:
+        _cache[clave] = (_time.time() + segundos, valor)
+
+
+def cache_invalidar(prefijo: str):
+    """Tira las entradas que empiezan por `prefijo`.
+
+    Los precios pueden caducar solos, pero el historial no: si guardas o
+    borras un analisis y la lista sigue cacheada, la pantalla te ensena algo
+    que ya no existe. Eso no es lentitud, es mentira, y se corrige a mano.
+    """
+    with _cache_lock:
+        for k in [k for k in _cache if k.startswith(prefijo)]:
+            _cache.pop(k, None)
+
+
+def cotizacion_rapida(tk: str) -> dict:
+    """Ultimo precio, cierre anterior y divisa de una accion.
+
+    Llamada bloqueante: sale de un hilo, nunca del bucle de eventos.
+    Devuelve ``{"ok": False}`` en vez de lanzar, porque una accion que Yahoo no
+    resuelve no debe tumbar el resto de la pantalla.
+
+    `last_price`, `regular_market_previous_close` y `currency` salen todos de la
+    misma serie de precios que fast_info descarga una sola vez: el coste real es
+    UNA peticion, frente a las varias que encadena `info`.
+    """
+    cacheado = cache_get(f"cot:{tk}")
+    if cacheado is not None:
+        return cacheado
+
+    try:
+        rapida = yf.Ticker(tk).fast_info
+        actual = rapida.last_price or 0
+        previo = rapida.regular_market_previous_close or actual or 0
+        resultado = {
+            "ok": bool(actual),
+            "actual": float(actual or 0),
+            "previo": float(previo or actual or 0),
+            "divisa": rapida.currency or "USD",
+        }
+    except Exception:
+        resultado = {"ok": False}
+
+    # Solo se cachea lo que sirve: un fallo se reintenta a la siguiente.
+    if resultado.get("ok"):
+        cache_put(f"cot:{tk}", resultado, 60)
+    return resultado
+
+
+def cotizacion_con_cap(tk: str, cap_conocida: float = 0.0) -> dict:
+    """Lo anterior mas la capitalizacion, para dimensionar el mapa de calor.
+
+    `market_cap` no es gratis: necesita el numero de acciones, que es otra
+    peticion, y cuando Yahoo no lo da fast_info cae de vuelta al `info` lento.
+    Por eso se prefiere la capitalizacion ya guardada en el analisis y, cuando
+    no la hay, se cachea 24 h: el numero de acciones no se mueve en un dia.
+    """
+    salida = dict(cotizacion_rapida(tk))
+    salida["cap"] = float(cap_conocida or 0)
+    if salida["cap"]:
+        return salida
+
+    cap = cache_get(f"cap:{tk}")
+    if cap is None:
+        try:
+            cap = float(yf.Ticker(tk).fast_info.market_cap or 0)
+        except Exception:
+            cap = 0.0
+        cache_put(f"cap:{tk}", cap, 86400)
+    salida["cap"] = cap
+    return salida
+
+
 import asyncio
 import httpx
 import os as _os
@@ -2092,7 +2206,10 @@ async def analyze_stock(request: AnalyzeRequest, current_user: dict = Depends(ge
         
         # Save to database
         await db.analyses.insert_one(analysis.dict())
-        
+        # El historial y las medias por sector acaban de cambiar.
+        cache_invalidar("hist:")
+        cache_invalidar("medias-sector")
+
         return analysis
         
     except HTTPException:
@@ -2219,10 +2336,23 @@ async def get_financial_statements_full(ticker: str):
     
 
 @api_router.get("/history", response_model=List[HistoryItem])
-async def get_history():
-    """Get analysis history"""
+async def get_history(limit: int = 50):
+    """Get analysis history.
+
+    El tope era 50 fijo mientras el mapa de calor pinta hasta 200 empresas:
+    tocar en el mapa una empresa analizada hace tiempo abria una ficha vacia
+    porque el ticker no estaba en esta lista. Ahora el cliente pide lo que
+    necesita. La proyeccion evita traer los ratios completos de cada analisis.
+    """
     try:
-        analyses = await db.analyses.find().sort("analysis_date", -1).limit(50).to_list(50)
+        limit = max(1, min(limit, 500))
+        PROYECCION = {
+            "_id": 0, "id": 1, "ticker": 1, "company_name": 1,
+            "analysis_date": 1, "recommendation": 1, "favorable_percentage": 1,
+        }
+        analyses = await (
+            db.analyses.find({}, PROYECCION).sort("analysis_date", -1).limit(limit).to_list(limit)
+        )
         return [
             HistoryItem(
                 id=a['id'],
@@ -2427,6 +2557,9 @@ class HistoryItemEnhanced(BaseModel):
     price_change: float = 0.0
     price_change_percent: float = 0.0
     sector: str = "N/A"
+    # Necesaria para dimensionar el mapa de calor: en un treemap el area es la
+    # que dice cuanto pesa cada valor.
+    market_cap: float = 0.0
 
 @api_router.get("/history/enhanced", response_model=List[HistoryItemEnhanced])
 async def get_enhanced_history(
@@ -2439,22 +2572,67 @@ async def get_enhanced_history(
         query = {}
         if recommendation:
             query["recommendation"] = recommendation.upper()
-        
-        analyses = await db.analyses.find(query).sort("analysis_date", -1).limit(limit).to_list(limit)
-        
+
+        clave_cache = f"hist:{recommendation or 'todo'}:{limit}"
+        cacheado = cache_get(clave_cache)
+        if cacheado is not None:
+            return cacheado
+
+        # Proyeccion: un analisis guardado lleva dentro todos los ratios y las
+        # series. Traer 1.000 documentos completos son megabytes de Mongo para
+        # usar siete campos. Se piden solo esos siete.
+        PROYECCION = {
+            "_id": 0, "id": 1, "ticker": 1, "company_name": 1, "analysis_date": 1,
+            "recommendation": 1, "favorable_percentage": 1,
+            "metadata.sector": 1, "metadata.market_cap": 1,
+        }
+        # Se traen mas de los pedidos porque a continuacion se deduplica por
+        # ticker: diez analisis de Apple son una sola empresa.
+        crudos = await (
+            db.analyses.find(query, PROYECCION)
+            .sort("analysis_date", -1)
+            .limit(limit * 5)
+            .to_list(limit * 5)
+        )
+
+        # Una entrada por empresa, la mas reciente. Sin esto se pedia el precio
+        # de la misma accion tantas veces como la hubieras analizado, y como
+        # cada peticion a Yahoo es sincrona, el endpoint tardaba minutos y el
+        # cliente cortaba por timeout.
+        vistos = set()
+        analyses = []
+        for a in crudos:
+            t = a.get("ticker")
+            if t and t not in vistos:
+                vistos.add(t)
+                analyses.append(a)
+            if len(analyses) >= limit:
+                break
+
+        # Los precios se piden en paralelo y con `cotizacion_rapida`, que baja
+        # una serie de precios en vez del `info` entero. Con `info` esto tardaba
+        # entre 30 y 45 s con 60 empresas -- justo el timeout del cliente, que
+        # se quedaba sin mapa de calor.
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            precios = await asyncio.gather(*[
+                loop.run_in_executor(
+                    pool,
+                    cotizacion_con_cap,
+                    a['ticker'],
+                    sanitize_float(a.get('metadata', {}).get('market_cap', 0) or 0),
+                )
+                for a in analyses
+            ])
+
         enhanced_results = []
-        
-        for analysis in analyses:
+
+        for analysis, precio_info in zip(analyses, precios):
             try:
-                ticker = analysis['ticker']
-                
-                # Get current price
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                current_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
-                prev_close = info.get('previousClose', current_price) or current_price
-                
-                # Calculate change
+                if not precio_info.get("ok"):
+                    raise ValueError("sin precio")
+                current_price = precio_info["actual"]
+                prev_close = precio_info["previo"]
                 price_change = current_price - prev_close
                 price_change_percent = (price_change / prev_close * 100) if prev_close > 0 else 0
                 
@@ -2468,7 +2646,12 @@ async def get_enhanced_history(
                     current_price=sanitize_float(current_price),
                     price_change=sanitize_float(price_change),
                     price_change_percent=sanitize_float(price_change_percent),
-                    sector=analysis.get('metadata', {}).get('sector', 'N/A')
+                    sector=analysis.get('metadata', {}).get('sector', 'N/A'),
+                    market_cap=sanitize_float(
+                        precio_info.get("cap")
+                        or analysis.get('metadata', {}).get('market_cap', 0)
+                        or 0
+                    ),
                 ))
                 
             except Exception as e:
@@ -2481,11 +2664,16 @@ async def get_enhanced_history(
                     analysis_date=analysis['analysis_date'],
                     recommendation=analysis['recommendation'],
                     favorable_percentage=analysis['favorable_percentage'],
-                    sector=analysis.get('metadata', {}).get('sector', 'N/A')
+                    sector=analysis.get('metadata', {}).get('sector', 'N/A'),
+                    market_cap=sanitize_float(analysis.get('metadata', {}).get('market_cap', 0) or 0),
                 ))
-        
+
+        # Un minuto. Entrar en el historial, abrir una ficha y volver ya no
+        # vuelve a pedir 60 cotizaciones; y un minuto es lo bastante corto para
+        # que la variacion del dia siga siendo la del dia.
+        cache_put(clave_cache, enhanced_results, 60)
         return enhanced_results
-        
+
     except Exception as e:
         logging.error(f"Error fetching enhanced history: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener historial: {str(e)}")
@@ -2493,6 +2681,258 @@ async def get_enhanced_history(
     
      
     
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Metricas de mercado por periodo — para el mapa de mercado
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MarketMetrics(BaseModel):
+    """Lo que el mapa necesita para colorear por periodo y para la ficha.
+
+    Los campos son `Optional` a proposito: cuando Yahoo no da un dato, viaja
+    como `null` y el cliente escribe «sin dato». Rellenarlo con 0.0 seria decir
+    que la accion no se movio, que es una afirmacion distinta de no saberlo.
+    """
+    ticker: str
+    change_1d: Optional[float] = None
+    change_1w: Optional[float] = None
+    change_1m: Optional[float] = None
+    change_3m: Optional[float] = None
+    change_ytd: Optional[float] = None
+    volume: Optional[float] = None
+    avg_volume_3m: Optional[float] = None
+    relative_volume: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    fifty_two_week_high: Optional[float] = None
+    current_price: Optional[float] = None
+
+
+# Sesiones de bolsa que tiene cada periodo. No son dias naturales: una semana
+# son cinco sesiones, y un mes veintiuna. Contar dias naturales metia fines de
+# semana y festivos y desplazaba la referencia.
+SESIONES = {"1w": 5, "1m": 21, "3m": 63}
+
+
+def _variacion(serie, sesiones: int) -> Optional[float]:
+    """Variacion porcentual entre el ultimo cierre y el de hace N sesiones."""
+    try:
+        limpia = serie.dropna()
+        if len(limpia) <= sesiones:
+            return None
+        actual = float(limpia.iloc[-1])
+        previo = float(limpia.iloc[-1 - sesiones])
+        if previo <= 0:
+            return None
+        return (actual - previo) / previo * 100.0
+    except Exception:
+        return None
+
+
+def metricas_en_lote(tickers: List[str]) -> Dict[str, dict]:
+    """Un anio de cierres y volumenes para TODAS las acciones, de una vez.
+
+    Pedir esto accion por accion son sesenta peticiones a Yahoo y medio minuto;
+    `yf.download` con la lista entera lo resuelve en una sola descarga. Es la
+    misma razon por la que el historial usa `fast_info` y no `info`.
+
+    Si una accion no resuelve, se queda fuera del diccionario y el cliente la
+    trata como sin dato. Un ticker que Yahoo no conoce no puede tumbar el mapa.
+    """
+    if not tickers:
+        return {}
+
+    try:
+        datos = yf.download(
+            tickers=" ".join(tickers),
+            period="1y",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            actions=False,
+            progress=False,
+            threads=True,
+        )
+    except Exception as e:
+        logging.warning(f"Descarga en lote fallida: {e}")
+        return {}
+
+    salida: Dict[str, dict] = {}
+    for tk in tickers:
+        try:
+            # Con una sola accion yfinance devuelve columnas planas; con varias,
+            # un indice de dos niveles. Hay que soportar los dos.
+            if len(tickers) == 1:
+                marco = datos
+            else:
+                if tk not in datos.columns.get_level_values(0):
+                    continue
+                marco = datos[tk]
+
+            cierres = marco["Close"].dropna()
+            if cierres.empty:
+                continue
+
+            volumenes = marco["Volume"].dropna() if "Volume" in marco else None
+            ultimo = float(cierres.iloc[-1])
+
+            # YTD: primer cierre del anio en curso. Si el historial no llega a
+            # enero, no hay YTD que dar.
+            ytd = None
+            try:
+                del_anio = cierres[cierres.index.year == datetime.now().year]
+                if len(del_anio) > 1 and float(del_anio.iloc[0]) > 0:
+                    ytd = (ultimo - float(del_anio.iloc[0])) / float(del_anio.iloc[0]) * 100.0
+            except Exception:
+                ytd = None
+
+            volumen = float(volumenes.iloc[-1]) if volumenes is not None and len(volumenes) else None
+            medio = (
+                float(volumenes.iloc[-63:].mean())
+                if volumenes is not None and len(volumenes) >= 5
+                else None
+            )
+
+            salida[tk] = {
+                "ticker": tk,
+                "current_price": ultimo,
+                "change_1d": _variacion(cierres, 1),
+                "change_1w": _variacion(cierres, SESIONES["1w"]),
+                "change_1m": _variacion(cierres, SESIONES["1m"]),
+                "change_3m": _variacion(cierres, SESIONES["3m"]),
+                "change_ytd": ytd,
+                "volume": volumen,
+                "avg_volume_3m": medio,
+                "relative_volume": (volumen / medio) if volumen and medio and medio > 0 else None,
+                "fifty_two_week_low": float(cierres.min()),
+                "fifty_two_week_high": float(cierres.max()),
+            }
+        except Exception as e:
+            logging.warning(f"Metricas de {tk}: {e}")
+            continue
+
+    return salida
+
+
+@api_router.get("/history/metrics", response_model=List[MarketMetrics])
+async def get_history_metrics(limit: int = 200):
+    """Variaciones por periodo, volumen y rango de 52 semanas del historial.
+
+    Va aparte de `/history/enhanced` a proposito: aquel devuelve en un segundo
+    con `fast_info` y es lo que pinta el mapa nada mas abrir. Este baja un anio
+    de series y tarda mas, asi que el cliente lo pide despues y enriquece lo que
+    ya tiene en pantalla. Mezclarlos habria hecho lento el camino rapido.
+    """
+    try:
+        cacheado = cache_get(f"metrics:{limit}")
+        if cacheado is not None:
+            return cacheado
+
+        crudos = await (
+            db.analyses.find({}, {"_id": 0, "ticker": 1, "analysis_date": 1})
+            .sort("analysis_date", -1)
+            .limit(limit * 5)
+            .to_list(limit * 5)
+        )
+        tickers: List[str] = []
+        vistos = set()
+        for a in crudos:
+            t = a.get("ticker")
+            if t and t not in vistos:
+                vistos.add(t)
+                tickers.append(t)
+            if len(tickers) >= limit:
+                break
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            crudo = await loop.run_in_executor(pool, metricas_en_lote, tickers)
+
+        resultado = [MarketMetrics(**v) for v in crudo.values()]
+
+        # Diez minutos: estas series son diarias, no cambian dentro de la
+        # sesion mas que en el ultimo punto, y la descarga es cara.
+        cache_put(f"metrics:{limit}", resultado, 600)
+        return resultado
+
+    except Exception as e:
+        logging.error(f"Error en metricas de mercado: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener metricas: {str(e)}")
+
+
+class SectorAverage(BaseModel):
+    sector: str
+    muestras: int
+    metricas: Dict[str, float]
+
+
+@api_router.get("/sector-averages", response_model=List[SectorAverage])
+async def get_sector_averages():
+    """Medias por sector calculadas sobre los analisis ya guardados.
+
+    No se inventa nada: si un sector solo tiene una empresa analizada, la media
+    es esa empresa y `muestras` lo dice. El frontend decide si con una sola
+    muestra merece la pena ensenar la comparacion.
+    """
+    CAMPOS = [
+        "pe_ratio", "forward_pe", "price_to_book", "eps",
+        "beta", "dividend_yield", "peg_ratio",
+    ]
+    try:
+        cacheado = cache_get("medias-sector")
+        if cacheado is not None:
+            return cacheado
+
+        # Solo hacen falta el ticker y siete campos de `metadata`. Sin
+        # proyeccion esto traia 1.000 analisis completos -- ratios, series y
+        # todo -- para leer siete numeros de cada uno.
+        PROYECCION = {"_id": 0, "ticker": 1, "metadata": 1}
+        analyses = await db.analyses.find({}, PROYECCION).to_list(1000)
+
+        acumulado: Dict[str, Dict[str, List[float]]] = {}
+        vistos: Dict[str, set] = {}
+
+        for a in analyses:
+            meta = a.get("metadata") or {}
+            sector = meta.get("sector") or "N/A"
+            if sector == "N/A":
+                continue
+            ticker = a.get("ticker")
+            # Una empresa cuenta una vez por sector aunque se haya analizado
+            # diez veces: si no, la mas consultada arrastraria la media.
+            vistos.setdefault(sector, set())
+            if ticker in vistos[sector]:
+                continue
+            vistos[sector].add(ticker)
+
+            campos = acumulado.setdefault(sector, {})
+            for campo in CAMPOS:
+                v = meta.get(campo)
+                if isinstance(v, (int, float)) and math.isfinite(v) and v != 0:
+                    campos.setdefault(campo, []).append(float(v))
+
+        salida: List[SectorAverage] = []
+        for sector, campos in acumulado.items():
+            medias = {
+                k: sanitize_float(sum(vals) / len(vals))
+                for k, vals in campos.items() if vals
+            }
+            if medias:
+                salida.append(SectorAverage(
+                    sector=sector,
+                    muestras=len(vistos.get(sector, set())),
+                    metricas=medias,
+                ))
+
+        salida.sort(key=lambda x: (-x.muestras, x.sector))
+        # Cinco minutos: estas medias solo cambian cuando guardas un analisis
+        # nuevo, no con el mercado.
+        cache_put("medias-sector", salida, 300)
+        return salida
+
+    except Exception as e:
+        logging.error(f"Error calculando medias por sector: {e}")
+        raise HTTPException(status_code=500, detail="No se pudieron calcular las medias por sector")
+
 
 @api_router.get("/history/stats")
 async def get_history_stats():
@@ -2574,6 +3014,9 @@ class MarketIndicatorsResponse(BaseModel):
     oil: CommodityIndicator
     # Currencies
     eur_usd: CurrencyPair
+    # Cruces principales. Se mantiene `eur_usd` aparte por compatibilidad: hay
+    # codigo (el simulador de inversion) que lo lee por su nombre.
+    currencies: List[CurrencyPair] = []
     # Crypto
     bitcoin: Optional[CryptoIndicator] = None
     ethereum: Optional[CryptoIndicator] = None
@@ -2728,6 +3171,41 @@ async def get_market_indicators():
             eurusd_change_pct = 0
             eurusd_date = ""
         
+        # ── Divisas principales ────────────────────────────────────────────
+        # Un solo fallo no puede tumbar toda la respuesta: cada cruce se
+        # intenta por separado y el que no venga simplemente no aparece.
+        FX_PAIRS = [
+            ("EUR/USD", "EURUSD=X"),
+            ("GBP/USD", "GBPUSD=X"),
+            ("USD/JPY", "USDJPY=X"),
+            ("USD/CHF", "USDCHF=X"),
+            ("USD/CAD", "USDCAD=X"),
+            ("AUD/USD", "AUDUSD=X"),
+            ("USD/MXN", "USDMXN=X"),
+            ("USD/CNY", "USDCNY=X"),
+            ("EUR/GBP", "EURGBP=X"),
+        ]
+
+        currencies: List[CurrencyPair] = []
+        for fx_name, fx_ticker in FX_PAIRS:
+            try:
+                fx_hist = yf.Ticker(fx_ticker).history(period="5d")
+                if fx_hist.empty:
+                    continue
+                fx_now = float(fx_hist['Close'].iloc[-1])
+                fx_prev = float(fx_hist['Close'].iloc[-2]) if len(fx_hist) > 1 else fx_now
+                fx_chg = fx_now - fx_prev
+                currencies.append(CurrencyPair(
+                    name=fx_name,
+                    ticker=fx_ticker,
+                    rate=sanitize_float(fx_now),
+                    change=sanitize_float(fx_chg),
+                    change_percent=sanitize_float((fx_chg / fx_prev) * 100 if fx_prev > 0 else 0),
+                    updated=fx_hist.index[-1].strftime('%Y-%m-%d'),
+                ))
+            except Exception as fx_err:
+                logger.warning(f"No se pudo obtener {fx_ticker}: {fx_err}")
+
         # Market Hours - Major World Markets
         market_hours = []
         
@@ -3166,6 +3644,7 @@ async def get_market_indicators():
                 change_percent=eurusd_change_pct,
                 updated=eurusd_date
             ),
+            currencies=currencies,
             ibex35=ibex35_indicator,
             bitcoin=bitcoin_indicator,
             ethereum=ethereum_indicator,
@@ -3491,14 +3970,21 @@ class PortfolioEvolution(BaseModel):
     
 @api_router.get("/price/{ticker}")
 async def get_current_price(ticker: str):
-    """Precio actual + variación del día — endpoint ligero para el historial"""
+    """Precio actual + variación del día — endpoint ligero para el historial.
+
+    Se llamaba «ligero» pero pedía `info`, que baja el quoteSummary entero:
+    entre 1 y 3 s por acción, y encima bloqueando el bucle de eventos, así que
+    una tarjeta del historial retrasaba a todas las demás. Ahora usa la serie
+    de precios (una petición) desde un hilo aparte.
+    """
     try:
         ticker = ticker.upper().strip()
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        cot = await asyncio.to_thread(cotizacion_rapida, ticker)
+        if not cot.get("ok"):
+            raise HTTPException(status_code=404, detail=f"Sin cotización para '{ticker}'")
 
-        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
-        prev_close    = info.get('previousClose', current_price) or current_price
+        current_price = cot["actual"]
+        prev_close    = cot["previo"] or current_price
         change        = current_price - prev_close
         change_pct    = (change / prev_close * 100) if prev_close > 0 else 0
 
@@ -3508,8 +3994,10 @@ async def get_current_price(ticker: str):
             "change":         sanitize_float(change),
             "change_percent": sanitize_float(change_pct),
             "prev_close":     sanitize_float(prev_close),
-            "currency":       info.get('currency', 'USD'),
+            "currency":       cot.get("divisa", "USD"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error fetching price for {ticker}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
@@ -4591,6 +5079,8 @@ async def delete_analysis(analysis_id: str):
         result = await db.analyses.delete_one({"id": analysis_id})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Análisis no encontrado")
+        cache_invalidar("hist:")
+        cache_invalidar("medias-sector")
         return {"message": "Análisis eliminado"}
     except HTTPException:
         raise
@@ -4603,6 +5093,8 @@ async def delete_all_history():
     """Delete all analysis history"""
     try:
         result = await db.analyses.delete_many({})
+        cache_invalidar("hist:")
+        cache_invalidar("medias-sector")
         return {"message": f"Se eliminaron {result.deleted_count} análisis"}
     except Exception as e:
         logging.error(f"Error deleting history: {str(e)}")
@@ -4897,11 +5389,22 @@ async def get_technical_analysis(ticker: str):
     """Get comprehensive technical analysis including Fibonacci, Moving Averages, and Camarilla Pivots"""
     try:
         ticker = ticker.upper().strip()
-        stock = yf.Ticker(ticker)
-        
-        # Get historical data (1 year for MAs, recent for pivots)
-        history_1y = stock.history(period="1y")
-        
+
+        # El historial abre una tarjeta por analisis y cada una pide su tecnico.
+        # Con 60 empresas eran 60 descargas de un ano de velas, en serie y
+        # bloqueando el bucle de eventos: la pantalla entera se quedaba parada.
+        # Cinco minutos de cache; los indicadores salen de velas diarias, asi
+        # que dentro de ese margen la lectura es la misma.
+        cacheado = cache_get(f"tec:{ticker}")
+        if cacheado is not None:
+            return cacheado
+
+        # `stock.history` es E/S bloqueante: va a un hilo aparte para que el
+        # resto de peticiones sigan atendiendose mientras Yahoo responde.
+        history_1y = await asyncio.to_thread(
+            lambda: yf.Ticker(ticker).history(period="1y")
+        )
+
         if history_1y.empty:
             raise HTTPException(status_code=404, detail=f"No se encontraron datos para el ticker '{ticker}'")
         
@@ -5038,7 +5541,7 @@ async def get_technical_analysis(ticker: str):
             "camarilla_pp": pp_price,
         }
         
-        return TechnicalAnalysisResponse(
+        respuesta = TechnicalAnalysisResponse(
             ticker=ticker,
             current_price=round(current_price, 2),
             fibonacci_levels=fibonacci_levels,
@@ -5059,7 +5562,9 @@ async def get_technical_analysis(ticker: str):
             technical_recommendation=technical_recommendation,
             key_levels=key_levels
         )
-        
+        cache_put(f"tec:{ticker}", respuesta, 300)
+        return respuesta
+
     except HTTPException:
         raise
     except Exception as e:
