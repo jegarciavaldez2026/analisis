@@ -51,6 +51,7 @@ import {
   PresetNQE,
   SenalNQE,
   SerieNQE,
+  SugerenciaSimbolo,
   UltimaSenalPivote,
   VarianteWoodie,
   Tono,
@@ -2030,6 +2031,38 @@ export async function leerPivotes(
     return { datos, procedencia: 'real', actualizado: new Date().toISOString() };
   } catch (e) {
     return { datos: null, procedencia: 'sin-fuente', nota: mensajeError(e) };
+  }
+}
+
+
+/* ==========================================================================
+ * /search — autocompletado de símbolos
+ *
+ * El MISMO endpoint que usa la pantalla de Análisis, no uno paralelo: es el
+ * autocompletado de Yahoo, ya filtrado en el backend a acciones, ETF, índices
+ * y fondos, sin duplicados y con tope de doce.
+ *
+ * Nunca lanza. Una búsqueda que falla devuelve lista vacía y el desplegable no
+ * se abre; reventar aquí dejaría la cabecera del terminal inservible por un
+ * tropiezo de red mientras el resto de la pantalla funciona.
+ * ======================================================================== */
+
+export async function buscarSimbolos(consulta: string): Promise<SugerenciaSimbolo[]> {
+  const q = consulta.trim();
+  if (!q) return [];
+  try {
+    const { data } = await cliente.get('/search', { params: { q }, timeout: 8000 });
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((x: any) => ({
+        ticker: String(x?.ticker ?? '').toUpperCase(),
+        nombre: String(x?.name ?? ''),
+        mercado: String(x?.exchange ?? ''),
+        tipo: String(x?.type ?? ''),
+      }))
+      .filter((x: SugerenciaSimbolo) => x.ticker.length > 0);
+  } catch {
+    return [];
   }
 }
 

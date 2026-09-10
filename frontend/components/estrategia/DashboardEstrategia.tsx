@@ -26,8 +26,8 @@
  * pequeño, da doce paneles ilegibles.
  */
 
-import React, { useCallback, useState } from 'react';
-import { Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useState } from 'react';
+import { Platform, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme } from '../../contexts/ThemeContext';
@@ -37,6 +37,7 @@ import { WS_HABILITADO } from '../../lib/estrategia/useWebSocket';
 
 import Rejilla, { Col, Ruptura, rupturaDe } from './Rejilla';
 import BarraKPI from './BarraKPI';
+import BuscadorSimbolo from './BuscadorSimbolo';
 import BarraEstado from './BarraEstado';
 import { BotonTerminal, Chip, D, Placa, Rotulo, T } from './Terminal';
 import PanelActivo from './mercado/PanelActivo';
@@ -105,13 +106,7 @@ function Cabecera({
   segundosParaRefresco: number;
   falloRefresco: string | null;
 }) {
-  const { colors, radius, hairline, numeric } = useTheme();
-  const [borrador, setBorrador] = useState(simbolo);
-
-  const enviar = useCallback(() => {
-    const limpio = borrador.trim().toUpperCase();
-    if (limpio && limpio !== simbolo) onSimbolo(limpio);
-  }, [borrador, simbolo, onSimbolo]);
+  const { colors } = useTheme();
 
   return (
     <View
@@ -122,6 +117,11 @@ function Cabecera({
         gap: 8,
         rowGap: 6,
         paddingBottom: 2,
+        // El desplegable de sugerencias se dibuja en absoluto y tiene que
+        // caer SOBRE la franja de KPIs, que es su hermana posterior. Sin este
+        // `zIndex` en la cabecera entera, el `zIndex` interno del buscador no
+        // sirve de nada: compite dentro de su propio nivel de apilado.
+        zIndex: 300,
       }}
     >
       <View style={{ gap: 1 }}>
@@ -129,38 +129,12 @@ function Cabecera({
         <Rotulo>Terminal de decisión · solo lectura</Rotulo>
       </View>
 
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 4,
-          paddingHorizontal: 8,
-          minHeight: 28,
-          borderRadius: radius.xs,
-          borderWidth: hairline,
-          borderColor: colors.rule,
-          backgroundColor: colors.surfaceSunken,
-        }}
-      >
-        <Ionicons name="search" size={12} color={colors.inkFaint} />
-        <TextInput
-          value={borrador}
-          onChangeText={setBorrador}
-          onSubmitEditing={enviar}
-          onBlur={enviar}
-          autoCapitalize="characters"
-          autoCorrect={false}
-          placeholder="Símbolo"
-          placeholderTextColor={colors.inkFaint}
-          accessibilityLabel="Símbolo a analizar"
-          style={[
-            T.datoFuerte,
-            numeric,
-            { color: colors.ink, width: 74, paddingVertical: 4 },
-            Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null,
-          ]}
-        />
-      </View>
+      {/* Antes esto era un campo de texto pelado que sólo aceptaba el ticker
+          exacto: escribir «ford» mandaba FORD y el backend devolvía 404.
+          Ahora es el mismo autocompletado de la pantalla de Análisis —mismo
+          endpoint `/search`, misma amortiguación— así que se puede buscar por
+          nombre de empresa. Ver `BuscadorSimbolo` para las trampas. */}
+      <BuscadorSimbolo simbolo={simbolo} onElegir={onSimbolo} deshabilitado={cargando} />
 
       <BotonTerminal
         texto={cargando ? 'Cargando' : refrescando ? 'Actualizando' : 'Recargar'}

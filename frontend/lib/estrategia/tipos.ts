@@ -1019,3 +1019,19 @@ export interface ControlesPivote {
   marco: MarcoPivote;
   variante: VarianteWoodie;
 }
+
+/* ==========================================================================
+ * Buscador de símbolos
+ * ======================================================================== */
+
+/**
+ * Una coincidencia del autocompletado de Yahoo, tal y como la devuelve
+ * `/search`. El backend ya filtra a EQUITY, ETF, INDEX y MUTUALFUND y quita
+ * duplicados, así que aquí no hay nada que decidir.
+ */
+export interface SugerenciaSimbolo {
+  ticker: string;
+  nombre: string;
+  mercado: string;
+  tipo: string;
+}
