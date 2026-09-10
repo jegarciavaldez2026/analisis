@@ -327,6 +327,11 @@ export default function DashboardEstrategia({
           que decide el tamaño de la posición: horquilla estimada, impacto por
           dólar y volumen medio. Ver `PanelLiquidez`. */}
       <PanelLiquidez bloque={estado.liquidez} cargando={cargando} />
+      {/* Volume delta cierra la columna, pegado a liquidez: las dos miden
+          PRESIÓN —una por reparto compra/venta, otra por lo que cuesta
+          moverse— y se leen seguidas. En estos ~230 px la tarjeta va en su
+          versión de tres columnas; ver la cabecera de `VolumeDelta`. */}
+      <VolumeDelta bloque={estado.volumeDelta} cargando={cargando} />
     </View>
   );
 
@@ -361,6 +366,23 @@ export default function DashboardEstrategia({
       {/* Y el ciclo de Wyckoff cierra: la nube, la señal y el ciclo contestan
           los tres a «en qué régimen estamos», y se leen seguidos. */}
       <FaseMercado bloque={estado.wyckoff} cargando={cargando} />
+      {/* Rendimiento, estadísticas, transacciones y backtest cierran la
+          columna central. Estaban en la banda inferior; aquí heredan el ancho
+          del gráfico, que es el que necesitan: son curvas y tablas de cifras,
+          y en una columna estrecha se recortan. */}
+      <RendimientoRobot curva={estado.curva} resumen={estado.resumen} cargando={cargando} />
+      <EstadisticasRendimiento
+        bloque={estado.resumen}
+        operaciones={estado.operaciones}
+        cargando={cargando}
+      />
+      <Transacciones bloque={estado.ordenes} cargando={cargando} />
+      <PanelBacktest
+        bloque={estado.backtest}
+        onEjecutar={ejecutarBacktest}
+        ejecutando={ejecutandoBacktest}
+        simbolo={simbolo}
+      />
     </View>
   );
 
@@ -459,49 +481,30 @@ export default function DashboardEstrategia({
           </Rejilla>
         )}
 
-        {/* ---------- Banda inferior: tres columnas continuas ----------
-            Antes esto eran DOS bandas, y cada banda es un corte de fila duro:
-            la columna más corta dejaba el hueco en blanco hasta que arrancaba
-            la siguiente, y con seis paneles de alturas muy distintas el hueco
-            era enorme. Fusionadas en tres columnas que fluyen, cada una se
-            apila a su propio ritmo y el blanco desaparece.
+        {/* ---------- Banda inferior: el contexto ----------
+            Antes esta banda tenía tres columnas: delta y movimientos a la
+            izquierda, curvas y tablas en el centro, y el contexto a la
+            derecha. Delta subió a la columna del activo y la cartera a la del
+            gráfico, así que aquí sólo queda el contexto — lo que se lee en
+            vertical y no manda ninguna operación.
 
-            El reparto no es arbitrario: a la izquierda lo que se mira de reojo
-            (delta y movimientos), en el centro lo que necesita ancho (curvas y
-            tablas de cifras) y a la derecha el contexto que se lee en vertical
-            (noticias, eventos, calendario, alertas). */}
+            Se reparte en las tres columnas en vez de dejarlo en una sola: con
+            una columna de 4/12, las otras 8/12 quedaban en blanco hasta el
+            final de la página. El orden se conserva. */}
         <Rejilla ruptura={ruptura} hueco={D.hueco}>
           <Col vano={vanoTres}>
             <View style={{ gap: D.hueco }}>
-              <VolumeDelta bloque={estado.volumeDelta} cargando={cargando} />
-              <Transacciones bloque={estado.ordenes} cargando={cargando} />
+              <PanelAlertas bloque={estado.alertas} cargando={cargando} />
+              <EventosDelValor bloque={estado.eventos} cargando={cargando} />
             </View>
           </Col>
           <Col vano={vanoCinco}>
             <View style={{ gap: D.hueco }}>
-              <RendimientoRobot
-                curva={estado.curva}
-                resumen={estado.resumen}
-                cargando={cargando}
-              />
-              <EstadisticasRendimiento
-                bloque={estado.resumen}
-                operaciones={estado.operaciones}
-                cargando={cargando}
-              />
-              <PanelBacktest
-                bloque={estado.backtest}
-                onEjecutar={ejecutarBacktest}
-                ejecutando={ejecutandoBacktest}
-                simbolo={simbolo}
-              />
+              <PanelNoticias bloque={estado.noticias} cargando={cargando} />
             </View>
           </Col>
           <Col vano={vanoCuatro}>
             <View style={{ gap: D.hueco }}>
-              <PanelAlertas bloque={estado.alertas} cargando={cargando} />
-              <PanelNoticias bloque={estado.noticias} cargando={cargando} />
-              <EventosDelValor bloque={estado.eventos} cargando={cargando} />
               <EconomicCalendar />
             </View>
           </Col>
