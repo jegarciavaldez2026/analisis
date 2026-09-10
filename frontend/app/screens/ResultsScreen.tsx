@@ -59,6 +59,74 @@ interface RatioMetric {
   display_value: string;
 }
 
+/**
+ * Estilo valor/crecimiento. Motor en `backend/estilo.py`.
+ *
+ * `puntuacion` va de 0 (crecimiento puro) a 100 (value puro), y la escala se
+ * dice junto a la cifra: un «38» suelto no significa nada. `cobertura` es qué
+ * proporción del peso se pudo evaluar; por debajo de 0,6 la etiqueta no es
+ * fiable y se rotula como tal en vez de esconderlo.
+ */
+interface EstiloInversion {
+  disponible: boolean;
+  motivo?: string;
+  puntuacion?: number;
+  clave?: string;
+  etiqueta?: string;
+  escala?: string;
+  cobertura?: number;
+  fiable?: boolean;
+  peg?: number | null;
+  /** Barata por un motivo. Cambia por completo cómo se lee «Value». */
+  trampa_de_valor?: string | null;
+  base_umbrales?: string;
+  nota_umbrales?: string;
+  factores?: { clave: string; nombre: string; peso: number; puntos: number | null }[];
+}
+
+/**
+ * Icono y nombre limpio de una categoría de ratios.
+ *
+ * El backend antepone un emoji al nombre («📊 Rentabilidad», «💧 Liquidez»).
+ * El sistema de diseño lo prohíbe sin ambigüedad: «no usar emoji o glifos
+ * Unicode como iconos; la iconografía es Ionicons, de trazo consistente». Y
+ * hay una razón práctica además de la estética: un emoji lo dibuja la fuente
+ * del sistema operativo, así que cambia de estilo entre Windows, macOS y
+ * Android, no hereda el color del tema y no tiene versión de trazo. Diez
+ * pictogramas de colores ajenos rompen una paleta de esmalte y grafito.
+ *
+ * Se limpia aquí, en presentación, y no en el backend: esas cadenas son la
+ * CLAVE de las categorías desplegadas y viajan a otras pantallas; cambiarlas
+ * en origen movería más de lo que se está arreglando.
+ */
+const ICONOS_CATEGORIA: { patron: RegExp; icono: keyof typeof Ionicons.glyphMap }[] = [
+  { patron: /rentabilidad/i, icono: 'trending-up-outline' },
+  { patron: /liquidez/i, icono: 'water-outline' },
+  { patron: /apalancamiento/i, icono: 'barbell-outline' },
+  { patron: /graham|dcf|epv/i, icono: 'calculator-outline' },
+  { patron: /valoraci/i, icono: 'pricetag-outline' },
+  { patron: /flujo de caja/i, icono: 'swap-horizontal-outline' },
+  { patron: /eficiencia/i, icono: 'speedometer-outline' },
+  { patron: /riesgo|capital/i, icono: 'shield-outline' },
+  { patron: /calidad|salud/i, icono: 'ribbon-outline' },
+  { patron: /precio/i, icono: 'stats-chart-outline' },
+];
+
+/** Quita el emoji inicial y devuelve el nombre a secas. */
+function nombreDeCategoria(bruto: string): string {
+  return bruto.replace(/^[^\p{L}\p{N}]+/u, '').trim();
+}
+
+function iconoDeCategoria(bruto: string): keyof typeof Ionicons.glyphMap {
+  const limpio = nombreDeCategoria(bruto);
+  // El orden importa: «Valoración Graham / DCF / EPV» tiene que casar con la
+  // regla de Graham antes que con la genérica de valoración.
+  for (const { patron, icono } of ICONOS_CATEGORIA) {
+    if (patron.test(limpio)) return icono;
+  }
+  return 'ellipse-outline';
+}
+
 interface RatioCategory {
   category: string;
   metrics: RatioMetric[];
@@ -99,6 +167,7 @@ interface AnalysisData {
   ticker: string;
   company_name: string;
   recommendation: string;
+  estilo_inversion?: EstiloInversion;
   favorable_percentage: number;
   risk_level: string;
   total_metrics: number;
@@ -325,7 +394,7 @@ function QuickPanel({
 }
 
 export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
-  const { colors, palette, isDark } = useTheme();
+  const { colors, palette, isDark, type, numeric, space, radius } = useTheme();
   const { width: viewportWidth } = useWindowDimensions();
   /** Punto de corte propio de esta pantalla: por debajo de 1100 px las dos
    *  columnas de datos densos no caben sin comprimir las tablas. */
@@ -510,6 +579,33 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
     }
   };
 
+  /**
+   * Tinta e icono del estilo.
+   *
+   * NO se usan verde y rojo: en este producto significan alza y baja, y
+   * «Value» no es alza ni «Crecimiento» baja. Value va en acento (petróleo,
+   * que es el índice del instrumento), Crecimiento en precaución y Mixto en
+   * tinta secundaria — tres pesos distintos del mismo eje, sin secuestrar el
+   * código financiero.
+   */
+  const estilo = data.estilo_inversion;
+  const estiloClave = estilo?.clave ?? '';
+  const estiloTinta = estiloClave.startsWith('value')
+    ? palette.accent
+    : estiloClave.startsWith('crecimiento')
+      ? palette.caution
+      : colors.inkMuted;
+  const estiloLavado = estiloClave.startsWith('value')
+    ? colors.accentWash
+    : estiloClave.startsWith('crecimiento')
+      ? palette.cautionWash
+      : colors.surfaceSunken;
+  const estiloIcono: keyof typeof Ionicons.glyphMap = estiloClave.startsWith('value')
+    ? 'scale-outline'          // la balanza: precio contra lo que gana
+    : estiloClave.startsWith('crecimiento')
+      ? 'trending-up-outline'  // la pendiente: se paga por lo que va a ganar
+      : 'git-compare-outline'; // las dos cosas a la vez
+
   const toggleCategory = (category: string) => {
     const newExpanded = new Set(expandedCategories);
     if (newExpanded.has(category)) {
@@ -631,6 +727,68 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
                   <Text style={styles.verdictRisk}>Riesgo {data.risk_level}</Text>
                 </View>
 
+                {/* Estilo de la empresa, pegado al veredicto.
+                    Son dos lecturas distintas de la MISMA evidencia y por eso
+                    van juntas: el veredicto dice si los números están bien, el
+                    estilo dice de qué clase de empresa son. Un «COMPRAR» sobre
+                    una de crecimiento y otro sobre una de valor no se
+                    gestionan igual.
+
+                    La escala viaja con la cifra, y la trampa de valor va
+                    debajo en su propio renglón: «Value» con el beneficio
+                    cayendo es justo lo que hay que leer entero. */}
+                {estilo?.disponible ? (
+                  <View style={{ gap: 4 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 5,
+                          paddingHorizontal: space.sm,
+                          paddingVertical: 4,
+                          borderRadius: radius.xs,
+                          borderWidth: StyleSheet.hairlineWidth,
+                          borderColor: estiloTinta,
+                          backgroundColor: estiloLavado,
+                        }}
+                      >
+                        {/* Marca de índice: la firma de la casa. */}
+                        <View style={{ width: 3, height: 14, backgroundColor: estiloTinta }} />
+                        <Ionicons name={estiloIcono} size={13} color={estiloTinta} />
+                        <Text style={[type.legend, { color: estiloTinta, letterSpacing: 0.9 }]}>
+                          {(estilo.etiqueta ?? '').toUpperCase()}
+                        </Text>
+                      </View>
+                      <Text style={[type.caption, numeric, { color: colors.inkMuted }]}>
+                        {estilo.puntuacion?.toFixed(0)} / 100
+                      </Text>
+                      {estilo.peg != null ? (
+                        <Text style={[type.caption, numeric, { color: colors.inkFaint }]}>
+                          PEG {estilo.peg.toFixed(2)}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={[type.caption, { color: colors.inkFaint }]}>
+                      {estilo.escala}
+                      {estilo.fiable === false ? ' · datos incompletos' : ''}
+                    </Text>
+                    {estilo.trampa_de_valor ? (
+                      <View style={{ flexDirection: 'row', gap: 5, alignItems: 'flex-start' }}>
+                        <Ionicons
+                          name="alert-circle-outline"
+                          size={13}
+                          color={palette.caution}
+                          style={{ marginTop: 1 }}
+                        />
+                        <Text style={[type.caption, { color: palette.caution, flex: 1 }]}>
+                          Posible trampa de valor. {estilo.trampa_de_valor}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+
                 {/* Recuento real: el backend distingue favorable y desfavorable,
                     no hay un tercer estado que mostrar. */}
                 <View style={styles.tallyRow}>
@@ -727,7 +885,8 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
                 {categoryScores.map((cat, i) => (
                   <View key={cat.category}>
                     <CategoryLollipop
-                      label={cat.category}
+                      label={nombreDeCategoria(cat.category)}
+                      icon={iconoDeCategoria(cat.category)}
                       passed={cat.passed}
                       total={cat.total}
                     />
@@ -779,7 +938,19 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
                     accessibilityState={{ expanded: open }}
                     accessibilityLabel={`${category.category}: ${passed} de ${category.metrics.length} favorables`}
                   >
-                    <Text style={styles.categoryTitle}>{category.category}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0 }}>
+                      {/* Marca de índice + icono de trazo: la gramática de la
+                          casa, en vez de un emoji del sistema operativo. */}
+                      <View style={{ width: 3, height: 16, backgroundColor: colors.accent }} />
+                      <Ionicons
+                        name={iconoDeCategoria(category.category)}
+                        size={16}
+                        color={colors.inkMuted}
+                      />
+                      <Text style={[styles.categoryTitle, { flexShrink: 1 }]} numberOfLines={2}>
+                        {nombreDeCategoria(category.category)}
+                      </Text>
+                    </View>
                     <View style={styles.categoryHeaderRight}>
                       {(() => {
                         const pct = category.metrics.length

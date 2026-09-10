@@ -487,3 +487,167 @@ el resultado fue que el usuario dejó de encontrarla dos veces seguidas y creyó
 que se había borrado. **Cambiar de sitio algo que ya funciona es un cambio, y
 hay que pedirlo o avisarlo.** Está ahora debajo de Ichimoku, que es donde él la
 tenía, y el código lleva el historial anotado para que no vuelva a pasar.
+
+---
+
+## Pantalla de Análisis: estilo de la empresa, iconos, ratios y CAGR
+
+### El clasificador valor / crecimiento — `backend/estilo.py`
+
+Sitúa la empresa en un eje **0 = crecimiento puro · 100 = value puro** con seis
+factores ponderados: valoración 25 %, crecimiento 25 %, rentabilidad 15 %,
+flujo de caja 15 %, balance 10 %, momento 10 %. Bandas: ≥70 Value, ≥55 Value /
+Mixto, ≥40 Mixto, ≥25 Crecimiento / Mixto, resto Crecimiento.
+
+Cuatro decisiones que cambian el resultado y conviene no deshacer:
+
+1. **El PEG cuenta dos veces dentro de valoración.** Es lo que relaciona precio
+   con crecimiento, que es justo lo que un PER solo no distingue. Un umbral de
+   PER a secas etiqueta como «value» a cualquier empresa en declive.
+2. **El ROIC alto puntúa BAJO en el eje.** No es un juicio de calidad: un
+   compounder de ROIC 30 % es el retrato del *growth*, y confundir «buena» con
+   «de valor» es exactamente el error que el eje quiere evitar.
+3. **Los pesos se renormalizan sobre el peso VIVO**, no sobre el total. Dividir
+   entre 100 cuando sólo hay 60 puntos de peso disponibles empuja a toda
+   empresa con datos incompletos hacia «crecimiento» sin que nadie lo note.
+   Viaja `cobertura` y, por debajo de 0,6, `fiable: false` rotulado en pantalla.
+4. **La trampa de valor se publica aparte de la puntuación.** PER < 15 con el
+   BPA cayendo más de un 5 % anual no es una ganga: es el mercado descontando
+   menos beneficio. Cambia por completo cómo se lee la etiqueta «Value», así
+   que no puede quedar diluida dentro de la cifra. VZ la dispara.
+
+**Los umbrales son absolutos, no sectoriales, y eso viaja escrito** en
+`nota_umbrales`. Un PER de 25 es caro para un banco y barato para software; lo
+correcto sería la mediana del sector, pero exige un dataset de comparables que
+el proyecto no tiene, y **un umbral sectorial inventado sería peor que uno
+absoluto declarado**.
+
+Reparto medido: NVDA 25,0 · AAPL 34,5 · MSFT 39,8 · JNJ 43,3 · KO 46,1 ·
+XOM 67,4 · VZ 68,0 (con trampa) · T 75,5.
+
+`test_estilo.py` — 30 pruebas. Las que de verdad protegen algo: la
+**monotonía** (encarecer sólo el PER no puede subir la puntuación de valor, y
+crecer más rápido no puede acercarla), y **una prueba por factor** que
+comprueba que puntúa con datos completos, con su contraprueba de que se apaga
+sin ellos. La primera se validó mutando un umbral: falla, así que mide.
+
+**Las pruebas que importan al backend no corren en el Python local.** Faltan
+dependencias y las versiones de FastAPI no coinciden con las de la imagen. Se
+ejecutan dentro del contenedor, que es donde vive el juego real:
+
+```
+docker cp server.py analisis_backend:/app/server.py
+MSYS_NO_PATHCONV=1 docker exec -w //app analisis_backend python -m pytest test_estilo.py -q
+```
+
+### Por qué había ratios en blanco — dos causas, ninguna era «falta el dato»
+
+El usuario avisó de que algunos de los ~110 ratios salían vacíos. No faltaba el
+dato: se estaba leyendo mal.
+
+1. **`_tramo_valido(serie)`.** Los CAGR tomaban `serie[0]` y `serie[-1]` a
+   ciegas. Si el ejercicio más antiguo no informa esa partida, el extremo era
+   un hueco y el CAGR no salía. Ahora los extremos se toman de los índices
+   **con dato** y los años se cuentan entre ellos.
+2. **`_instantanea(df)`.** La foto del último ejercicio era
+   `df.iloc[:, 0].to_dict()`, es decir, la columna más nueva entera. **yfinance
+   deja huecos por FILA, no por columna:** el `Interest Expense` de AAPL es
+   `[NaN, NaN, 3.933, 2.931, 2.645]`. Con la columna cruda entraba como 0 y el
+   DSCR salía vacío — y peor, cualquier ratio con esa fila en el denominador se
+   calculaba contra un cero, que **no es «sin dato»: es una afirmación falsa**.
+   Ahora cada partida se toma del último año que la informa, y
+   `_antiguedad_instantanea()` dice cuántos ejercicios se ha retrocedido.
+
+Resultado: **110/110 métricas con valor** en AAPL, KO, JNJ, MSFT y PEP.
+
+### La rentabilidad por dividendo decía 569 %
+
+`_rentabilidad_dividendo(info)` en `server.py` + `test_datos_declarados.py`.
+
+VZ aparecía con **«Rentab. dividendo 569,00 %»**. No era cálculo ni
+maquetación: era **unidad**. `dividendYield` de yfinance pasó de ser fracción
+(0,0569) a ser porcentaje (5,69) entre versiones, y el código multiplicaba por
+100 en tres sitios. Un número cien veces mayor no se lee como error de unidad,
+se lee como un dato.
+
+La corrección no fue quitar el ×100 —eso deja el problema esperando al próximo
+cambio de la librería— sino **anclarse en una división que no admite
+interpretación**: `dividendRate / precio × 100`. El campo declarado queda como
+respaldo, deduciendo la unidad por magnitud, sólo cuando falta el precio.
+
+Comprobado contra el campo declarado en seis valores (VZ 5,66/5,69 ·
+KO 2,41/2,40 · AAPL 0,33/0,34 · T 4,34/4,41 · MSFT 0,74/0,74 · O 5,47/5,42).
+**Sólo cambió `dividendYield`:** ROE, márgenes y `debtToEquity` siguen siendo
+fracciones, así que su escalado se dejó como estaba. Se verificó, no se supuso.
+
+### La columna CAGR de los estados financieros
+
+`calcularCAGR` + `<CeldaCAGR>` en `FinancialStatements.jsx`, junto a la línea
+de tendencia: la línea dice si sube, la tasa dice cuánto al año. Una curva
+ascendente puede ser un 2 % o un 30 %.
+
+Tres decisiones: extremos **con dato** (no el primer y último año de la tabla),
+años contados **por calendario** (con un hueco en medio, contar puntos
+anualiza sobre menos años de los que pasaron e infla la tasa), y **sin cifra
+cuando un extremo es negativo** — la raíz n-ésima de un cociente negativo no es
+una tasa de crecimiento. Se rotula `3a` junto a la cifra: un +40 % de dos años
+y otro de cinco no son lo mismo.
+
+**El fallo que casi se escapa:** la primera versión daba el signo cambiado. Di
+por hecho que `years` llegaba de más antiguo a más reciente y la cabecera lo
+pinta al revés. Los ingresos de VZ, que van de 136,8 B a 138,2 B, salían con
+**−0,3 %**. No se detectó mirando si la columna «se veía bien» —se veía
+perfecta— sino comprobando la cifra contra los números de su propia fila.
+`cronologico()` ya existía en el archivo para esto; ahora se usa dentro de
+`calcularCAGR`, así que el resultado no depende del orden en que llegue.
+
+### Columnas de ejercicio fantasma
+
+El endpoint devuelve un único `years` con la **unión** de los tres estados. En
+VZ, el flujo de caja trae un 2021 con 6 valores de 54 y los otros dos estados
+no llegan tan atrás: la cuenta de resultados pintaba una columna entera de
+guiones. Una columna vacía no se lee como «este estado no llega tan atrás», se
+lee como «la empresa no publicó nada ese año». `aniosConDato(rows, years)`
+recorta por pestaña; el 2021 sigue viéndose en flujo de caja, que sí lo tiene.
+El subtítulo («Últimos N ejercicios fiscales») ya no lleva el 4 a mano.
+
+### Cinco filas en guiones por un nombre mal escrito — y el verificador
+
+Quinta reincidencia del patrón que ya estaba anotado: **un mapeo mal hecho no
+da error, da un hueco silencioso.** `Research Development` (es `Research And
+Development`), `Selling General Administrative` (es `Selling General And
+Administration`), `Short Term Investments`, `Intangible Assets`, y el
+`Net Income` del flujo de caja (es `Net Income From Continuing Operations`).
+
+En los dos casos del balance existía una clave parecida que **habría
+duplicado** otra fila: `Cash Cash Equivalents And Short Term Investments`
+incluye el efectivo que ya está arriba, y `Goodwill And Other Intangible
+Assets` solapa con la fila de fondo de comercio. Se eligieron las que no
+solapan. `v()` acepta ahora varios nombres y usa el primero con dato.
+
+**`frontend/scripts/verificar-claves-estados.mjs`** consulta el endpoint real
+para seis valores y señala toda clave que no aparezca **en ninguno** —una que
+falta en un solo valor puede ser una empresa que no publica esa partida; una
+que no aparece en ninguno es un nombre mal escrito. Los otros dos verificadores
+son estáticos y no pueden ver esto: la verdad está al otro lado de la red.
+Validado mutando una clave: la caza y sugiere el nombre correcto.
+
+### Iconos
+
+Las categorías de ratios llegan del backend con un emoji delante. Se limpian en
+presentación con `nombreDeCategoria()` y se sustituyen por Ionicons de trazo
+con la marca de índice de la casa. **En presentación y no en el backend a
+propósito:** esas cadenas son la clave de las categorías desplegadas y viajan a
+otras pantallas.
+
+La insignia de estilo usa acento para Value y `caution` para Crecimiento,
+**nunca verde ni rojo**: en este producto esos dos colores significan dirección
+financiera, y un «Crecimiento» en verde se leería como una recomendación.
+
+### Sigue pendiente
+
+- **Error de hidratación #418** en todos los anchos salvo móvil. Es anterior a
+  este trabajo y no lo introducen estas pantallas; queda anotado, no arreglado.
+- **La fila se implementa tres veces**: `Terminal.Fila`,
+  `PanelTecnicoAmpliado.FilaIndicador` y `PanelesAnalisis`. Unificarlas es un
+  cambio transversal y no estaba pedido.

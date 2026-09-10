@@ -204,6 +204,36 @@ function cronologico(years) {
   });
 }
 
+/**
+ * Los ejercicios que ESTE estado informa de verdad.
+ *
+ * El endpoint devuelve un único `years` con la unión de los tres estados, y
+ * los tres no cubren los mismos años. Medido en VZ el 10 de septiembre de
+ * 2026: cuenta de resultados y balance traen 2022-2025, y el flujo de caja
+ * trae además un 2021 con **6 valores de 54**. Ese 2021 se colaba en la
+ * cabecera de las tres pestañas, así que la cuenta de resultados pintaba una
+ * columna entera de guiones.
+ *
+ * Y una columna vacía no se lee como «este estado no llega tan atrás»: se lee
+ * como «la empresa no publicó nada ese año», que es una afirmación distinta y
+ * falsa. Además desplaza la rejilla y estrecha las columnas que sí tienen
+ * datos.
+ *
+ * Se recorta en presentación y no en el endpoint a propósito: el 2021 del
+ * flujo de caja existe y en su pestaña se sigue viendo.
+ */
+const numOf = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+function aniosConDato(rows, years) {
+  if (!rows || !years) return years || [];
+  const vivos = years.filter((yr) =>
+    rows.some((r) => numOf(r?.values?.[yr]) != null)
+  );
+  // Si ninguno tiene dato se devuelven todos: mejor una tabla vacía con
+  // cabecera que una tabla sin columnas.
+  return vivos.length ? vivos : years;
+}
+
 function RowSparkline({ values, years, c, width = 64, height = 20 }) {
   const eje = useMemo(() => cronologico(years), [years]);
   const serie = eje.map((yr) => {
@@ -336,7 +366,7 @@ function StatsSection({ tab, rows, years, c }) {
       {stats.map((st, i) => (
         <div key={st.label} style={{
           display: "grid",
-          gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+          gridTemplateColumns: `220px 72px 86px repeat(${years.length}, 1fr)`,
           padding: "8px 24px",
           borderBottom: i < stats.length - 1 ? `1px solid ${c.rule}` : "none",
         }}>
@@ -347,6 +377,7 @@ function StatsSection({ tab, rows, years, c }) {
           <div style={{ display: "flex", alignItems: "center" }}>
             <RowSparkline values={st.values} years={years} c={c} />
           </div>
+          <CeldaCAGR values={st.values} years={years} c={c} />
           {years.map((yr) => (
             <span key={yr} style={{
               fontSize: 12, fontWeight: 600, textAlign: "right", paddingLeft: 8,
@@ -391,7 +422,6 @@ function mixSuave(a, b, t = 0.38) {
   return `#${h(r1 + (r2 - r1) * t)}${h(g1 + (g2 - g1) * t)}${h(b1 + (b2 - b1) * t)}`;
 }
 
-const numOf = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 
 /** Rotulo compacto para los ejes: 1.2B, 340M, 12k. */
 function ejeFmt(v) {
@@ -851,7 +881,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
       {/* Column Headers */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+        gridTemplateColumns: `220px 72px 86px repeat(${years.length}, 1fr)`,
         background: c.ink,
         padding: "12px 24px",
       }}>
@@ -860,6 +890,15 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
         </span>
         <span style={{ fontSize: 11, fontWeight: 700, color: c.inkFaint, textTransform: "uppercase", letterSpacing: 1 }}>
           Tendencia
+        </span>
+        {/* La tendencia enseña la FORMA y el CAGR la pone en número: la línea
+            dice si sube, la tasa dice cuánto al año. Van juntas porque una
+            curva ascendente puede ser un 2 % o un 30 %. */}
+        <span style={{
+          fontSize: 11, fontWeight: 700, color: c.inkFaint,
+          textTransform: "uppercase", letterSpacing: 1, textAlign: "right",
+        }}>
+          CAGR
         </span>
         {years.map(yr => (
           <span key={yr} style={{
@@ -878,7 +917,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
             return (
               <div key={ri} style={{
                 display: "grid",
-                gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+                gridTemplateColumns: `220px 72px 86px repeat(${years.length}, 1fr)`,
                 padding: "10px 24px",
                 background: c.rule,
                 borderTop: `1px solid ${c.rule}`,
@@ -903,7 +942,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
               onMouseLeave={() => setHoveredRow(null)}
               style={{
                 display: "grid",
-                gridTemplateColumns: `220px 72px repeat(${years.length}, 1fr)`,
+                gridTemplateColumns: `220px 72px 86px repeat(${years.length}, 1fr)`,
                 padding: "8px 24px",
                 background: isHovered ? `${accentColor}06` : ri % 2 === 0 ? c.surfaceSunken : c.surface,
                 borderBottom: `1px solid ${c.rule}`,
@@ -928,6 +967,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
               <div style={{ display: "flex", alignItems: "center" }}>
                 <RowSparkline values={row.values} years={years} c={c} />
               </div>
+              <CeldaCAGR values={row.values} years={years} c={c} />
               {years.map(yr => (
                 <div key={yr} style={{ paddingLeft: 8 }}>
                   <EditableCell
@@ -944,6 +984,104 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
 
       <StatsSection tab={statementTab} rows={rows} years={years} c={c} />
       <StatementCharts tab={statementTab} rows={rows} years={years} c={c} />
+    </div>
+  );
+}
+
+/**
+ * CAGR de una fila de los estados financieros.
+ *
+ * La tasa anual compuesta entre el ejercicio más antiguo con dato y el más
+ * reciente con dato. Tres decisiones que cambian lo que sale:
+ *
+ * 1. **Se usan los extremos con DATO, no el primer y último año de la tabla.**
+ *    yfinance deja huecos por fila: hay conceptos que el ejercicio más antiguo
+ *    no publica. Tomar ese hueco como base da un CAGR falso o ninguno — es el
+ *    mismo fallo que dejaba en blanco cuatro ratios del análisis.
+ *
+ * 2. **Los años se cuentan entre esos dos extremos**, no se fija un 4. Si el
+ *    hueco deja tres años, se anualiza sobre tres.
+ *
+ * 3. **Con un extremo negativo no se devuelve número.** La raíz n-ésima de un
+ *    cociente negativo no es una tasa de crecimiento: es un símbolo sin
+ *    significado financiero. Un concepto que pasa de −100 a +50 no ha crecido
+ *    un x %; ha cambiado de signo, y eso se dice con «n/a», no con una cifra
+ *    que parece medida. Devuelve `motivo` para poder explicarlo.
+ */
+function calcularCAGR(values, years) {
+  if (!values || !years || years.length < 2) return null;
+  // La cabecera pinta los ejercicios de más RECIENTE a más antiguo, así que
+  // `years` llega en ese orden. Ordenar aquí —con el mismo `cronologico()` que
+  // usa la línea de tendencia— en vez de confiar en cómo venga: dar por
+  // supuesto el orden invertido el signo de todas las tasas, y un −0,3 % sobre
+  // unos ingresos que suben de 136,8 B a 138,2 B no se lee como un error de
+  // programación, se lee como que la empresa decrece.
+  const eje = cronologico(years);
+  const serie = eje
+    .map((yr) => ({ yr, v: numOf(values[yr]) }))
+    .filter((x) => x.v != null && x.v !== 0);
+  if (serie.length < 2) return { valor: null, motivo: "sin datos suficientes" };
+
+  const ini = serie[0];
+  const fin = serie[serie.length - 1];
+  // Los años se cuentan por el calendario, no por cuántos puntos hay: con un
+  // hueco en medio, contar puntos anualiza sobre menos años de los que pasaron
+  // e infla la tasa.
+  const na = Number(String(ini.yr).slice(0, 4));
+  const nb = Number(String(fin.yr).slice(0, 4));
+  const anios = Number.isFinite(na) && Number.isFinite(nb) && nb > na
+    ? nb - na
+    : eje.indexOf(fin.yr) - eje.indexOf(ini.yr);
+  if (anios <= 0) return { valor: null, motivo: "un solo ejercicio" };
+
+  if (ini.v < 0 || fin.v < 0) {
+    return {
+      valor: null,
+      motivo: ini.v < 0 && fin.v < 0 ? "negativo en ambos extremos" : "cambio de signo",
+      anios,
+    };
+  }
+  const tasa = (Math.pow(fin.v / ini.v, 1 / anios) - 1) * 100;
+  if (!Number.isFinite(tasa)) return { valor: null, motivo: "no calculable", anios };
+  return { valor: tasa, anios, desde: ini.yr, hasta: fin.yr };
+}
+
+/** Celda de CAGR: la cifra, su signo y sobre cuántos años. */
+function CeldaCAGR({ values, years, c }) {
+  const r = calcularCAGR(values, years);
+  if (!r || r.valor === null) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+        <span
+          title={r?.motivo ? `Sin CAGR: ${r.motivo}` : "Sin CAGR"}
+          style={{ fontSize: 11, color: c.noSignal, fontFamily: "ui-monospace, Menlo, monospace" }}
+        >
+          —
+        </span>
+      </div>
+    );
+  }
+  const sube = r.valor >= 0;
+  return (
+    <div
+      style={{ display: "flex", alignItems: "baseline", justifyContent: "flex-end", gap: 4 }}
+      title={`Tasa anual compuesta ${r.desde}–${r.hasta} (${r.anios} años)`}
+    >
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 700,
+          color: sube ? c.up : c.down,
+          fontFamily: "ui-monospace, Menlo, monospace",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {sube ? "+" : "−"}
+        {Math.abs(r.valor).toFixed(1)}%
+      </span>
+      {/* Sobre cuántos años se anualiza. Sin esto, un +40 % de dos años y otro
+          de cinco se leen igual y no son lo mismo. */}
+      <span style={{ fontSize: 9, color: c.inkFaint }}>{r.anios}a</span>
     </div>
   );
 }
@@ -1015,6 +1153,13 @@ export default function FinancialStatements({ ticker, companyName }) {
 
   const activeTabData = tabs.find(t => t.id === activeTab);
 
+  // Cada estado enseña los ejercicios que él informa, no la unión de los tres.
+  const aniosIncome   = useMemo(() => aniosConDato(incomeRows, years), [incomeRows, years]);
+  const aniosBalance  = useMemo(() => aniosConDato(balanceRows, years), [balanceRows, years]);
+  const aniosCashflow = useMemo(() => aniosConDato(cashflowRows, years), [cashflowRows, years]);
+  const aniosVisibles =
+    activeTab === "balance" ? aniosBalance : activeTab === "cashflow" ? aniosCashflow : aniosIncome;
+
   // ── Render ────────────────────────────────────────────────────────
   if (!ticker) {
     return (
@@ -1037,7 +1182,7 @@ export default function FinancialStatements({ ticker, companyName }) {
             Estados financieros
           </h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: c.inkMuted }}>
-            {companyName || ticker} · Últimos 4 ejercicios fiscales · Millones USD
+            {companyName || ticker} · {aniosVisibles.length ? `Últimos ${aniosVisibles.length} ejercicios fiscales` : 'Sin ejercicios'} · Millones USD
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
@@ -1107,7 +1252,7 @@ export default function FinancialStatements({ ticker, companyName }) {
                 statementTab="income"
                 title="Cuenta de Resultados (Income Statement)"
                 rows={incomeRows}
-                years={years}
+                years={aniosIncome}
                 editMode={editMode}
                 onCellChange={handleCellChange(setIncomeRows)}
                 ticker={ticker}
@@ -1120,7 +1265,7 @@ export default function FinancialStatements({ ticker, companyName }) {
                 statementTab="balance"
                 title="Balance de Situación (Balance Sheet)"
                 rows={balanceRows}
-                years={years}
+                years={aniosBalance}
                 editMode={editMode}
                 onCellChange={handleCellChange(setBalanceRows)}
                 ticker={ticker}
@@ -1133,7 +1278,7 @@ export default function FinancialStatements({ ticker, companyName }) {
                 statementTab="cashflow"
                 title="Estado de Flujo de Efectivo (Cash Flow)"
                 rows={cashflowRows}
-                years={years}
+                years={aniosCashflow}
                 editMode={editMode}
                 onCellChange={handleCellChange(setCashflowRows)}
                 ticker={ticker}
@@ -1150,9 +1295,9 @@ export default function FinancialStatements({ ticker, companyName }) {
             </span>
             <button
               onClick={() => {
-                generatePDF("Cuenta de Resultados", ticker, companyName || ticker, incomeRows, years, c);
-                setTimeout(() => generatePDF("Balance", ticker, companyName || ticker, balanceRows, years, c), 500);
-                setTimeout(() => generatePDF("Flujo de Caja", ticker, companyName || ticker, cashflowRows, years, c), 1000);
+                generatePDF("Cuenta de Resultados", ticker, companyName || ticker, incomeRows, aniosIncome, c);
+                setTimeout(() => generatePDF("Balance", ticker, companyName || ticker, balanceRows, aniosBalance, c), 500);
+                setTimeout(() => generatePDF("Flujo de Caja", ticker, companyName || ticker, cashflowRows, aniosCashflow, c), 1000);
               }}
               style={{ ...styles.btn, background: c.accent, color: c.inkOnAccent, borderColor: c.accent }}
             >
@@ -1171,9 +1316,22 @@ const M = (v) => v != null ? Math.round(v / 1e6 * 10) / 10 : null;
 
 function buildIncomeRows(data, years) {
   if (!data) return [];
-  const v = (key) => {
+  // Acepta varios nombres para la misma partida y usa el primero que traiga
+  // dato. yfinance renombra conceptos entre versiones —«Research Development»
+  // pasó a «Research And Development»— y un nombre obsoleto no da error: deja
+  // la fila entera en guiones, que se lee como «la empresa no lo publica».
+  // Auditado el 10 de septiembre de 2026 contra diez valores; los nombres
+  // vigentes van primero y el antiguo queda de respaldo.
+  const v = (...claves) => {
     const obj = {};
-    years.forEach(yr => { obj[yr] = data[yr]?.[key] ?? null; });
+    years.forEach((yr) => {
+      const fila = data[yr];
+      let val = null;
+      for (const k of claves) {
+        if (fila?.[k] != null) { val = fila[k]; break; }
+      }
+      obj[yr] = val;
+    });
     return obj;
   };
   return [
@@ -1182,8 +1340,8 @@ function buildIncomeRows(data, years) {
     { label: "Coste de Ventas", indent: 1, values: v("Cost Of Revenue") },
     { label: "Beneficio Bruto", isBold: true, values: v("Gross Profit") },
     { label: "GASTOS OPERATIVOS", isSection: true },
-    { label: "I+D", indent: 1, values: v("Research Development") },
-    { label: "Ventas, Generales y Admin.", indent: 1, values: v("Selling General Administrative") },
+    { label: "I+D", indent: 1, values: v("Research And Development", "Research Development") },
+    { label: "Ventas, Generales y Admin.", indent: 1, values: v("Selling General And Administration", "Selling General Administrative") },
     { label: "Gastos Operativos Totales", isBold: true, values: v("Operating Expense") },
     { label: "RESULTADO", isSection: true },
     { label: "EBIT / Beneficio Operativo", isBold: true, values: v("Operating Income") },
@@ -1201,22 +1359,35 @@ function buildIncomeRows(data, years) {
 
 function buildBalanceRows(data, years) {
   if (!data) return [];
-  const v = (key) => {
+  // Acepta varios nombres para la misma partida y usa el primero que traiga
+  // dato. yfinance renombra conceptos entre versiones —«Research Development»
+  // pasó a «Research And Development»— y un nombre obsoleto no da error: deja
+  // la fila entera en guiones, que se lee como «la empresa no lo publica».
+  // Auditado el 10 de septiembre de 2026 contra diez valores; los nombres
+  // vigentes van primero y el antiguo queda de respaldo.
+  const v = (...claves) => {
     const obj = {};
-    years.forEach(yr => { obj[yr] = data[yr]?.[key] ?? null; });
+    years.forEach((yr) => {
+      const fila = data[yr];
+      let val = null;
+      for (const k of claves) {
+        if (fila?.[k] != null) { val = fila[k]; break; }
+      }
+      obj[yr] = val;
+    });
     return obj;
   };
   return [
     { label: "ACTIVO CORRIENTE", isSection: true },
     { label: "Efectivo y Equivalentes", indent: 1, values: v("Cash And Cash Equivalents") },
-    { label: "Inversiones a C/P", indent: 1, values: v("Short Term Investments") },
+    { label: "Inversiones a C/P", indent: 1, values: v("Other Short Term Investments", "Short Term Investments") },
     { label: "Cuentas por Cobrar", indent: 1, values: v("Accounts Receivable") },
     { label: "Inventario", indent: 1, values: v("Inventory") },
     { label: "Total Activo Corriente", isBold: true, values: v("Current Assets") },
     { label: "ACTIVO NO CORRIENTE", isSection: true },
     { label: "PP&E Neto", indent: 1, values: v("Net PPE") },
     { label: "Fondo de Comercio", indent: 1, values: v("Goodwill") },
-    { label: "Activos Intangibles", indent: 1, values: v("Intangible Assets") },
+    { label: "Activos Intangibles", indent: 1, values: v("Other Intangible Assets", "Intangible Assets") },
     { label: "Total Activo No Corriente", isBold: true, values: v("Total Non Current Assets") },
     { label: "TOTAL ACTIVO", isBold: true, values: v("Total Assets") },
     { label: "PASIVO CORRIENTE", isSection: true },
@@ -1237,14 +1408,27 @@ function buildBalanceRows(data, years) {
 
 function buildCashflowRows(data, years) {
   if (!data) return [];
-  const v = (key) => {
+  // Acepta varios nombres para la misma partida y usa el primero que traiga
+  // dato. yfinance renombra conceptos entre versiones —«Research Development»
+  // pasó a «Research And Development»— y un nombre obsoleto no da error: deja
+  // la fila entera en guiones, que se lee como «la empresa no lo publica».
+  // Auditado el 10 de septiembre de 2026 contra diez valores; los nombres
+  // vigentes van primero y el antiguo queda de respaldo.
+  const v = (...claves) => {
     const obj = {};
-    years.forEach(yr => { obj[yr] = data[yr]?.[key] ?? null; });
+    years.forEach((yr) => {
+      const fila = data[yr];
+      let val = null;
+      for (const k of claves) {
+        if (fila?.[k] != null) { val = fila[k]; break; }
+      }
+      obj[yr] = val;
+    });
     return obj;
   };
   return [
     { label: "ACTIVIDADES DE EXPLOTACIÓN", isSection: true },
-    { label: "Beneficio Neto", isBold: true, values: v("Net Income") },
+    { label: "Beneficio Neto", isBold: true, values: v("Net Income From Continuing Operations", "Net Income") },
     { label: "Depreciación y Amortización", indent: 1, values: v("Depreciation And Amortization") },
     { label: "Variación de Capital Circulante", indent: 1, values: v("Change In Working Capital") },
     { label: "Otros ajustes operativos", indent: 1, values: v("Other Non Cash Items") },

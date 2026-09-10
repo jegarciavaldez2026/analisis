@@ -480,6 +480,9 @@ class AnalysisResponse(BaseModel):
     metadata: Dict[str, Any]
     summary_flags: Dict[str, Any]
     valuation_summary: Dict[str, Any] = Field(default_factory=dict)
+    #: Value / Mixto / Crecimiento, con su puntuación y su prueba. Ver
+    #: `backend/estilo.py`.
+    estilo_inversion: Dict[str, Any] = Field(default_factory=dict)
     # New fields
     company_profile: Optional[StockProfile] = None
     analyst_recommendations: Optional[AnalystRecommendation] = None
@@ -495,6 +498,60 @@ class HistoryItem(BaseModel):
     favorable_percentage: float
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
+def _rentabilidad_dividendo(info: dict):
+    """
+    Rentabilidad por dividendo en PORCENTAJE, sin depender de la convención de
+    yfinance.
+
+    El campo `dividendYield` ha cambiado de unidad entre versiones de la
+    librería: antes era una fracción (0,0569) y en la 1.2.0 es ya un
+    porcentaje (5,69). El código multiplicaba por 100 siempre, así que en la
+    pantalla de Análisis VZ apareció con **569,00 %**. Un número cien veces
+    mayor no se lee como error de unidad: se lee como un dato, y aquí
+    convertía una teleco corriente en un imposible financiero.
+
+    En vez de quitar el x100 y quedar a merced del próximo cambio de la
+    librería, se ancla en algo que no es ambiguo: **dividendo anual dividido
+    entre precio**. Esa división es la definición del ratio, no una
+    interpretación de un campo.
+
+    Orden:
+
+    1. `dividendRate / precio x 100` cuando ambos existen. Comprobado el 10 de
+       septiembre de 2026 contra el campo declarado en seis valores
+       (VZ 5,66 / 5,69; KO 2,41 / 2,40; AAPL 0,33 / 0,34; T 4,34 / 4,41;
+       MSFT 0,74 / 0,74; O 5,47 / 5,42): coinciden dentro del redondeo.
+    2. Si falta el precio o la cuantía, se usa `dividendYield` deduciendo la
+       unidad por magnitud. El umbral es 1: una rentabilidad declarada como
+       fracción por encima de 1 sería un 100 % anual, y una declarada en
+       porcentaje por debajo de 1 es simplemente un dividendo pequeño, que se
+       queda como está. La ambigüedad real es la franja 0-1 (¿0,74 % o 74 %?),
+       y ahí el camino 1 ya ha resuelto casi todos los casos.
+    3. Sin nada de eso, `None`. Un 0 se lee como "no reparte dividendo", que es
+       una afirmación distinta de "no lo sé".
+    """
+    if not isinstance(info, dict):
+        return None
+    cuantia = info.get("dividendRate")
+    precio = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+    try:
+        if cuantia and precio and float(precio) > 0:
+            return float(cuantia) / float(precio) * 100.0
+    except (TypeError, ValueError):
+        pass
+
+    bruto = info.get("dividendYield")
+    try:
+        if bruto is None:
+            return None
+        bruto = float(bruto)
+    except (TypeError, ValueError):
+        return None
+    if bruto <= 0:
+        return None
+    return bruto * 100.0 if bruto < 1.0 else bruto
+
+
 def safe_divide(numerator, denominator, default=None):
     try:
         if denominator == 0 or denominator is None or numerator is None:
@@ -528,6 +585,133 @@ def safe_float(value, default=0.0):
 #  El problema original: _col() usaba df.get(key) que en un DataFrame busca
 #  columnas (años) NO filas (métricas). Corrección: df.loc[key].
 # =============================================================================
+
+def _instantanea(df: pd.DataFrame) -> dict:
+    """
+    Foto del ejercicio más reciente, tomando cada métrica del último año que
+    SÍ la informa.
+
+    Antes esto era `df.iloc[:, 0].to_dict()`: sólo la columna más nueva. Y
+    yfinance deja huecos por fila, no por columna. Medido el 10 de septiembre
+    de 2026:
+
+        AAPL  Interest Expense = [NaN, NaN, 3.933, 2.931, 2.645]  (millones)
+        MSFT  Interest Expense = [3.051, 2.385, 2.935, 1.968]
+
+    Con la columna cruda, el gasto financiero de AAPL entraba como 0 y el DSCR
+    salía vacío. Y no era sólo el DSCR: **cualquier** ratio que dependa de una
+    fila no informada este año se estaba calculando contra un cero. Un cero en
+    un denominador de cobertura no es «sin dato», es una afirmación falsa
+    sobre la empresa.
+
+    Se coge el valor informado más reciente. No es mezclar ejercicios a
+    capricho: es la práctica de cualquier ficha de crédito cuando el último
+    cierre no publica una partida. `_antiguedad_instantanea()` devuelve qué
+    filas vienen de un año anterior, para poder decirlo donde importe.
+    """
+    if df is None or not hasattr(df, "empty") or df.empty or df.shape[1] == 0:
+        return {}
+    salida = {}
+    for fila in df.index:
+        try:
+            serie = df.loc[fila]
+            for v in serie.values:            # de más reciente a más antiguo
+                if v is not None and v == v:  # descarta NaN
+                    salida[fila] = v
+                    break
+            else:
+                salida[fila] = serie.values[0]
+        except Exception:
+            continue
+    return salida
+
+
+def _antiguedad_instantanea(df: pd.DataFrame, fila: str) -> int:
+    """Cuántos ejercicios hay que retroceder para encontrar `fila` informada.
+
+    0 = el último cierre la publica. Sirve para rotular una métrica que se
+    apoya en un dato más viejo en vez de dejar creer que es del año en curso.
+    """
+    if df is None or not hasattr(df, "empty") or df.empty or fila not in df.index:
+        return -1
+    try:
+        for i, v in enumerate(df.loc[fila].values):
+            if v is not None and v == v:
+                return i
+    except Exception:
+        pass
+    return -1
+
+
+def _tramo_valido(serie: list):
+    """
+    Extremos de una serie anual quedándose con los ejercicios que SÍ tienen dato.
+
+    yfinance sirve las columnas de más reciente a más antigua, y deja huecos
+    por FILA, no sólo por columna: en AAPL, `Total Revenue` del ejercicio 2021
+    llega vacío aunque esa columna tenga otras métricas. `_get_row` convierte
+    ese hueco en 0.0, y el cálculo original tomaba `serie[-1]` a ciegas como
+    base del CAGR. La guarda `serie[-1] > 0` no pasaba y el CAGR se publicaba
+    como `None`.
+
+    Medido el 10 de septiembre de 2026, eso dejaba en blanco cuatro métricas
+    —CAGR de ingresos, CAGR de margen operativo, ROA Growth y, por dependencia,
+    el PEG— en AAPL, KO y JNJ, mientras MSFT salía completo. No era un límite
+    del proveedor: era un hueco contado como si fuera un año.
+
+    Devuelve `(mas_antiguo, mas_reciente, anios)` o `None` si no hay al menos
+    dos ejercicios con dato. `anios` es la distancia REAL entre los dos, no un
+    4 fijo: si el hueco deja sólo tres años, el CAGR se anualiza sobre tres.
+    """
+    if not serie:
+        return None
+    validos = [
+        i for i, v in enumerate(serie)
+        if v is not None and v == v and v != 0
+    ]
+    if len(validos) < 2:
+        return None
+    reciente, antiguo = validos[0], validos[-1]
+    return serie[antiguo], serie[reciente], antiguo - reciente
+
+
+def _recortar_ejercicios_vacios(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Quita los ejercicios que yfinance devuelve VACÍOS.
+
+    El proveedor sirve a veces una columna de más —el año fiscal más antiguo—
+    con todo a NaN. Medido el 10 de septiembre de 2026:
+
+        AAPL  5 columnas, Total Revenue = [416.2, 391.0, 383.3, 394.3, NaN]
+        KO    5 columnas, Total Revenue = [ 47.9,  47.1,  45.8,  43.0, NaN]
+        MSFT  4 columnas, todas con dato
+
+    Y ahí estaba el fallo: los CAGR toman el ejercicio más antiguo como base
+    (`serie[-1]`). Con la columna fantasma, `sanitize_float(NaN)` la convierte
+    en 0.0, la guarda `if serie[-1] > 0` no pasa y el CAGR se queda en `None`.
+    Eso dejaba **cuatro métricas en blanco** —CAGR de ingresos, CAGR de margen
+    operativo, ROA Growth y, por dependencia, el PEG— en AAPL, KO y JNJ,
+    mientras MSFT salía completo. No era un límite del proveedor: era una
+    columna vacía contada como si fuera un año.
+
+    Se recorta aquí, en la única puerta por la que entran los tres estados, en
+    vez de parchear cada consumidor: hay más de una docena y todos comparten
+    el problema.
+
+    Sólo se quitan columnas ENTERAS sin un solo dato. Una columna con huecos
+    parciales es un ejercicio real con métricas que el proveedor no publica, y
+    ésa se queda.
+    """
+    if df is None or not hasattr(df, "empty") or df.empty:
+        return df
+    try:
+        utiles = [c for c in df.columns if df[c].notna().any()]
+        if len(utiles) == len(df.columns):
+            return df
+        return df[utiles] if utiles else df
+    except Exception:
+        return df
+
 
 def _get_row(df: pd.DataFrame, *keys: str) -> list:
     """
@@ -608,6 +792,22 @@ def cagr_signed(start: float, end: float, years: int) -> Tuple[Optional[float], 
 #    Valoración adv: EPV (Earnings Power Value)
 # =============================================================================
 
+def _estilo_inversion(ratios: dict) -> dict:
+    """
+    Clasificación valor/crecimiento a partir de los ratios ya calculados.
+
+    Va envuelta a propósito: es una lectura ADICIONAL sobre evidencia que ya
+    está en pantalla, y un fallo suyo no puede llevarse por delante el análisis
+    entero. Si no se puede clasificar, se dice; no se inventa una etiqueta.
+    """
+    try:
+        import estilo
+        return estilo.clasificar(ratios or {})
+    except Exception as e:
+        logging.warning(f"Clasificación de estilo no disponible: {e}")
+        return {"disponible": False, "motivo": "No se pudo calcular la clasificación."}
+
+
 def calculate_ratios(ticker_data):
     """Calcula todos los ratios financieros — versión corregida + 15 nuevos."""
     try:
@@ -618,7 +818,9 @@ def calculate_ratios(ticker_data):
                     df = getattr(ticker_data, fallback_attr, None)
             if df is None or (hasattr(df, 'empty') and df.empty):
                 return pd.DataFrame()
-            return df
+            # Sin esto, un ejercicio fantasma lleno de NaN cuenta como año y
+            # tumba los CAGR. Ver `_recortar_ejercicios_vacios`.
+            return _recortar_ejercicios_vacios(df)
 
         income_stmt   = _get_stmt('income_stmt', 'financials')
         balance_sheet = _get_stmt('balance_sheet', 'balancesheet')
@@ -637,11 +839,15 @@ def calculate_ratios(ticker_data):
                         pass
             return default
 
-        # ── Diccionarios columna más reciente ─────────────────────────────────
-        income      = income_stmt.iloc[:, 0].to_dict()  if not income_stmt.empty  and income_stmt.shape[1]  > 0 else {}
+        # ── Foto del ejercicio más reciente ───────────────────────────────────
+        # Cada partida se toma del último año que la informa, no de la columna
+        # más nueva a secas: yfinance deja huecos por FILA y un hueco leído
+        # como cero convierte «sin dato» en una afirmación falsa. Ver
+        # `_instantanea`.
+        income      = _instantanea(income_stmt)
         income_prev = income_stmt.iloc[:, -1].to_dict() if not income_stmt.empty  and income_stmt.shape[1]  > 1 else {}
-        balance     = balance_sheet.iloc[:, 0].to_dict() if not balance_sheet.empty and balance_sheet.shape[1] > 0 else {}
-        cf          = cash_flow.iloc[:, 0].to_dict()    if not cash_flow.empty    and cash_flow.shape[1]    > 0 else {}
+        balance     = _instantanea(balance_sheet)
+        cf          = _instantanea(cash_flow)
 
         # ── Income Statement ──────────────────────────────────────────────────
         total_revenue    = _n(income, 'Total Revenue') or _n(info, 'totalRevenue')
@@ -1120,37 +1326,48 @@ def calculate_ratios(ticker_data):
                     cagr_diagnostico = "fila_Total_Revenue_no_encontrada"
 
                 # CAGR Ingresos — siempre positivos
-                if len(rev_h) >= 2 and rev_h[-1] > 0 and rev_h[0] > 0:
-                    r, _ = cagr_signed(rev_h[-1], rev_h[0], periods)
+                _t = _tramo_valido(rev_h)
+                if _t and _t[0] > 0 and _t[1] > 0:
+                    r, _ = cagr_signed(_t[0], _t[1], _t[2])
                     cagr_revenue_4y = r if r is not None else 0.0
 
-                # CAGR Margen Operativo
-                if len(rev_h) >= 2 and len(ebit_h) >= 2:
-                    om_s = ebit_h[-1] / rev_h[-1] if rev_h[-1] != 0 else 0
-                    om_e = ebit_h[0]  / rev_h[0]  if rev_h[0]  != 0 else 0
-                    if om_s != 0 and om_e != 0:
-                        r, _ = cagr_signed(om_s, om_e, periods)
-                        cagr_op_margin_4y = r if r is not None else 0.0
+                # CAGR Margen Operativo — el margen se calcula por ejercicio
+                # y DESPUÉS se buscan los extremos válidos, para no cruzar el
+                # EBIT de un año con los ingresos de otro.
+                _om = [
+                    (e / v) if (v not in (None, 0) and v == v and e is not None and e == e) else 0
+                    for e, v in zip(ebit_h, rev_h)
+                ]
+                _t = _tramo_valido(_om)
+                if _t:
+                    r, _ = cagr_signed(_t[0], _t[1], _t[2])
+                    cagr_op_margin_4y = r if r is not None else 0.0
 
                 # ✦ BUG FIX: CAGR FCF tolera negativos con cagr_signed()
-                if len(fcf_h) >= 2 and fcf_h[-1] != 0 and fcf_h[0] != 0:
-                    r, note = cagr_signed(fcf_h[-1], fcf_h[0], periods)
+                _t = _tramo_valido(fcf_h)
+                if _t:
+                    r, note = cagr_signed(_t[0], _t[1], _t[2])
                     cagr_fcf_4y   = r if r is not None else 0.0
                     cagr_fcf_note = note
 
                 # ✦ BUG FIX: CAGR EPS tolera negativos con cagr_signed()
-                if len(eps_h) >= 2 and eps_h[-1] != 0 and eps_h[0] != 0:
-                    r, note = cagr_signed(eps_h[-1], eps_h[0], periods)
+                # De éste cuelga el PEG, así que el hueco se propagaba.
+                _t = _tramo_valido(eps_h)
+                if _t:
+                    r, note = cagr_signed(_t[0], _t[1], _t[2])
                     cagr_eps_4y      = r if r is not None else 0.0
                     cagr_eps_4y_note = note
 
-                # ROA Growth
-                if len(ni_h) >= 2 and len(ast_h) >= 2:
-                    roa_s = ni_h[-1] / ast_h[-1] if ast_h[-1] != 0 else 0
-                    roa_e = ni_h[0]  / ast_h[0]  if ast_h[0]  != 0 else 0
-                    if roa_s != 0 and roa_e != 0:
-                        r, _ = cagr_signed(roa_s, roa_e, periods)
-                        roa_growth_4y = r if r is not None else 0.0
+                # ROA Growth — mismo criterio: ROA por ejercicio y después
+                # extremos válidos.
+                _roa = [
+                    (n_ / a_) if (a_ not in (None, 0) and a_ == a_ and n_ is not None and n_ == n_) else 0
+                    for n_, a_ in zip(ni_h, ast_h)
+                ]
+                _t = _tramo_valido(_roa)
+                if _t:
+                    r, _ = cagr_signed(_t[0], _t[1], _t[2])
+                    roa_growth_4y = r if r is not None else 0.0
 
         except Exception as e:
             logging.warning(f"CAGR calculation error: {e}")
@@ -1607,6 +1824,7 @@ def evaluate_ratios(ratios, info):
 
     # ✦ NUEVO 4: DSCR
     dscr_val = ratios.get('dscr')
+    dscr_atraso = ratios.get('dscr_ejercicios_atras', 0)
     _add(leverage_metrics, "DSCR (Debt Service Coverage)", dscr_val, "> 1.5x",
          _safe_cmp_gt(dscr_val, 1.5),
          "Capacidad de servicio de deuda = EBITDA / Intereses. <1.0 riesgo de impago; >2.0 zona segura",
@@ -2324,7 +2542,7 @@ async def analyze_stock(request: AnalyzeRequest, current_user: dict = Depends(ge
             # New fields
             "pe_ratio": stock_info.get('trailingPE', stock_info.get('forwardPE', 0)),
             "eps": stock_info.get('trailingEps', 0),
-            "dividend_yield": stock_info.get('dividendYield', 0) * 100 if stock_info.get('dividendYield') else 0,
+            "dividend_yield": _rentabilidad_dividendo(stock_info) or 0,
             "dividend_rate": stock_info.get('dividendRate', 0),
             "fifty_two_week_high": stock_info.get('fiftyTwoWeekHigh', 0),
             "fifty_two_week_low": stock_info.get('fiftyTwoWeekLow', 0),
@@ -2428,6 +2646,9 @@ async def analyze_stock(request: AnalyzeRequest, current_user: dict = Depends(ge
             metadata=metadata,
             summary_flags=summary_flags,
             valuation_summary=valuation_summary,
+            # El estilo sale de los MISMOS ratios que el veredicto, no de una
+            # segunda descarga: es una lectura distinta de la misma evidencia.
+            estilo_inversion=_estilo_inversion(ratios),
             company_profile=company_profile,
             analyst_recommendations=analyst_recommendations,
             holders_breakdown=holders_breakdown,
@@ -5450,9 +5671,7 @@ async def screen_stocks(filters: ScreenerFilters):
                 roe = info.get('returnOnEquity')
                 if roe:
                     roe = roe * 100  # Convert to percentage
-                dividend_yield = info.get('dividendYield')
-                if dividend_yield:
-                    dividend_yield = dividend_yield * 100
+                dividend_yield = _rentabilidad_dividendo(info)
                 debt_equity = info.get('debtToEquity')
                 if debt_equity:
                     debt_equity = debt_equity / 100  # yfinance returns as percentage
@@ -5580,9 +5799,7 @@ async def get_dividend_info(ticker: str):
                 })
         
         # Get yield
-        dividend_yield = info.get('dividendYield')
-        if dividend_yield:
-            dividend_yield = dividend_yield * 100
+        dividend_yield = _rentabilidad_dividendo(info)
         
         # Get ex-dividend date
         ex_div_date = info.get('exDividendDate')
@@ -10189,7 +10406,7 @@ async def get_overton_signal(ticker: str):
             "market_cap":      sanitize_float(info.get("marketCap") or 0),
             "avg_volume":      sanitize_float(info.get("averageVolume") or 0),
             "volume":          sanitize_float(info.get("volume") or info.get("regularMarketVolume") or 0),
-            "dividend_yield":  sanitize_float((info.get("dividendYield") or 0)),
+            "dividend_yield":  sanitize_float(_rentabilidad_dividendo(info) or 0),
             "dividend_rate":   sanitize_float(info.get("dividendRate") or 0),
             "company_name":    info.get("longName") or info.get("shortName") or ticker,
             "exchange":        info.get("exchange") or "",

@@ -41,7 +41,15 @@ perdían y había que rehacerlos cada sesión):
 cd frontend
 node scripts/verificar-ambitos.js      # identificadores sin declarar (AST + ámbitos)
 node scripts/verificar-imports.js      # rutas relativas rotas
+node scripts/verificar-claves-estados.mjs   # claves de los estados financieros
 ```
+
+El tercero **necesita la aplicación levantada**: consulta
+`/api/financial-statements-full` para seis valores y compara con los nombres de
+campo escritos en `FinancialStatements.jsx`. Los otros dos son estáticos y no
+pueden ver esto, porque la verdad está al otro lado de la red. Señala sólo la
+clave que no aparece en **ningún** valor: la que falta en uno solo puede ser una
+empresa que no publica esa partida.
 
 Al escribir `verificar-ambitos.js` hubo que filtrar las anotaciones de tipo:
 Babel **no registra interfaces ni alias como bindings**, así que sin ese filtro
@@ -130,6 +138,10 @@ estática prerrenderiza en claro y el cliente montaba en oscuro.
 | Hidratación #418 | `OvertonSignalMatrix_v4` | Mutación de tema durante el render |
 | 404 en `/api/smc` | `useSMCLive` | Endpoint inexistente, se pedía en cada carga |
 | `c` sin declarar en `generatePDF` | `FinancialStatements.jsx` | **YA CORREGIDO** (10 sep 2026): la paleta es ahora el 6.º parámetro |
+| **Rentab. dividendo de 569 %** | `server.py`, tres sitios | `dividendYield` de yfinance pasó de fracción a porcentaje entre versiones; el ×100 se quedó. Ahora `_rentabilidad_dividendo()` calcula `rate/precio` |
+| Cinco filas de estados en guiones | `FinancialStatements.jsx` | Nombres de campo obsoletos (`Research Development` → `Research And Development`, etc.). Quinta vez del mismo patrón |
+| CAGR con el signo cambiado | `calcularCAGR` | Supuse que `years` venía de más antiguo a más reciente; la cabecera lo pinta al revés |
+| Columna de ejercicio fantasma | Estados financieros | Un solo `years` con la unión de los tres estados; el 2021 del flujo de caja vaciaba una columna en los otros dos |
 
 ### ~~`generatePDF` lanza ReferenceError~~ — YA CORREGIDO
 
@@ -157,6 +169,17 @@ buscarlo.
 - **Comprobar la coherencia direccional.** Un patrón bajista con objetivo por
   encima de la entrada, o un stop al otro lado, son señales de que la
   geometría está mal planteada.
+- **Un campo declarado por un tercero no es un dato verificado.** Su UNIDAD
+  puede cambiar sin romper nada: el tipo sigue siendo `float`, la petición
+  sigue devolviendo 200 y el número sigue pintándose. Así salió una
+  rentabilidad por dividendo del 569 %. Cuando exista una fórmula que dé lo
+  mismo —dividendo entre precio— **calcularlo y usar el campo sólo de
+  respaldo**: la definición del ratio no cambia entre versiones de una
+  librería.
+- **Que una columna nueva «se vea bien» no dice nada de sus cifras.** La
+  columna CAGR se pintó perfecta con todos los signos invertidos. Se cazó
+  comprobando una tasa contra los números de su propia fila. Mirar la captura
+  verifica la maqueta; sólo rehacer una cuenta a mano verifica el dato.
 - **Las maquetas del usuario tienen errores.** Varias traían precios negativos,
   ratios que no cuadraban con su propia entrada y stop, y un «infravalorado»
   con el valor razonable por debajo del precio. **Auditar el código, no la
