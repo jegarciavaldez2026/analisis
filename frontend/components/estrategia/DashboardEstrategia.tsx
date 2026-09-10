@@ -297,14 +297,15 @@ export default function DashboardEstrategia({
   const vanoCentro = { movil: 12, tableta: 12, escritorio: 5, ancho: 6 };
   const vanoDerecha = { movil: 12, tableta: 12, escritorio: 4, ancho: 4 };
 
-  // Banda inferior. En tableta va a dos columnas, no a una: apilar placas a
-  // ancho completo es lo que hacía que la pantalla se leyera como una lista
-  // dispersa en vez de como un terminal.
+  // Reparto de TABLETA: ahí las tres columnas no caben y el robot y el activo
+  // van a la par debajo del gráfico. Apilar las placas a ancho completo es lo
+  // que hacía que la pantalla se leyera como una lista dispersa en vez de
+  // como un terminal.
   //
   // Aquí había también `vanoTres`, `vanoCinco` y `vanoCuatro`, de cuando la
-  // banda inferior tenía tres columnas con delta, cartera y contexto. Todo
-  // eso subió a sus columnas y quedaron sin usar; se quitan en vez de
-  // dejarlos como resto arqueológico.
+  // banda inferior tenía tres columnas con delta, cartera y contexto. Todo eso
+  // está ya repartido por las columnas y la banda se quedó con una sola placa,
+  // así que se quitaron en vez de dejarlos como resto arqueológico.
   const vanoMitad = { movil: 12, tableta: 6, escritorio: 6, ancho: 6 };
 
   /**
@@ -433,6 +434,11 @@ export default function DashboardEstrategia({
           decidido en el producto. */}
       <PanelAlertas bloque={estado.alertas} cargando={cargando} />
       <PanelNoticias bloque={estado.noticias} cargando={cargando} />
+      {/* El calendario cierra la columna, debajo de las noticias: las dos son
+          modificadores de confianza y ninguna ordena una operación. Va en su
+          variante COMPACTA —una fila por evento— porque con la métrica del
+          producto siete eventos se comían media pantalla en estos ~455 px. */}
+      <EconomicCalendar compacto />
     </View>
   );
 
@@ -492,26 +498,16 @@ export default function DashboardEstrategia({
           </Rejilla>
         )}
 
-        {/* ---------- Banda inferior: el calendario y los eventos ----------
-            Lo último que queda aquí después de repartir el resto por las
-            columnas: las dos placas de FECHAS. Se leen de reojo, no deciden
-            nada por sí solas y ninguna necesita el ancho del gráfico.
+        {/* ---------- Cierre: los eventos del valor ----------
+            Lo último que queda en la banda. Va a ancho completo y sin rejilla:
+            con una sola placa, una rejilla de dos o tres columnas deja el
+            resto en blanco hasta el final de la página.
 
-            Van a mitades y no en tres columnas porque son dos: con la rejilla
-            de tres, la tercera quedaba en blanco hasta el final de la página.
-            En móvil y tableta la propia `Rejilla` las apila. */}
-        <Rejilla ruptura={ruptura} hueco={D.hueco}>
-          <Col vano={vanoMitad}>
-            <View style={{ gap: D.hueco }}>
-              <EventosDelValor bloque={estado.eventos} cargando={cargando} />
-            </View>
-          </Col>
-          <Col vano={vanoMitad}>
-            <View style={{ gap: D.hueco }}>
-              <EconomicCalendar />
-            </View>
-          </Col>
-        </Rejilla>
+            Se queda abajo a propósito. Son las fechas del VALOR —resultados,
+            dividendos—, y a diferencia de las alertas y las noticias no
+            modifican la decisión de hoy: acotan cuándo NO conviene tener la
+            posición abierta, que es una lectura de calendario, no de pantalla. */}
+        <EventosDelValor bloque={estado.eventos} cargando={cargando} />
 
         {/* Error global: si /overton no responde, se dice una vez y con salida */}
         {estado.estado === 'error' && estado.error ? (

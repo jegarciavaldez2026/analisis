@@ -6,6 +6,23 @@
  * distinción importa y por eso viaja visible en la cabecera: un dato de Econdb
  * es un evento confirmado con hora; el estimado es la cadencia habitual de
  * publicaciones, útil para planificar pero no para operar contra el reloj.
+ *
+ * ── Dos densidades, un solo calendario ────────────────────────────────────
+ * `compacto` cambia la MÉTRICA, no la identidad: mismo dato, misma paleta,
+ * mismos tonos de impacto. Se añadió porque esta placa vive en dos escenas
+ * distintas:
+ *
+ *   Mercado     — kit del producto (`Panel`), lectura pausada, ancho de sobra.
+ *   Estrategia  — kit del terminal (`Placa`), columna de ~455 px con otras
+ *                 ocho placas encima.
+ *
+ * Con la métrica del producto en la columna del robot, cada evento ocupaba
+ * tres renglones y su descripción; siete eventos se comían media pantalla.
+ * En compacto cada evento es UNA fila —barra de impacto, nombre, fecha— y la
+ * descripción se calla: en esa columna el calendario contesta «¿hay algo que
+ * me vaya a mover el precio esta semana?», no «¿qué mide el PMI?».
+ *
+ * `compacto` es opcional y por defecto `false`, así que Mercado no se entera.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -14,6 +31,7 @@ import { View, Text } from 'react-native';
 import { useTheme } from '../../contexts/ThemeContext';
 import { Legend, Panel, Rule, Skeleton } from '../ui';
 import { toneColors, Tone } from '../../theme/tokens';
+import { Cargando, Chip, Placa, Rotulo, T } from '../estrategia/Terminal';
 
 interface CalendarEvent {
   event: string;
@@ -111,7 +129,7 @@ function calendarioEstimado(): CalendarEvent[] {
   ];
 }
 
-export default function EconomicCalendar() {
+export default function EconomicCalendar({ compacto }: { compacto?: boolean } = {}) {
   const { colors, palette, space, type, radius, hairline, numeric } = useTheme();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -162,6 +180,86 @@ export default function EconomicCalendar() {
       vivo = false;
     };
   }, []);
+
+  if (compacto) {
+    return (
+      <Placa
+        titulo="Calendario económico"
+        procedencia={source === 'econdb' ? 'real' : 'proxy'}
+        derecha={
+          <Chip
+            texto={source === 'econdb' ? 'Econdb' : 'Estimado'}
+            tono={source === 'econdb' ? 'accent' : 'caution'}
+          />
+        }
+      >
+        {loading ? (
+          <Cargando filas={4} />
+        ) : events.length === 0 ? (
+          <Text style={[T.micro, { color: colors.inkFaint }]}>
+            No hay eventos para los próximos días.
+          </Text>
+        ) : (
+          <View style={{ gap: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <View style={{ width: 3 }} />
+              <View style={{ flex: 1 }}>
+                <Rotulo>Próximos 7 días</Rotulo>
+              </View>
+              <View style={{ width: 134, alignItems: 'flex-end' }}>
+                <Rotulo>Cuándo</Rotulo>
+              </View>
+            </View>
+            {events.map((e, i) => {
+              const tone = IMPACT_TONE[e.impact] ?? 'caution';
+              const { fg } = toneColors(palette, tone);
+              return (
+                <View
+                  key={`${e.event}-${i}`}
+                  accessibilityRole="text"
+                  // La descripción no se dibuja, pero no se pierde.
+                  accessibilityLabel={
+                    `${e.event}. Impacto ${e.impact}. ${e.date}` +
+                    `${e.time ? ' a las ' + e.time : ''}.` +
+                    `${e.desc ? ' ' + e.desc : ''}`
+                  }
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 5,
+                    minHeight: 17,
+                    paddingVertical: 2,
+                    borderTopWidth: i === 0 ? 0 : hairline,
+                    borderTopColor: colors.rule,
+                  }}
+                >
+                  {/* El impacto va en la barra, no en un distintivo: en esta
+                      métrica una etiqueta «ALTO» se come el nombre del
+                      evento, y el color ya lo dice. */}
+                  <View style={{ width: 3, height: 12, backgroundColor: fg }} />
+                  <Text style={[T.dato, { color: colors.ink, flex: 1 }]} numberOfLines={1}>
+                    {e.event}
+                  </Text>
+                  <Text
+                    style={[T.micro, numeric, { color: colors.inkMuted, width: 134, textAlign: 'right' }]}
+                    numberOfLines={1}
+                  >
+                    {e.date}
+                    {e.time ? ` · ${e.time}` : ''}
+                  </Text>
+                </View>
+              );
+            })}
+            <Text style={[T.micro, { color: colors.inkFaint, paddingTop: 3 }]}>
+              {source === 'econdb'
+                ? 'Econdb: eventos confirmados con hora.'
+                : 'Calendario ESTIMADO: la cadencia habitual de publicaciones, no eventos confirmados. Sirve para planificar, no para operar contra el reloj.'}
+            </Text>
+          </View>
+        )}
+      </Placa>
+    );
+  }
 
   return (
     <Panel
