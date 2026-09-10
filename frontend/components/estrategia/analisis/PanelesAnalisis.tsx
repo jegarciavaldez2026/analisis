@@ -50,13 +50,13 @@ function TablaLecturas({ filas }: { filas: FilaAnalisis[] }) {
               borderBottomColor: colors.rule,
             }}
           >
-            <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={1}>
+            <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={2}>
               {f.etiqueta}
             </Text>
             {f.sinFuente ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '62%' }}>
                 <Cifra valor={null} />
-                <Text style={[T.micro, { color: colors.noSignal }]} numberOfLines={1}>
+                <Text style={[T.micro, { color: colors.noSignal }]} numberOfLines={3}>
                   {f.sinFuente}
                 </Text>
               </View>
@@ -64,7 +64,9 @@ function TablaLecturas({ filas }: { filas: FilaAnalisis[] }) {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                 <Cifra valor={valor} escala="datoFuerte" />
                 {f.senal ? (
-                  <Text style={[T.rotulo, { fontSize: 9, color: fg }]} numberOfLines={1}>
+                  // Dos líneas: el backend manda aquí desde «BULL» hasta
+                  // frases enteras, y en una sola se perdía la mitad.
+                  <Text style={[T.rotulo, { fontSize: 9, color: fg, flexShrink: 1 }]} numberOfLines={2}>
                     {f.senal}
                   </Text>
                 ) : null}

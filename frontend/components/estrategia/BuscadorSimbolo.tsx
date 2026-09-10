@@ -183,7 +183,10 @@ export default function BuscadorSimbolo({
           alignItems: 'center',
           gap: 4,
           paddingHorizontal: 8,
-          minHeight: 28,
+          // Un campo de texto no admite `hitSlop`: el área activa ES la caja.
+          // Medido en móvil daba 22 px de alto, la mitad del mínimo. Aquí sí
+          // hay que crecer de verdad.
+          minHeight: 34,
           borderRadius: radius.xs,
           borderWidth: hairline,
           borderColor: abierto ? colors.accent : colors.rule,
@@ -220,7 +223,7 @@ export default function BuscadorSimbolo({
             {
               color: colors.ink,
               minWidth: 110,
-              paddingVertical: 4,
+              paddingVertical: 7,
               ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : null),
             } as any,
           ]}

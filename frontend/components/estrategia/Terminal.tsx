@@ -22,6 +22,7 @@ import {
   StyleProp,
   Text,
   TextStyle,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
@@ -42,6 +43,39 @@ export const D = {
   /** Alto de cabecera de placa. */
   cabecera: 26,
 } as const;
+
+/**
+ * Área activa mínima, en píxeles.
+ *
+ * El sistema de diseño lo dice sin matices: «objetivos táctiles ≥44 pt en todo
+ * control». Este terminal lo incumplía en 71 controles —medido—, con pestañas
+ * de 17 px de alto.
+ *
+ * **El primer intento fue `hitSlop`, y NO funciona aquí.** Comprobado con un
+ * clic a 9 px del borde de una pestaña: no la activa. `react-native-web` no lo
+ * implementa para `Pressable`, así que el área activa es exactamente la caja
+ * dibujada y no hay atajo. Un arreglo que sólo funciona en el papel es peor
+ * que no arreglarlo, porque se da por resuelto.
+ *
+ * La salida es la que el propio sistema de diseño prescribe para lo demás:
+ * **cambiar la composición, no el tamaño de la letra**. Por debajo de 900 px
+ * —el único punto de corte del producto— la escena es un dedo y los controles
+ * crecen hasta 44. Por encima la escena es un ratón, un puntero fino apunta a
+ * 21 px sin problema, y la densidad ES la función de esta pantalla.
+ */
+export const AREA_MINIMA = 44;
+
+/** Punto de corte único del producto: por debajo, la escena es táctil. */
+export const CORTE_TACTIL = 900;
+
+/**
+ * Relleno vertical que hace falta para que un control con `contenido` px de
+ * alto llegue al mínimo táctil. Devuelve el relleno de siempre en escritorio.
+ */
+export function rellenoTactil(ancho: number, contenido: number, compacto: number) {
+  if (ancho >= CORTE_TACTIL) return compacto;
+  return Math.max(compacto, Math.ceil((AREA_MINIMA - contenido) / 2));
+}
 
 /** Escala tipográfica densa. Sale de la del producto, comprimida. */
 export const T = {
@@ -112,8 +146,13 @@ export function Placa({
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
             {titulo ? (
               <Text
-                style={[T.rotulo, { color: colors.inkMuted, textTransform: 'uppercase' }]}
-                numberOfLines={1}
+                style={[T.rotulo, { color: colors.inkMuted, textTransform: 'uppercase', flexShrink: 1 }]}
+                // Dos líneas, no una. La versalita con tracking positivo hace
+                // los títulos ~25 % más anchos de lo que miden, y en la
+                // columna estrecha se recortaban seis: «Liquidez y ejecución»
+                // perdía 41 px y «Transacciones de la cartera» 85 en móvil.
+                // Una tarjeta cuyo nombre no se puede leer no tiene nombre.
+                numberOfLines={2}
               >
                 {titulo}
               </Text>
@@ -234,7 +273,10 @@ export function Rotulo({
         { color: tono === 'neutral' ? colors.inkFaint : fg, textTransform: 'uppercase' },
         style,
       ]}
-      numberOfLines={1}
+      // Dos líneas. En las rejillas de tres columnas a 390 px, rótulos como
+      // «Volumen de la ventana» perdían 35 px —más de media palabra— y una
+      // cifra sin nombre no es una medida.
+      numberOfLines={2}
     >
       {children}
     </Text>
@@ -312,36 +354,71 @@ export function Fila({
 }) {
   const { colors, hairline, palette } = useTheme();
   const { fg } = toneColors(palette, tono);
+  /**
+   * Con motivo, la fila se parte en dos renglones.
+   *
+   * Antes el motivo iba a la derecha, en la misma línea y con `maxWidth: 130`.
+   * Medido a 1680 px, «La VAMA sólo viaja en /indicators-chart, no en
+   * /overton» perdía 137 px: la frase se cortaba justo donde estaba la razón.
+   * Una columna estrecha no es sitio para una explicación; el renglón entero,
+   * sí. El producto dice que un hueco se explica — a medias no cuenta.
+   */
+  if (sinFuente) {
+    return (
+      <View
+        style={{
+          gap: 1,
+          minHeight: D.fila,
+          paddingVertical: 3,
+          borderBottomWidth: ultima ? 0 : hairline,
+          borderBottomColor: colors.rule,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={2}>
+            {etiqueta}
+          </Text>
+          <Cifra valor={null} />
+        </View>
+        <Text style={[T.micro, { color: colors.noSignal }]}>{sinFuente}</Text>
+      </View>
+    );
+  }
+
+  // Umbral de «señal larga». Por encima no es una etiqueta, es una frase.
+  const senalLarga = !!senal && senal.length > 18;
+
   return (
     <View
       style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 8,
+        gap: 1,
         minHeight: D.fila,
         paddingVertical: 2,
         borderBottomWidth: ultima ? 0 : hairline,
         borderBottomColor: colors.rule,
       }}
     >
-      <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={1}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+        }}
+      >
+      <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={2}>
         {etiqueta}
       </Text>
-      {sinFuente ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Cifra valor={null} />
-          <Text style={[T.micro, { color: colors.noSignal, maxWidth: 130 }]} numberOfLines={1}>
-            {sinFuente}
-          </Text>
-        </View>
-      ) : (
-        // `flexShrink` aquí importa: sin él, una etiqueta larga junto a un
-        // valor largo y su señal desbordaban la placa por la derecha en vez de
-        // repartirse el ancho. La medida se recorta antes que salirse.
+      {/* El caso `sinFuente` sale antes por su propia rama; aquí sólo llega la
+          fila con medida.
+
+          `flexShrink` importa: sin él, una etiqueta larga junto a un valor
+          largo y su señal desbordaban la placa por la derecha en vez de
+          repartirse el ancho. La medida se recorta antes que salirse. */}
+      {(
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0 }}>
           <Cifra valor={valor} tono={senal ? 'neutral' : tono} escala="datoFuerte" />
-          {senal ? (
+          {senal && !senalLarga ? (
             <Text
               style={[T.rotulo, { fontSize: 9, color: fg, textTransform: 'uppercase', flexShrink: 1 }]}
               numberOfLines={1}
@@ -351,6 +428,16 @@ export function Fila({
           ) : null}
         </View>
       )}
+      </View>
+      {/* Una señal LARGA baja a su propio renglón.
+          El backend devuelve en este hueco tanto «BULL» como frases enteras
+          («📈 Todas las medias móviles son ALCISTAS - Tendencia alcista
+          fuerte»). Encajadas a la derecha en una línea, las largas perdían
+          234 px medidos y se leía media conclusión. Corto = en línea, que es
+          lo denso; largo = renglón propio, que es lo legible. */}
+      {senalLarga ? (
+        <Text style={[T.micro, { color: fg }]}>{senal}</Text>
+      ) : null}
     </View>
   );
 }
@@ -483,6 +570,7 @@ export function Deslizador({
   deshabilitado?: boolean;
 }) {
   const { colors, radius, hairline, numeric } = useTheme();
+  const { width: anchoVentana } = useWindowDimensions();
   const [ancho, setAncho] = useState(0);
   const anchoRef = useRef(0);
   const onChangeRef = useRef(onChange);
@@ -543,9 +631,12 @@ export function Deslizador({
         accessibilityRole="adjustable"
         accessibilityLabel={etiqueta}
         accessibilityValue={{ min, max, now: valor }}
+
         style={[
           {
-            height: 18,
+            // La pista se dibuja igual; lo que crece en táctil es la banda
+            // que la rodea, que es lo que el dedo tiene que acertar.
+            height: anchoVentana >= CORTE_TACTIL ? 18 : AREA_MINIMA,
             justifyContent: 'center',
           },
           Platform.OS === 'web' ? ({ cursor: deshabilitado ? 'default' : 'pointer' } as any) : null,
@@ -597,6 +688,9 @@ export function Conmutador<K extends string>({
   compacto?: boolean;
 }) {
   const { colors, radius, hairline } = useTheme();
+  const { width } = useWindowDimensions();
+  // 13 px es lo que mide el rótulo de la pestaña; el resto lo pone el relleno.
+  const relleno = rellenoTactil(width, 13, compacto ? 4 : 6);
   return (
     <View
       style={{
@@ -621,8 +715,8 @@ export function Conmutador<K extends string>({
             accessibilityState={{ selected: on, disabled: !!o.deshabilitada }}
             style={({ pressed, hovered }: any) => [
               {
-                paddingHorizontal: compacto ? 5 : 7,
-                paddingVertical: compacto ? 2 : 4,
+                paddingHorizontal: compacto ? 6 : 8,
+                paddingVertical: relleno,
                 backgroundColor: on
                   ? colors.accentWash
                   : pressed || hovered
@@ -674,6 +768,7 @@ export function BotonTerminal({
   style?: StyleProp<ViewStyle>;
 }) {
   const { colors, palette, radius, hairline } = useTheme();
+  const { width } = useWindowDimensions();
   const { fg, wash } = toneColors(palette, tono);
   const tinta = tono === 'neutral' ? colors.ink : fg;
   return (
@@ -689,7 +784,7 @@ export function BotonTerminal({
           alignItems: 'center',
           justifyContent: 'center',
           gap: 4,
-          minHeight: 28,
+          minHeight: width >= CORTE_TACTIL ? 28 : AREA_MINIMA,
           paddingHorizontal: 10,
           borderRadius: radius.xs,
           borderWidth: hairline,

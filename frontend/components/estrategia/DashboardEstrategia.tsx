@@ -27,7 +27,7 @@
  */
 
 import React, { useState } from 'react';
-import { Platform, ScrollView, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme } from '../../contexts/ThemeContext';
@@ -180,33 +180,68 @@ function Cabecera({
 
 function AvisoAlcance() {
   const { colors, palette, radius, hairline } = useTheme();
+  /**
+   * Plegado por defecto, y el titular SIEMPRE visible.
+   *
+   * El alcance hay que declararlo —es un compromiso del producto— pero no
+   * hace falta declararlo entero cada vez que se abre la pantalla. Medido: el
+   * párrafo ocupaba 130 px en escritorio y 290 en móvil, o sea un tercio del
+   * primer viewport de un teléfono gastado en un texto que ya se ha leído.
+   *
+   * Lo que se pliega es la explicación, nunca la afirmación: «sin ejecución»
+   * sigue en pantalla siempre, con su tono de precaución. Esconder eso sí
+   * sería una regresión de honestidad.
+   */
+  const [abierto, setAbierto] = useState(false);
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        gap: 8,
-        padding: 8,
-        borderRadius: radius.xs,
-        borderWidth: hairline,
-        borderColor: palette.caution,
-        backgroundColor: palette.cautionWash,
-      }}
-      accessibilityRole="alert"
+    <Pressable
+      onPress={() => setAbierto((v) => !v)}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: abierto }}
+      accessibilityLabel={
+        abierto
+          ? 'Ocultar el detalle del alcance'
+          : 'Análisis y backtest sin ejecución. Ver el detalle del alcance'
+      }
+      style={({ hovered }: any) => [
+        {
+          flexDirection: 'row',
+          gap: 8,
+          padding: 8,
+          borderRadius: radius.xs,
+          borderWidth: hairline,
+          borderColor: palette.caution,
+          backgroundColor: hovered ? palette.cautionWash : palette.cautionWash,
+        },
+        Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+      ]}
     >
       <Ionicons name="information-circle" size={14} color={palette.caution} style={{ marginTop: 1 }} />
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={[T.datoFuerte, { color: palette.caution }]}>
-          Análisis y backtest — sin ejecución
-        </Text>
-        <Text style={[T.dato, { color: colors.inkMuted, lineHeight: 16 }]}>
-          Señal, score, confluencia multi-marco, riesgo, tamaño y backtest sin look-ahead, todo
-          sobre datos reales. Lo que NO hay es ejecución: ni bróker conectado, ni paper trading,
-          ni órdenes. Sin libro de nivel II —yfinance no lo sirve— el robot no cronometra la
-          entrada al segundo; en su lugar mide liquidez (horquilla estimada por Corwin-Schultz,
-          impacto por Amihud y volumen medio) y con eso acota el tamaño de la posición.
-        </Text>
+      <View style={{ flex: 1, gap: 2, minWidth: 0 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={[T.datoFuerte, { color: palette.caution, flexShrink: 1 }]}>
+            Análisis y backtest — sin ejecución
+          </Text>
+          <Text style={[T.micro, { color: colors.inkMuted }]}>
+            {abierto ? 'Ocultar' : 'Qué incluye'}
+          </Text>
+          <Ionicons
+            name={abierto ? 'chevron-up' : 'chevron-down'}
+            size={12}
+            color={colors.inkMuted}
+          />
+        </View>
+        {abierto ? (
+          <Text style={[T.dato, { color: colors.inkMuted, lineHeight: 16 }]}>
+            Señal, score, confluencia multi-marco, riesgo, tamaño y backtest sin look-ahead, todo
+            sobre datos reales. Lo que NO hay es ejecución: ni bróker conectado, ni paper trading,
+            ni órdenes. Sin libro de nivel II —yfinance no lo sirve— el robot no cronometra la
+            entrada al segundo; en su lugar mide liquidez (horquilla estimada por Corwin-Schultz,
+            impacto por Amihud y volumen medio) y con eso acota el tamaño de la posición.
+          </Text>
+        ) : null}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -251,6 +286,17 @@ export default function DashboardEstrategia({
     segundosParaRefresco,
     falloRefresco,
   } = useEstrategia(simboloInicial, token);
+
+  /**
+   * Alto real de la barra de estado, medido.
+   *
+   * La barra es fija y el `ScrollView` sólo reservaba 24 px por debajo. En
+   * escritorio la barra mide ~34 px y en móvil envuelve a cuatro filas y pasa
+   * de 110: el final de la última tarjeta quedaba permanentemente tapado y no
+   * había forma de llegar a él. Se mide en vez de estimarla, porque su alto
+   * depende de cuántas filas envuelvan a ese ancho.
+   */
+  const [altoBarra, setAltoBarra] = useState(34);
 
   const ruptura: Ruptura = rupturaDe(ancho);
   const compacto = ruptura === 'movil' || ruptura === 'tableta';
@@ -419,7 +465,12 @@ export default function DashboardEstrategia({
   return (
     <View style={{ flex: 1, backgroundColor: colors.canvas }}>
       <ScrollView
-        contentContainerStyle={{ padding: D.hueco, gap: D.hueco, paddingBottom: space.xxl }}
+        contentContainerStyle={{
+          padding: D.hueco,
+          gap: D.hueco,
+          // El aire de siempre MÁS lo que ocupa la barra fija de abajo.
+          paddingBottom: space.xxl + altoBarra,
+        }}
         showsVerticalScrollIndicator={Platform.OS === 'web'}
       >
         <Cabecera
@@ -494,7 +545,14 @@ export default function DashboardEstrategia({
         ) : null}
       </ScrollView>
 
-      <BarraEstado telemetria={telemetria} />
+      <View
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setAltoBarra((previo) => (Math.abs(previo - h) > 1 ? h : previo));
+        }}
+      >
+        <BarraEstado telemetria={telemetria} />
+      </View>
     </View>
   );
 }

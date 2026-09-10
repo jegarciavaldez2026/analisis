@@ -140,14 +140,23 @@ function AppearanceControl({ compact }: { compact?: boolean }) {
             accessibilityLabel={`Apariencia: ${o.label}`}
             style={({ pressed }) => [
               {
-                flex: 1,
+                // `flex: 1` repartía el ancho A PARTES IGUALES, y las tres
+                // palabras no miden lo mismo: «Sistema» necesita 47 px de
+                // texto y «Claro» 34. Cada segmento se llevaba 78 px y el
+                // primero se desbordaba encima del segundo. Con `flexGrow` +
+                // `flexBasis: 'auto'` cada uno se dimensiona por su contenido
+                // y sólo reparte el sobrante, que en 244 px va sobrado.
+                flexGrow: 1,
+                flexShrink: 1,
+                flexBasis: 'auto',
+                minWidth: 0,
                 minHeight: 34,
                 flexDirection: 'row',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: 5,
+                gap: 4,
                 paddingVertical: space.xs,
-                paddingHorizontal: space.xs,
+                paddingHorizontal: space.xxs,
                 backgroundColor: on ? colors.accent : pressed ? colors.accentWash : 'transparent',
                 borderLeftWidth: i === 0 ? 0 : hairline,
                 borderLeftColor: colors.rule,
@@ -155,12 +164,24 @@ function AppearanceControl({ compact }: { compact?: boolean }) {
               Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
             ]}
           >
-            <Ionicons name={o.icon} size={13} color={on ? colors.inkOnAccent : colors.inkMuted} />
+            {/* Icono O etiqueta, nunca los dos. Con los dos, los tres
+                segmentos se quedaban cortos en la barra de 244 px y las tres
+                palabras salían recortadas («Sist…», «Cl…», «Osc…»). La
+                palabra es la que lleva el significado; el icono, con ella
+                delante, sólo ocupaba 17 px por segmento. */}
+            {compact ? (
+              <Ionicons name={o.icon} size={14} color={on ? colors.inkOnAccent : colors.inkMuted} />
+            ) : null}
             {!compact && (
               <Text
+                numberOfLines={1}
                 style={[
                   type.caption,
-                  { color: on ? colors.inkOnAccent : colors.inkMuted, fontWeight: on ? '700' : '500' },
+                  {
+                    color: on ? colors.inkOnAccent : colors.inkMuted,
+                    fontWeight: on ? '700' : '500',
+                    flexShrink: 1,
+                  },
                 ]}
               >
                 {o.label}

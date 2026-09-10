@@ -25,41 +25,92 @@ import { Chip, Cifra, ConDatos, Placa, Rotulo, T } from '../Terminal';
 function FilaIndicador({ f, ultima }: { f: FilaAnalisis; ultima?: boolean }) {
   const { colors, palette, hairline } = useTheme();
   const { fg } = toneColors(palette, f.tono);
-  const valor =
-    typeof f.valor === 'number' ? `${cifra(f.valor)}${f.unidad ?? ''}` : f.valor ? String(f.valor) : null;
+  /**
+   * Una MEDIDA va por `Cifra`; una PALABRA, no.
+   *
+   * `Cifra` lleva `numberOfLines={1}` a propósito —«una cifra nunca se parte
+   * en dos líneas»— y es mono tabular. Por ese hueco estaban pasando frases
+   * enteras del backend: «📈 Todas las medias móviles son ALCISTAS -
+   * Tendencia alcista fuerte» se recortaba a 234 px medidos, y hasta
+   * «COMPRAR» perdía 30. Además el sistema de diseño prohíbe la mono «como
+   * disfraz de técnico en prosa».
+   *
+   * Así que se separan los tres casos: número → `Cifra`; palabra corta →
+   * etiqueta en línea; frase → su propio renglón, en texto normal.
+   */
+  const esNumero = typeof f.valor === 'number';
+  const texto = !esNumero && f.valor ? String(f.valor) : null;
+  const fraseLarga = !!texto && texto.length > 18;
+  const valor = esNumero ? `${cifra(f.valor as number)}${f.unidad ?? ''}` : null;
+
+  /**
+   * Con motivo, la fila se parte en dos renglones. Es el mismo criterio que
+   * `Terminal.Fila`, y por la misma razón medida: encajado a la derecha en
+   * una línea, «La VAMA sólo viaja en /indicators-chart, no en /technical»
+   * perdía 137 px a 1680 px de ancho, cortándose justo donde estaba la razón.
+   * Una columna estrecha no es sitio para una explicación.
+   */
+  if (f.sinFuente) {
+    return (
+      <View
+        style={{
+          gap: 1,
+          paddingVertical: 3,
+          borderBottomWidth: ultima ? 0 : hairline,
+          borderBottomColor: colors.rule,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={2}>
+            {f.etiqueta}
+          </Text>
+          <Cifra valor={null} />
+        </View>
+        <Text style={[T.micro, { color: colors.noSignal }]}>{f.sinFuente}</Text>
+      </View>
+    );
+  }
+
+  const senalLarga = !!f.senal && f.senal.length > 18;
+  const enLinea = texto && !fraseLarga ? texto : null;
 
   return (
     <View
       style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 6,
+        gap: 1,
         minHeight: 19,
+        paddingVertical: 2,
         borderBottomWidth: ultima ? 0 : hairline,
         borderBottomColor: colors.rule,
       }}
     >
-      <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={1}>
-        {f.etiqueta}
-      </Text>
-      {f.sinFuente ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '60%' }}>
-          <Cifra valor={null} />
-          <Text style={[T.micro, { color: colors.noSignal }]} numberOfLines={1}>
-            {f.sinFuente}
-          </Text>
-        </View>
-      ) : (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-          <Cifra valor={valor} escala="datoFuerte" />
-          {f.senal ? (
-            <Text style={[T.rotulo, { fontSize: 9, color: fg }]} numberOfLines={1}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+        <Text style={[T.dato, { color: colors.inkMuted, flexShrink: 1 }]} numberOfLines={2}>
+          {f.etiqueta}
+        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1, minWidth: 0 }}>
+          {esNumero ? <Cifra valor={valor} escala="datoFuerte" /> : null}
+          {enLinea ? (
+            <Text style={[T.datoFuerte, { color: colors.ink, flexShrink: 1 }]} numberOfLines={1}>
+              {enLinea}
+            </Text>
+          ) : null}
+          {!esNumero && !texto ? <Cifra valor={null} escala="datoFuerte" /> : null}
+          {f.senal && !senalLarga ? (
+            <Text style={[T.rotulo, { fontSize: 9, color: fg, flexShrink: 1 }]} numberOfLines={1}>
               {f.senal}
             </Text>
           ) : null}
         </View>
-      )}
+      </View>
+      {/* Una señal LARGA baja a su propio renglón.
+          El backend devuelve en este hueco tanto «BULL» como frases enteras
+          («📈 Todas las medias móviles son ALCISTAS - Tendencia alcista
+          fuerte»). Encajadas a la derecha en una línea, las largas perdían
+          234 px medidos y se leía media conclusión. Corto = en línea, que es
+          lo denso; largo = renglón propio, que es lo legible. */}
+      {fraseLarga ? <Text style={[T.micro, { color: colors.inkMuted }]}>{texto}</Text> : null}
+      {senalLarga ? <Text style={[T.micro, { color: fg }]}>{f.senal}</Text> : null}
     </View>
   );
 }
@@ -166,7 +217,10 @@ export default function PanelTecnicoAmpliado({
               </View>
 
               {t.interpretacion ? (
-                <Text style={[T.micro, { color: colors.inkMuted }]} numberOfLines={2}>
+                // Sin `numberOfLines`: es una frase explicativa, no una celda
+                // de tabla. Con dos líneas perdía 251 px medidos en la columna
+                // estrecha y la conclusión se cortaba a la mitad.
+                <Text style={[T.micro, { color: colors.inkMuted }]}>
                   {t.interpretacion}
                 </Text>
               ) : null}

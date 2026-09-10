@@ -28,7 +28,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme } from '../../../contexts/ThemeContext';
@@ -43,7 +43,7 @@ import {
 } from '../../../lib/estrategia/tipos';
 import { leerPivotes } from '../../../lib/estrategia/api';
 import { cifra } from '../../../lib/estrategia/formato';
-import { Cargando, Chip, Cifra, Conmutador, Placa, Rotulo, SinFuente, T } from '../Terminal';
+import { Cargando, Chip, Cifra, Conmutador, Placa, rellenoTactil, Rotulo, SinFuente, T } from '../Terminal';
 
 const MARCOS: readonly { clave: MarcoPivote; texto: string }[] = [
   { clave: '5m', texto: '5m' },
@@ -121,6 +121,7 @@ function Interruptor({
   ayuda: string;
 }) {
   const { colors, palette, radius, hairline } = useTheme();
+  const { width: anchoVentana } = useWindowDimensions();
   const { fg, wash } = toneColors(palette, 'accent');
   return (
     <Pressable
@@ -134,7 +135,9 @@ function Interruptor({
           alignItems: 'center',
           gap: 3,
           paddingHorizontal: 5,
-          paddingVertical: 2,
+          // Mismo criterio que `Conmutador`: en la escena del dedo el control
+          // crece hasta el mínimo táctil; con ratón se queda denso.
+          paddingVertical: rellenoTactil(anchoVentana, 13, 2),
           borderRadius: radius.xs,
           borderWidth: hairline,
           borderColor: activo ? fg : colors.rule,

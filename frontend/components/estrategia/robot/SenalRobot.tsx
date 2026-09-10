@@ -46,7 +46,11 @@ export default function SenalRobot({
             <View style={{ gap: 6 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                  <Text style={[T.cifraGrande, { color: fg }]} numberOfLines={1}>
+                  {/* `adjustsFontSizeToFit` no existe en web y aquí no hace
+                      falta: se deja envolver. Es la SALIDA del producto —
+                      «COMPRAR» perdía 32 px y se leía «COMPRA»— y un veredicto
+                      cortado es peor que un veredicto en dos líneas. */}
+                  <Text style={[T.cifraGrande, { color: fg }]} numberOfLines={2}>
                     {s.accionEs}
                   </Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
