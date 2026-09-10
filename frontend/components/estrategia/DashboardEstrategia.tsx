@@ -297,12 +297,14 @@ export default function DashboardEstrategia({
   const vanoCentro = { movil: 12, tableta: 12, escritorio: 5, ancho: 6 };
   const vanoDerecha = { movil: 12, tableta: 12, escritorio: 4, ancho: 4 };
 
-  // Bandas 2 y 3. En tableta van a dos columnas (6/6/12), no a una: apilar
-  // trece placas a ancho completo es lo que hacía que la pantalla se leyera
-  // como una lista dispersa en vez de como un terminal.
-  const vanoTres = { movil: 12, tableta: 6, escritorio: 3, ancho: 3 };
-  const vanoCinco = { movil: 12, tableta: 6, escritorio: 5, ancho: 5 };
-  const vanoCuatro = { movil: 12, tableta: 12, escritorio: 4, ancho: 4 };
+  // Banda inferior. En tableta va a dos columnas, no a una: apilar placas a
+  // ancho completo es lo que hacía que la pantalla se leyera como una lista
+  // dispersa en vez de como un terminal.
+  //
+  // Aquí había también `vanoTres`, `vanoCinco` y `vanoCuatro`, de cuando la
+  // banda inferior tenía tres columnas con delta, cartera y contexto. Todo
+  // eso subió a sus columnas y quedaron sin usar; se quitan en vez de
+  // dejarlos como resto arqueológico.
   const vanoMitad = { movil: 12, tableta: 6, escritorio: 6, ancho: 6 };
 
   /**
@@ -422,6 +424,15 @@ export default function DashboardEstrategia({
           seguidas. Trae sus propios marcos porque un pivote se mira en el de
           la operación, no en el del gráfico principal. */}
       <PanelPivotes simbolo={simbolo} />
+      {/* Alertas y noticias cierran la columna del robot. Están aquí y no en
+          la banda inferior porque son MODIFICADORES DE LA DECISIÓN, no
+          contexto de lectura pausada: una alerta de volatilidad o un titular
+          con impacto cambian el tamaño de la posición que se decide arriba, y
+          leerlos a tres pantallas de distancia de la señal es leerlos tarde.
+          Ninguno de los dos genera compras ni ventas por sí solo — eso ya está
+          decidido en el producto. */}
+      <PanelAlertas bloque={estado.alertas} cargando={cargando} />
+      <PanelNoticias bloque={estado.noticias} cargando={cargando} />
     </View>
   );
 
@@ -481,29 +492,21 @@ export default function DashboardEstrategia({
           </Rejilla>
         )}
 
-        {/* ---------- Banda inferior: el contexto ----------
-            Antes esta banda tenía tres columnas: delta y movimientos a la
-            izquierda, curvas y tablas en el centro, y el contexto a la
-            derecha. Delta subió a la columna del activo y la cartera a la del
-            gráfico, así que aquí sólo queda el contexto — lo que se lee en
-            vertical y no manda ninguna operación.
+        {/* ---------- Banda inferior: el calendario y los eventos ----------
+            Lo último que queda aquí después de repartir el resto por las
+            columnas: las dos placas de FECHAS. Se leen de reojo, no deciden
+            nada por sí solas y ninguna necesita el ancho del gráfico.
 
-            Se reparte en las tres columnas en vez de dejarlo en una sola: con
-            una columna de 4/12, las otras 8/12 quedaban en blanco hasta el
-            final de la página. El orden se conserva. */}
+            Van a mitades y no en tres columnas porque son dos: con la rejilla
+            de tres, la tercera quedaba en blanco hasta el final de la página.
+            En móvil y tableta la propia `Rejilla` las apila. */}
         <Rejilla ruptura={ruptura} hueco={D.hueco}>
-          <Col vano={vanoTres}>
+          <Col vano={vanoMitad}>
             <View style={{ gap: D.hueco }}>
-              <PanelAlertas bloque={estado.alertas} cargando={cargando} />
               <EventosDelValor bloque={estado.eventos} cargando={cargando} />
             </View>
           </Col>
-          <Col vano={vanoCinco}>
-            <View style={{ gap: D.hueco }}>
-              <PanelNoticias bloque={estado.noticias} cargando={cargando} />
-            </View>
-          </Col>
-          <Col vano={vanoCuatro}>
+          <Col vano={vanoMitad}>
             <View style={{ gap: D.hueco }}>
               <EconomicCalendar />
             </View>
