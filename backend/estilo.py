@@ -177,9 +177,24 @@ def _f_rentabilidad(r: Dict[str, Any]) -> Tuple[Optional[float], List[Dict[str, 
 
 def _f_flujo(r: Dict[str, Any]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
     # FCF yield alto = value; margen de FCF alto = negocio de crecimiento.
+    #
+    # `fcf_yield` NO EXISTÍA como clave cuando se escribió esto: el backend
+    # publicaba `ev_fcf` y `price_to_fcf` —sus inversos— pero no la
+    # rentabilidad directa. O sea que este subindicador, el más importante de
+    # los tres, devolvía `None` en todas las empresas y el factor se sostenía
+    # sobre los otros dos. Se añadió a `calculate_ratios` en la auditoría de
+    # cobertura del 11 de septiembre de 2026. Ejemplo de por qué las claves de
+    # un traductor hay que leerlas del `return` del endpoint y no escribirlas
+    # de memoria: el fallo no da error, deja el factor a medio gas.
     detalle = [
         {"clave": "FCF yield", "valor": _num(r.get("fcf_yield")), "barato": 8.0, "caro": 2.0},
         {"clave": "Rentabilidad por dividendo", "valor": _num(r.get("dividend_yield")), "barato": 4.0, "caro": 0.0},
+        # El retorno TOTAL al accionista, no sólo el dividendo. Una empresa que
+        # recompra el 4 % de su capital cada año está devolviendo capital igual
+        # que una que reparte un 4 %, y en el eje valor-crecimiento pesa lo
+        # mismo. Sin esto, cualquier compañía que retribuya por recompra
+        # —la norma en EE. UU.— se escoraba hacia «crecimiento» sin motivo.
+        {"clave": "Retorno al accionista", "valor": _num(r.get("shareholder_yield")), "barato": 6.0, "caro": 0.0},
         {"clave": "Margen FCF", "valor": _num(r.get("fcf_margin")), "barato": 5.0, "caro": 28.0},
     ]
     for d in detalle:

@@ -142,6 +142,9 @@ estática prerrenderiza en claro y el cliente montaba en oscuro.
 | Cinco filas de estados en guiones | `FinancialStatements.jsx` | Nombres de campo obsoletos (`Research Development` → `Research And Development`, etc.). Quinta vez del mismo patrón |
 | CAGR con el signo cambiado | `calcularCAGR` | Supuse que `years` venía de más antiguo a más reciente; la cabecera lo pinta al revés |
 | Columna de ejercicio fantasma | Estados financieros | Un solo `years` con la unión de los tres estados; el 2021 del flujo de caja vaciaba una columna en los otros dos |
+| `fcf_yield` que `estilo.py` leía y no existía | `calculate_ratios` | El subindicador más importante del factor de flujo devolvía `None` en todas las empresas |
+| Crecimiento sostenible del 131 % en AAPL | `calculate_ratios` | ROE × retención se rompe con el patrimonio encogido por recompras (ROE 151,9 %). Ahora se publica el hueco con su motivo |
+| `risk_free_rate = 0.04` a mano | Sharpe | El resto del proyecto ya leía ^TNX. Desplaza Sharpe, Sortino y alfa a la vez |
 
 ### ~~`generatePDF` lanza ReferenceError~~ — YA CORREGIDO
 
@@ -180,6 +183,18 @@ buscarlo.
   columna CAGR se pintó perfecta con todos los signos invertidos. Se cazó
   comprobando una tasa contra los números de su propia fila. Mirar la captura
   verifica la maqueta; sólo rehacer una cuenta a mano verifica el dato.
+- **Una métrica de riesgo siempre devuelve un número plausible.** Un Sortino
+  inflado, una beta sobre series descuadradas o un CVaR que en realidad es el
+  VaR salen los tres con la magnitud y el signo correctos: nada en pantalla
+  delata el fallo. Por eso `test_riesgo.py` está escrito casi entero como
+  contrapruebas —se demuestra que el cálculo correcto y el incorrecto dan
+  resultados distintos sobre el mismo dato—. Cazó dos: las capturas
+  alcista/bajista **saturan en 100 %** si se componen con datos diarios, y la
+  desviación bajista se divide entre el total de observaciones, no entre las
+  negativas.
+- **Cruzar dos series por posición y no por fecha.** Los índices y los valores
+  no comparten calendario. Emparejar por posición da una beta perfectamente
+  creíble y sin ningún significado.
 - **Las maquetas del usuario tienen errores.** Varias traían precios negativos,
   ratios que no cuadraban con su propia entrada y stop, y un «infravalorado»
   con el valor razonable por debajo del precio. **Auditar el código, no la

@@ -96,6 +96,7 @@ def sanitize_float(value, default=0.0):
 #   segunda visita en instantanea sin mentir sobre la frescura del dato.
 #
 import time as _time
+import riesgo
 import threading as _threading
 
 _cache_lock = _threading.Lock()
@@ -550,6 +551,66 @@ def _rentabilidad_dividendo(info: dict):
     if bruto <= 0:
         return None
     return bruto * 100.0 if bruto < 1.0 else bruto
+
+
+# ── Contexto de mercado compartido: índice y tipo sin riesgo ─────────────────
+#
+# Los dos son IGUALES para cualquier ticker que se analice, así que se
+# descargan una vez y se guardan una hora. Sin caché, cada análisis se traía
+# cinco años del S&P y una serie del bono: dos peticiones de red por valor
+# analizado que devuelven exactamente lo mismo.
+
+_CACHE_MERCADO: Dict[str, Any] = {"indice": None, "indice_ts": 0.0,
+                                  "rf": None, "rf_ts": 0.0}
+_VIGENCIA_MERCADO = 3600.0
+
+
+def _serie_indice(periodo: str = "5y"):
+    """Cierres del S&P 500, cacheados una hora. `None` si no se pueden traer."""
+    ahora = _time.time()
+    if (_CACHE_MERCADO["indice"] is not None
+            and ahora - _CACHE_MERCADO["indice_ts"] < _VIGENCIA_MERCADO):
+        return _CACHE_MERCADO["indice"]
+    try:
+        h = yf.Ticker("^GSPC").history(period=periodo)
+        serie = h["Close"].dropna() if not h.empty else None
+    except Exception as e:
+        logging.warning(f"No se pudo descargar el S&P 500: {e}")
+        serie = None
+    if serie is not None and len(serie) > 60:
+        _CACHE_MERCADO["indice"] = serie
+        _CACHE_MERCADO["indice_ts"] = ahora
+        return serie
+    return _CACHE_MERCADO["indice"]
+
+
+def _tasa_sin_riesgo() -> float:
+    """
+    Bono del Tesoro a 10 años (^TNX), en tanto por uno. Respaldo: 4 %.
+
+    Antes el Sharpe llevaba un `risk_free_rate = 0.04` escrito a mano mientras
+    el resto del proyecto ya leía ^TNX. No es un detalle: Sharpe, Sortino y el
+    alfa de Jensen miden EXCESO sobre el activo sin riesgo, así que con tipos
+    al 4,5 % un 0,04 fijo los desplaza a los tres en la misma dirección y de
+    forma invisible.
+    """
+    ahora = _time.time()
+    if (_CACHE_MERCADO["rf"] is not None
+            and ahora - _CACHE_MERCADO["rf_ts"] < _VIGENCIA_MERCADO):
+        return _CACHE_MERCADO["rf"]
+    tasa = 0.04
+    try:
+        h = yf.Ticker("^TNX").history(period="5d")
+        if not h.empty:
+            # ^TNX cotiza el tipo en porcentaje (4,21 = 4,21 %).
+            v = float(h["Close"].iloc[-1]) / 100.0
+            if 0.0 < v < 0.20:
+                tasa = v
+    except Exception as e:
+        logging.debug(f"^TNX no disponible, se usa el 4 %: {e}")
+    _CACHE_MERCADO["rf"] = tasa
+    _CACHE_MERCADO["rf_ts"] = ahora
+    return tasa
 
 
 def safe_divide(numerator, denominator, default=None):
@@ -1124,24 +1185,44 @@ def calculate_ratios(ticker_data):
             if fifty_two_week_low > 0 and current_price >= 0 else 0
         )
 
-        # ── Sharpe Ratio ──────────────────────────────────────────────────────
+        # ── Riesgo de mercado ─────────────────────────────────────────────────
+        #
+        # Se descargan CINCO años en una sola petición y de ahí salen dos
+        # cosas: las métricas a un año que ya existían (recortando el último
+        # tramo) y el panel completo de `riesgo.py`. Antes se pedía un año y
+        # sólo daba para el Sharpe.
+        #
+        # Las de un año se conservan tal cual porque están rotuladas «1Y» y
+        # puede haber quien las mire, pero **un Sharpe de 252 observaciones no
+        # debería decidir nada**: lo domina lo que el valor haya hecho en los
+        # últimos doce meses. Por eso el panel nuevo va a cinco años y lo dice
+        # en el nombre de cada métrica.
+        riesgo_mercado = {}
+        risk_free_rate = _tasa_sin_riesgo()
         try:
-            history_1y = yf.Ticker(ticker_data.ticker).history(period="1y")
-            if not history_1y.empty and len(history_1y) > 20:
-                daily_returns         = history_1y['Close'].pct_change().dropna()
+            hist_5y = yf.Ticker(ticker_data.ticker).history(period="5y")
+            cierres = hist_5y['Close'].dropna() if not hist_5y.empty else None
+
+            if cierres is not None and len(cierres) > 20:
+                ultimo_anio = cierres.iloc[-252:] if len(cierres) > 252 else cierres
+                daily_returns         = ultimo_anio.pct_change().dropna()
                 mean_daily_return     = daily_returns.mean()
                 annualized_return     = (1 + mean_daily_return) ** 252 - 1
                 daily_std             = daily_returns.std()
                 annualized_volatility = daily_std * np.sqrt(252)
-                risk_free_rate        = 0.04
                 sharpe_ratio = (
                     (annualized_return - risk_free_rate) / annualized_volatility
                     if annualized_volatility > 0 else 0
                 )
             else:
                 sharpe_ratio = annualized_return = annualized_volatility = 0
+
+            if cierres is not None and len(cierres) > 60:
+                riesgo_mercado = riesgo.metricas(
+                    cierres, _serie_indice(), tasa_sin_riesgo=risk_free_rate
+                )
         except Exception as e:
-            logging.warning(f"Sharpe ratio calculation error: {str(e)}")
+            logging.warning(f"Riesgo de mercado: {e}")
             sharpe_ratio = annualized_return = annualized_volatility = 0
 
         # ── Beneish M-Score ───────────────────────────────────────────────────
@@ -1372,6 +1453,150 @@ def calculate_ratios(ticker_data):
         except Exception as e:
             logging.warning(f"CAGR calculation error: {e}")
 
+        # ══════════════════════════════════════════════════════════════════════
+        #  Ratios añadidos tras la auditoría de cobertura (11 sep 2026)
+        # ══════════════════════════════════════════════════════════════════════
+        #
+        # Se añaden porque el panel tenía tres puntos ciegos que ninguna de las
+        # 110 métricas anteriores cubría, y los tres cambian decisiones:
+        #
+        #   1. **Retorno al accionista y dilución.** Había rentabilidad por
+        #      dividendo y payout, y NADA sobre recompras ni sobre el número de
+        #      acciones. En el S&P 500 las recompras superan a los dividendos
+        #      desde hace más de una década, así que juzgar el retorno al
+        #      accionista sólo por el dividendo subestima la mitad. Y al revés:
+        #      una empresa que emite acciones para pagar la retribución en
+        #      capital diluye al partícipe todos los años sin que aparezca en
+        #      ningún ratio.
+        #   2. **Solvencia medida con caja de verdad.** Estaba Deuda neta /
+        #      EBITDA, que es el múltiplo más maquillado del crédito porque el
+        #      EBITDA no es caja. Deuda neta / FCF dice los años que hacen falta
+        #      para pagar la deuda con el dinero que la empresa genera de
+        #      verdad.
+        #   3. **Calidad del crecimiento.** Había CAGR de ingresos, pero no si
+        #      ese crecimiento se paga solo o se financia con deuda y dilución.
+        #
+        # Ninguno se rellena con un valor por defecto: si falta el dato, queda
+        # en None y la interfaz enseña el hueco.
+
+        fcf_yield = None
+        buyback_yield = shareholder_yield = dilucion_acciones = None
+        net_debt_fcf = intervalo_defensivo = None
+        regla_40 = crecimiento_sostenible = brecha_crecimiento = None
+
+        try:
+            # ── FCF Yield ─────────────────────────────────────────────────────
+            # La rentabilidad del flujo de caja libre sobre la capitalización.
+            # Para un inversor de valor es el ratio central —lo que la empresa
+            # genera por cada euro que cuesta— y **no estaba**: había EV/FCF y
+            # P/FCF, que son su inverso y no se leen igual de rápido, pero no
+            # `fcf_yield`. Se nota además porque el clasificador de estilo
+            # (`estilo.py`) lo pedía por ese nombre y no lo encontraba: su
+            # subindicador de FCF yield estaba muerto desde el primer día.
+            if market_cap and market_cap > 0 and free_cash_flow:
+                fcf_yield = safe_divide(free_cash_flow, market_cap) * 100
+
+            # ── Recompras, dilución y retorno total al accionista ─────────────
+            acciones_h = _get_row(income_stmt, 'Diluted Average Shares',
+                                  'Basic Average Shares')
+            _t = _tramo_valido(acciones_h)
+            if _t:
+                antiguo, reciente, anios = _t
+                if antiguo > 0 and reciente > 0 and anios > 0:
+                    # Signo: un número de acciones que BAJA es recompra neta y
+                    # va con signo positivo; que suba es dilución y sale
+                    # negativo. Publicarlo al revés convertiría la dilución en
+                    # una virtud.
+                    r, _nota = cagr_signed(antiguo, reciente, anios)
+                    if r is not None:
+                        dilucion_acciones = r * 100
+                        buyback_yield = -dilucion_acciones
+
+            # Retorno total al accionista: dividendos + recompras netas de
+            # emisiones + amortización neta de deuda, sobre la capitalización.
+            # Las tres son formas de devolver capital, y mirar sólo la primera
+            # es lo que hace que una empresa sin dividendo parezca que no
+            # retribuye.
+            if market_cap and market_cap > 0:
+                recompras = abs(_n(cf, 'Repurchase Of Capital Stock'))
+                emisiones = abs(_n(cf, 'Issuance Of Capital Stock',
+                                   'Common Stock Issuance'))
+                deuda_pagada = abs(_n(cf, 'Long Term Debt Payments',
+                                      'Repayment Of Debt'))
+                deuda_emitida = abs(_n(cf, 'Long Term Debt Issuance',
+                                       'Issuance Of Debt'))
+                neto = ((dividends_paid or 0)
+                        + (recompras - emisiones)
+                        + (deuda_pagada - deuda_emitida))
+                # La amortización de deuda sólo cuenta si es NETA: refinanciar
+                # —pagar 10 000 y emitir 10 000— no devuelve nada a nadie, y
+                # sumar sólo el pago inflaría el ratio en cualquier empresa que
+                # renueve vencimientos, que son casi todas.
+                shareholder_yield = safe_divide(neto, market_cap) * 100
+
+            # ── Años de FCF para pagar la deuda neta ──────────────────────────
+            if free_cash_flow and free_cash_flow > 0 and net_debt is not None:
+                # Con caja neta (deuda negativa) el ratio sale negativo y eso
+                # es correcto: no debe nada y le sobra caja.
+                net_debt_fcf = safe_divide(net_debt, free_cash_flow)
+
+            # ── Intervalo defensivo ───────────────────────────────────────────
+            # Cuántos días puede pagar la empresa sus gastos operativos con lo
+            # que ya tiene líquido, sin vender nada nuevo. Es la pregunta que
+            # el ratio corriente no contesta: éste incluye existencias, que en
+            # una crisis no se venden, y no dice nada del ritmo de gasto.
+            activos_defensivos = ((cash or 0)
+                                  + _n(balance, 'Other Short Term Investments')
+                                  + (accounts_receivable or 0))
+            gasto_diario = safe_divide(
+                (cogs_val or 0) + (operating_expenses or 0) - (depreciation or 0),
+                365
+            )
+            if activos_defensivos > 0 and gasto_diario and gasto_diario > 0:
+                # Se resta la amortización porque no sale caja por ella; con
+                # ella dentro, una empresa intensiva en capital parecería
+                # quemar mucho más de lo que quema.
+                intervalo_defensivo = activos_defensivos / gasto_diario
+
+            # ── Regla del 40 ──────────────────────────────────────────────────
+            # Crecimiento de ingresos (%) + margen de FCF (%). El listón
+            # estándar para saber si el crecimiento se está pagando con caja o
+            # quemándola: crecer un 40 % sin margen y crecer un 10 % con un
+            # 30 % de margen son negocios distintos y aquí puntúan igual, que
+            # es justo lo que la regla quiere decir.
+            if cagr_revenue_4y is not None and fcf_margin is not None:
+                regla_40 = cagr_revenue_4y * 100 + fcf_margin
+
+            # ── Crecimiento sostenible y su brecha ────────────────────────────
+            # ROE x (1 - payout): lo que la empresa puede crecer reinvirtiendo
+            # su propio beneficio, sin pedir dinero fuera.
+            #
+            # **La fórmula se rompe cuando el patrimonio no es una medida real
+            # del capital empleado**, y eso pasa en cuanto la empresa lleva
+            # años recomprando: las acciones retiradas salen del patrimonio y
+            # el denominador se encoge. Medido el 11 de septiembre de 2026,
+            # AAPL tiene un ROE del 151,9 % —65 000 millones de patrimonio
+            # contra 100 000 de beneficio— y la fórmula devolvía un
+            # «crecimiento sostenible del 131 %», que no es una previsión de
+            # nada. Varias compañías del S&P (MCD, HD, SBUX, BA) llegan
+            # directamente a patrimonio NEGATIVO por la misma razón.
+            #
+            # Por encima del 40 % de ROE se publica el hueco con su motivo en
+            # vez de la cifra. Un 131 % en pantalla no se lee como «esta
+            # fórmula no aplica aquí»: se lee como un dato.
+            if roe is not None and payout_ratio is not None and 0 < roe <= 40:
+                retencion = max(0.0, 1.0 - payout_ratio / 100)
+                crecimiento_sostenible = roe * retencion
+                if cagr_revenue_4y is not None:
+                    # La brecha es lo interesante: crecer MÁS de lo sostenible
+                    # no es una virtud por sí sola, significa que la diferencia
+                    # se está financiando con deuda o con acciones nuevas. Se
+                    # lee junto a la dilución y al apalancamiento, no sola.
+                    brecha_crecimiento = cagr_revenue_4y * 100 - crecimiento_sostenible
+
+        except Exception as e:
+            logging.warning(f"Ratios de retorno al accionista y solvencia: {e}")
+
         # ── BUG FIX 3: PEG Ratio corregido ────────────────────────────────────
         # Antes: siempre None porque cagr_eps_4y llegaba como 0.0 por Bug 2
         peg_calc = None
@@ -1477,6 +1702,18 @@ def calculate_ratios(ticker_data):
             # Growth
             'cagr_diagnostico':   cagr_diagnostico,
             'cagr_revenue_4y':    cagr_revenue_4y,
+
+            # ── Retorno al accionista, solvencia en caja y calidad del
+            #    crecimiento. Auditoría de cobertura del 11 sep 2026. ──────────
+            'fcf_yield':              fcf_yield,
+            'buyback_yield':          buyback_yield,
+            'shareholder_yield':      shareholder_yield,
+            'dilucion_acciones':      dilucion_acciones,
+            'net_debt_fcf':           net_debt_fcf,
+            'intervalo_defensivo':    intervalo_defensivo,
+            'regla_40':               regla_40,
+            'crecimiento_sostenible': crecimiento_sostenible,
+            'brecha_crecimiento':     brecha_crecimiento,
             'cagr_op_margin_4y':  cagr_op_margin_4y,
             'cagr_fcf_4y':        cagr_fcf_4y,
             'cagr_fcf_note':      cagr_fcf_note,
@@ -1594,6 +1831,12 @@ def calculate_ratios(ticker_data):
             'sharpe_ratio':          sharpe_ratio,
             'annualized_return':     annualized_return * 100,
             'annualized_volatility': annualized_volatility * 100,
+
+            # ── Panel de riesgo de mercado a 5 años (`riesgo.py`) ────────────
+            # Se vuelca entero con prefijo para que no choque con las de 1 año
+            # y para que la ventana quede escrita también en la clave, no sólo
+            # en el rótulo de pantalla.
+            **{f'riesgo_{k}': v for k, v in (riesgo_mercado or {}).items()},
             # Quality Scores
             'altman_z_score':    altman_z,
             'piotroski_f_score': f_score,
@@ -1769,6 +2012,36 @@ def evaluate_ratios(ratios, info):
          "Retorno sobre capital incremental — si iROIC < WACC, el crecimiento destruye valor aunque el ROIC base sea alto",
          _fmt(iroic_val, ".1f", "%"))
 
+    # ── Calidad del crecimiento ───────────────────────────────────────────────
+    # Había CAGR de ingresos, pero nada sobre si ese crecimiento se paga solo.
+    # Crecer un 25 % quemando caja y crecer un 8 % generándola son cosas
+    # opuestas y hasta ahora se leían igual.
+    r40_val = ratios.get('regla_40')
+    _add(profitability_metrics, "Regla del 40", r40_val, "≥ 40",
+         _safe_cmp_gt(r40_val, 40.0) if r40_val is not None else None,
+         "Crecimiento de ingresos (%) + margen de FCF (%). Mide si el crecimiento se está pagando con caja o quemándola",
+         _fmt(r40_val, ".1f", na="—"))
+
+    cs_val = ratios.get('crecimiento_sostenible')
+    _roe_cs = ratios.get('roe')
+    _nota_cs = ("Lo que la empresa puede crecer reinvirtiendo su propio beneficio, "
+                "sin pedir dinero fuera")
+    if cs_val is None and _roe_cs is not None and _roe_cs > 40:
+        _nota_cs = (f"No aplica con un ROE del {_roe_cs:.0f} %: el patrimonio contable es "
+                    "demasiado pequeño frente al beneficio —por recompras acumuladas o "
+                    "por ser un negocio poco intensivo en capital— y la fórmula deja de "
+                    "ser una previsión de crecimiento. Se mira el ROIC en su lugar")
+    _add(profitability_metrics, "Crecimiento sostenible (ROE × retención)", cs_val, "> 8%",
+         _safe_cmp_gt(cs_val, 8.0) if cs_val is not None else None,
+         _nota_cs,
+         _fmt(cs_val, ".2f", "%", na="—"))
+
+    bc_val = ratios.get('brecha_crecimiento')
+    _add(profitability_metrics, "Brecha de crecimiento", bc_val, "< +5 pp",
+         _safe_cmp_lt(bc_val, 5.0) if bc_val is not None else None,
+         "Crecimiento real menos el sostenible. Muy por encima significa que la diferencia se financia con deuda o con acciones nuevas",
+         _fmt(bc_val, "+.2f", " pp", na="—"))
+
     categories.append(RatioCategory(category="📊 Rentabilidad", metrics=profitability_metrics))
 
     # =========================================================================
@@ -1787,6 +2060,18 @@ def evaluate_ratios(ratios, info):
     cash_r_val = ratios.get('cash_ratio', 0) or 0
     _add(liquidity_metrics, "Ratio de Efectivo (Cash Ratio)", cash_r_val, "> 0.5",
          cash_r_val > 0.5, "Capacidad de pago inmediata con efectivo", f"{cash_r_val:.2f}")
+
+    # ── Intervalo defensivo ───────────────────────────────────────────────────
+    # La categoría de liquidez tenía tres ratios y los tres son fotos estáticas
+    # del balance: dicen qué HAY, no cuánto DURA. Éste responde a la pregunta
+    # que de verdad se hace en una crisis de caja —cuántos días aguanta pagando
+    # sus gastos con lo que ya tiene líquido— y no incluye existencias, que es
+    # justo lo que hace inservible al ratio corriente cuando hace falta.
+    idr_val = ratios.get('intervalo_defensivo')
+    _add(liquidity_metrics, "Intervalo defensivo (días)", idr_val, "> 90 días",
+         _safe_cmp_gt(idr_val, 90) if idr_val is not None else None,
+         "Días de gastos operativos que cubre con caja, inversiones a corto y clientes, sin vender nada",
+         _fmt(idr_val, ".0f", " días", na="—"))
 
     categories.append(RatioCategory(category="💧 Liquidez", metrics=liquidity_metrics))
 
@@ -1845,6 +2130,17 @@ def evaluate_ratios(ratios, info):
     ic_val = ratios.get('interest_coverage', 0) or 0
     _add(leverage_metrics, "Cobertura de Intereses", ic_val, "> 2.5",
          ic_val > 2.5, "Capacidad para cubrir pagos de intereses", f"{ic_val:.2f}x")
+
+    # ── Años de FCF para pagar la deuda neta ──────────────────────────────────
+    # Ya estaba Deuda neta / EBITDA, que es el múltiplo más maquillado del
+    # crédito: el EBITDA no es caja y deja fuera intereses, impuestos e
+    # inversión. Éste dice los años que hace falta trabajar para pagar la deuda
+    # con el dinero que la empresa genera de verdad. Negativo = caja neta.
+    ndf_val = ratios.get('net_debt_fcf')
+    _add(leverage_metrics, "Deuda Neta / FCF (años)", ndf_val, "< 3 años",
+         _safe_cmp_lt(ndf_val, 3.0) if ndf_val is not None else None,
+         "Años de flujo de caja libre necesarios para cancelar la deuda neta. Negativo = tiene más caja que deuda",
+         _fmt(ndf_val, ".1f", " años", na="—"))
 
     categories.append(RatioCategory(category="⚖️ Apalancamiento", metrics=leverage_metrics))
 
@@ -1965,6 +2261,37 @@ def evaluate_ratios(ratios, info):
     _add(valuation_metrics, "NCAVPS (Net Current Asset Value/Share)", ncavps_val,
          "Precio < NCAVPS (Graham deep value)",
          ncavps_passed, "Valor neto de activos corrientes por acción — señal de Graham deep value", f"${ncavps_val:.2f}")
+
+    # ── Retorno al accionista ─────────────────────────────────────────────────
+    # Este bloque cubre el mayor punto ciego que tenía el panel: había
+    # rentabilidad por dividendo y payout, y NADA sobre recompras ni sobre el
+    # número de acciones. En el S&P 500 las recompras superan a los dividendos
+    # desde hace más de una década, así que juzgar la retribución sólo por el
+    # dividendo se deja fuera más de la mitad — y una empresa que emite
+    # acciones diluye al accionista todos los años sin aparecer en ningún ratio.
+    fcfy_val = ratios.get('fcf_yield')
+    _add(valuation_metrics, "FCF Yield (FCF / Capitalización)", fcfy_val, "> 5%",
+         _safe_cmp_gt(fcfy_val, 5.0) if fcfy_val is not None else None,
+         "Lo que la empresa genera en caja libre por cada euro que cuesta. El ratio central del inversor de valor",
+         _fmt(fcfy_val, ".2f", "%", na="—"))
+
+    sy_val = ratios.get('shareholder_yield')
+    _add(valuation_metrics, "Shareholder Yield (retorno total)", sy_val, "> 3%",
+         _safe_cmp_gt(sy_val, 3.0) if sy_val is not None else None,
+         "Dividendos + recompras netas + amortización neta de deuda, sobre la capitalización. Las tres formas de devolver capital",
+         _fmt(sy_val, ".2f", "%", na="—"))
+
+    by_val = ratios.get('buyback_yield')
+    _add(valuation_metrics, "Buyback Yield (recompra neta)", by_val, "> 0%",
+         _safe_cmp_gt(by_val, 0.0) if by_val is not None else None,
+         "Reducción anual del número de acciones. Positivo = recompra; negativo = está diluyendo",
+         _fmt(by_val, ".2f", "%", na="—"))
+
+    dil_val = ratios.get('dilucion_acciones')
+    _add(valuation_metrics, "Dilución anual de acciones", dil_val, "< 1%",
+         _safe_cmp_lt(dil_val, 1.0) if dil_val is not None else None,
+         "Crecimiento anual del número de acciones. Cada punto es un punto menos de beneficio por acción para el accionista actual",
+         _fmt(dil_val, ".2f", "%", na="—"))
 
     categories.append(RatioCategory(category="💰 Valoración", metrics=valuation_metrics))
 
@@ -2159,6 +2486,138 @@ def evaluate_ratios(ratios, info):
     spread_val = ratios.get('roic_wacc_spread', 0) or 0
     _add(risk_metrics, "ROIC vs WACC Spread", spread_val, "> 0%",
          spread_val > 0, "Diferencia entre retorno y costo de capital — positivo = crea valor", f"{spread_val:.2f}%")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Panel de riesgo de mercado a 5 años (`riesgo.py`)
+    # ══════════════════════════════════════════════════════════════════════════
+    #
+    # La categoría tenía seis métricas y dos de ellas —WACC y el diferencial
+    # ROIC-WACC— no son riesgo de mercado sino coste del capital. El riesgo
+    # real se resumía en tres números: Sharpe, volatilidad y beta.
+    #
+    # La ventana es de CINCO años y va escrita en el rótulo. Las de un año se
+    # dejan como estaban, pero un Sharpe de 252 observaciones lo domina lo que
+    # el valor haya hecho en los últimos doce meses. El contraste entre los dos
+    # Sharpe es en sí mismo información: excelente a un año y mediocre a cinco
+    # es suerte reciente, no calidad.
+
+    def _r(clave):
+        return ratios.get(f'riesgo_{clave}')
+
+    ret5 = _r('retorno_5a')
+    _add(risk_metrics, "Retorno Anualizado (5A)", ret5, "> 10%",
+         _safe_cmp_gt(ret5, 10.0) if ret5 is not None else None,
+         "Rendimiento anualizado geométrico de cinco años: el que se lleva de verdad quien mantiene la posición",
+         _fmt(ret5, ".2f", "%", na="—"))
+
+    vol5 = _r('volatilidad_5a')
+    _add(risk_metrics, "Volatilidad Anualizada (5A)", vol5, "< 30%",
+         _safe_cmp_lt(vol5, 30.0) if vol5 is not None else None,
+         "Desviación típica anualizada sobre cinco años",
+         _fmt(vol5, ".2f", "%", na="—"))
+
+    sh5 = _r('sharpe_5a')
+    _add(risk_metrics, "Sharpe (5A)", sh5, "> 1.0",
+         _safe_cmp_gt(sh5, 1.0) if sh5 is not None else None,
+         "Exceso sobre el activo sin riesgo por unidad de volatilidad total, en la misma ventana que el Sortino",
+         _fmt(sh5, ".2f", na="—"))
+
+    sor = _r('sortino')
+    _add(risk_metrics, "Sortino (5A)", sor, "> 1.0",
+         _safe_cmp_gt(sor, 1.0) if sor is not None else None,
+         "Como el Sharpe pero castigando SÓLO las caídas. Subir a saltos no es riesgo; el Sharpe lo penaliza igual",
+         _fmt(sor, ".2f", na="—"))
+
+    cal = _r('calmar')
+    _add(risk_metrics, "Calmar (5A)", cal, "> 0.5",
+         _safe_cmp_gt(cal, 0.5) if cal is not None else None,
+         "Rendimiento por unidad de la PEOR caída sufrida, no de la volatilidad media",
+         _fmt(cal, ".2f", na="—"))
+
+    mdd = _r('max_drawdown')
+    _rec = _r('drawdown_recuperado')
+    _ses = _r('sesiones_recuperacion')
+    _cola_dd = ""
+    if mdd is not None and _ses is not None:
+        _cola_dd = (f" Tardó {int(_ses / 21)} meses en recuperarse." if _rec
+                    else f" Sigue sin recuperarla, {int(_ses / 21)} meses después.")
+    _add(risk_metrics, "Máximo Drawdown (5A)", mdd, "> -40%",
+         _safe_cmp_gt(mdd, -40.0) if mdd is not None else None,
+         "La mayor caída de pico a valle en cinco años. Es el número que decide si un inversor aguanta la posición o vende en el peor momento." + _cola_dd,
+         _fmt(mdd, ".1f", "%", na="—"))
+
+    dda = _r('drawdown_actual')
+    _add(risk_metrics, "Caída desde máximos", dda, "> -20%",
+         _safe_cmp_gt(dda, -20.0) if dda is not None else None,
+         "A qué distancia cotiza hoy de su máximo de los últimos cinco años",
+         _fmt(dda, ".1f", "%", na="—"))
+
+    ulc = _r('ulcer_index')
+    _add(risk_metrics, "Ulcer Index (5A)", ulc, "< 15",
+         _safe_cmp_lt(ulc, 15.0) if ulc is not None else None,
+         "Profundidad Y duración de las caídas en un solo número. Dos valores con el mismo drawdown no cuestan lo mismo si uno tarda tres años en recuperarlo",
+         _fmt(ulc, ".1f", na="—"))
+
+    var_ = _r('var_95')
+    cvar_ = _r('cvar_95')
+    _cola_var = ""
+    if var_ is not None and cvar_ is not None and var_ != 0:
+        if abs(cvar_) > abs(var_) * 1.5:
+            _cola_var = " El CVaR es mucho peor que el VaR: la distribución tiene cola y la volatilidad se queda corta describiendo el riesgo."
+    _add(risk_metrics, "VaR 95 % (1 día)", var_, "> -3%",
+         _safe_cmp_gt(var_, -3.0) if var_ is not None else None,
+         "Pérdida diaria que sólo se supera uno de cada veinte días",
+         _fmt(var_, ".2f", "%", na="—"))
+
+    _add(risk_metrics, "CVaR 95 % (pérdida esperada en la cola)", cvar_, "> -5%",
+         _safe_cmp_gt(cvar_, -5.0) if cvar_ is not None else None,
+         "Cuánto se pierde DE MEDIA en ese 5 % de días malos. El VaR dice dónde empieza la cola; éste, lo que hay dentro." + _cola_var,
+         _fmt(cvar_, ".2f", "%", na="—"))
+
+    asi = _r('asimetria')
+    _add(risk_metrics, "Asimetría de rendimientos", asi, "> -0.5",
+         _safe_cmp_gt(asi, -0.5) if asi is not None else None,
+         "Negativa significa que las sorpresas grandes son a la baja: muchas subidas pequeñas y algún desplome",
+         _fmt(asi, ".2f", na="—"))
+
+    cur = _r('curtosis')
+    _add(risk_metrics, "Curtosis (exceso)", cur, "< 5",
+         _safe_cmp_lt(cur, 5.0) if cur is not None else None,
+         "0 es una distribución normal. Muy por encima, los movimientos extremos son bastante más frecuentes de lo que la volatilidad sugiere",
+         _fmt(cur, ".2f", na="—"))
+
+    cap_a = _r('captura_alcista')
+    cap_b = _r('captura_bajista')
+    _add(risk_metrics, "Captura alcista (5A)", cap_a, "> 100%",
+         _safe_cmp_gt(cap_a, 100.0) if cap_a is not None else None,
+         "Qué proporción de la subida del S&P 500 capta en los meses en que el índice sube",
+         _fmt(cap_a, ".0f", "%", na="—"))
+
+    _add(risk_metrics, "Captura bajista (5A)", cap_b, "< 100%",
+         _safe_cmp_lt(cap_b, 100.0) if cap_b is not None else None,
+         "Qué proporción de la caída del índice se come en los meses malos. Junto con la alcista enseña la asimetría que la beta promedia y esconde",
+         _fmt(cap_b, ".0f", "%", na="—"))
+
+    r2 = _r('r_cuadrado')
+    _add(risk_metrics, "R² frente al S&P 500", r2, "< 75%",
+         _safe_cmp_lt(r2, 75.0) if r2 is not None else None,
+         "Qué parte de su movimiento explica el índice. Muy alto significa que se está pagando gestión activa por algo que un fondo indexado ya da",
+         _fmt(r2, ".0f", "%", na="—"))
+
+    alfa = _r('alfa_jensen')
+    _add(risk_metrics, "Alfa de Jensen (5A)", alfa, "> 0%",
+         _safe_cmp_gt(alfa, 0.0) if alfa is not None else None,
+         "Rendimiento anual que NO explica su beta. Lo que aporta por encima de asumir ese riesgo de mercado",
+         _fmt(alfa, ".2f", "%", na="—"))
+
+    ir = _r('ratio_informacion')
+    te = _r('tracking_error')
+    _add(risk_metrics, "Ratio de información (5A)", ir, "> 0.5",
+         _safe_cmp_gt(ir, 0.5) if ir is not None else None,
+         "Exceso sobre el índice por unidad de riesgo ACTIVO"
+         + (f", con un tracking error del {te:.1f} %" if te is not None else "")
+         + ". Contesta la pregunta de cartera: ¿compensa desviarse del índice?",
+         _fmt(ir, ".2f", na="—"))
 
     categories.append(RatioCategory(category="⚠️ Riesgo y Capital", metrics=risk_metrics))
 

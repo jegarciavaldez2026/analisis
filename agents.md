@@ -651,3 +651,162 @@ financiera, y un «Crecimiento» en verde se leería como una recomendación.
 - **La fila se implementa tres veces**: `Terminal.Fila`,
   `PanelTecnicoAmpliado.FilaIndicador` y `PanelesAnalisis`. Unificarlas es un
   cambio transversal y no estaba pedido.
+
+---
+
+## Auditoría de cobertura de ratios — 26 métricas nuevas (11 sep 2026)
+
+Se inventariaron las 110 métricas existentes antes de proponer nada. La
+conclusión es que el panel estaba **muy bien cubierto en tres áreas y ciego en
+otras tres**:
+
+| Bien cubierto | Ciego |
+|---|---|
+| Rentabilidad (16), valoración por múltiplos (19) | Riesgo de mercado: 6 métricas, y 2 de ellas no son riesgo |
+| Flujo de caja (14), eficiencia (17) | Retorno al accionista: nada sobre recompras ni dilución |
+| Quiebra y calidad contable (11 modelos) | Liquidez (3), y las tres son fotos estáticas del balance |
+
+Total: **110 → 136 métricas**. Ninguna se rellena con un valor por defecto.
+
+### 1. Riesgo de mercado — `backend/riesgo.py` (17 métricas)
+
+Era el hueco grande. La categoría «Riesgo y Capital» tenía seis entradas y dos
+—WACC y el diferencial ROIC-WACC— son coste del capital, no riesgo. El riesgo
+real se resumía en Sharpe, volatilidad y beta.
+
+Lo que faltaba y por qué importa:
+
+- **Máximo drawdown, caída actual y Ulcer Index.** Es el número que decide si
+  alguien aguanta la posición o vende en el peor momento. Un Sharpe excelente
+  con un −60 % por el camino es, en la práctica, una posición que nadie
+  mantiene hasta el final. El Ulcer añade la DURACIÓN: dos valores con el mismo
+  drawdown no cuestan lo mismo si uno tarda tres años en recuperarlo.
+- **Sortino y Calmar.** El Sharpe castiga la volatilidad al alza, que no es
+  riesgo. Sortino separa las dos y Calmar mide contra la peor caída sufrida en
+  vez de contra la volatilidad media.
+- **VaR, CVaR, asimetría y curtosis.** La volatilidad supone normalidad y los
+  rendimientos tienen colas gruesas. Si el CVaR es mucho peor que el VaR, la
+  desviación típica está mintiendo sobre el riesgo, y la tarjeta lo dice en la
+  interpretación.
+- **Capturas alcista y bajista.** Una beta sola esconde la asimetría. AAPL, con
+  beta 1,08, captura el **110 % de las subidas y el 84 % de las caídas**: un
+  perfil excelente que la beta promedia y tapa por completo.
+- **R², alfa de Jensen y ratio de información.** Sin ellos no se puede contestar
+  la pregunta de cartera: ¿esto aporta algo que el índice no dé ya más barato?
+
+**La ventana es de cinco años y va escrita en cada rótulo.** Las de un año se
+conservan, pero un Sharpe de 252 observaciones lo domina lo que el valor haya
+hecho en los últimos doce meses. El contraste entre los dos es en sí mismo
+información: AAPL sale con **Sharpe 1,77 a un año y 0,45 a cinco** — suerte
+reciente, no calidad. Por eso se añadió un Sharpe a 5 años junto al Sortino:
+comparar un Sortino de cinco con un Sharpe de uno no dice nada.
+
+**Además se corrigió un `risk_free_rate = 0.04` escrito a mano** mientras el
+resto del proyecto ya leía ^TNX. No es cosmético: Sharpe, Sortino y alfa miden
+exceso sobre el activo sin riesgo, así que un 4 % fijo los desplaza a los tres
+en la misma dirección y de forma invisible. Ahora sale de ^TNX, cacheado una
+hora junto con la serie del S&P — las dos son iguales para cualquier ticker y
+antes se habrían descargado una vez por análisis.
+
+#### Los dos errores que las pruebas cazaron
+
+**Las capturas no se pueden calcular con datos diarios.** La primera versión
+componía los rendimientos de los días en que el índice sube (y baja) y dividía
+los acumulados. Medido sobre el índice apalancado x2, cuya captura bajista debe
+ser ~200 %: componer los 694 días bajistas lleva el índice a **−0,99957** y el
+apalancado a **−0,99999984**, y el cociente sale **100,04 %**. Saturado en
+100 % pasara lo que pasara, y perfectamente creíble en pantalla.
+
+La segunda versión compuso por meses, y seguía mal: componer los 38 meses
+alcistas de cinco años no mide la diferencia, la multiplica — daba **432 %**.
+La definición correcta (Morningstar) divide las **tasas mensuales medias
+geométricas**, y entonces sale 195 %. Tampoco vale promediar el cociente día a
+día: el índice cierra casi plano la mitad de las sesiones y esas divisiones por
+casi cero dominan la media. Las tres alternativas están fijadas con prueba.
+
+**La desviación bajista se divide entre el TOTAL de observaciones**, no entre
+las que quedan por debajo del objetivo. Es el error clásico del Sortino y da
+otro número sin que nada lo delate.
+
+Y una decisión de método que evita el fallo más caro: **las dos series se
+cruzan por fecha antes de calcular nada**. Los índices y los valores no
+comparten calendario —festivos distintos, suspensiones— y emparejar por
+posición produce una beta plausible y completamente falsa. Hay prueba que quita
+40 días sueltos al índice y comprueba que la beta apenas se mueve.
+
+`test_riesgo.py`, 26 pruebas.
+
+### 2. Retorno al accionista y dilución (4 métricas)
+
+El mayor punto ciego fundamental. Había rentabilidad por dividendo y payout, y
+**nada** sobre recompras ni sobre el número de acciones. En el S&P 500 las
+recompras superan a los dividendos desde hace más de una década, así que juzgar
+la retribución sólo por el dividendo se deja fuera más de la mitad. Y al revés:
+una empresa que emite acciones diluye al accionista todos los años sin que
+aparezca en ningún ratio.
+
+- **FCF Yield** (FCF / capitalización). Estaban EV/FCF y P/FCF —sus inversos—
+  pero no la rentabilidad directa, que es el ratio central del inversor de
+  valor. **Y `estilo.py` lo pedía por ese nombre desde el primer día:** su
+  subindicador de FCF yield devolvía `None` en todas las empresas y el factor
+  se sostenía sobre los otros dos. Un traductor con una clave inventada no da
+  error, deja el factor a medio gas.
+- **Buyback yield y dilución anual**, del número de acciones diluidas. Signo
+  explícito: acciones que bajan es recompra y va en positivo. Medido: AAPL
+  +2,77 %, MSFT +0,08 % (las recompras sólo compensan la retribución en
+  acciones), VZ −0,21 %, XOM −0,79 % (emitió para comprar Pioneer).
+- **Shareholder yield**: dividendos + recompras netas de emisiones +
+  amortización **neta** de deuda. Lo de «neta» importa: refinanciar —pagar
+  10 000 y emitir 10 000— no devuelve nada a nadie, y contar sólo el pago
+  inflaría el ratio en cualquier empresa que renueve vencimientos, que son casi
+  todas.
+
+También entra en `estilo.py`: sin él, cualquier compañía que retribuya por
+recompra —la norma en EE. UU.— se escoraba hacia «crecimiento» sin motivo.
+
+### 3. Solvencia con caja real y colchón (2 métricas)
+
+- **Deuda neta / FCF (años).** Estaba Deuda neta / EBITDA, que es el múltiplo
+  más maquillado del crédito porque el EBITDA no es caja y deja fuera
+  intereses, impuestos e inversión. Éste dice los años de trabajo que hacen
+  falta para pagar la deuda con dinero de verdad. Medido: AAPL 0,6 · MSFT 0,5 ·
+  XOM 1,4 · KO 6,7 · T 7,0 · VZ 8,3.
+- **Intervalo defensivo (días).** Los tres ratios de liquidez son fotos
+  estáticas: dicen qué HAY, no cuánto DURA. Éste da los días de gastos
+  operativos que cubre con caja, inversiones a corto y clientes, sin vender
+  nada. Excluye existencias —que en una crisis no se venden, que es justo lo
+  que hace inservible al ratio corriente— y resta la amortización del gasto,
+  porque no sale caja por ella. Medido: XOM 58 días, MSFT 416.
+
+### 4. Calidad del crecimiento (3 métricas)
+
+- **Regla del 40** (crecimiento de ingresos % + margen FCF %). Crecer un 25 %
+  quemando caja y crecer un 8 % generándola son cosas opuestas y hasta ahora se
+  leían igual. Medido: NVDA 144,8 · MSFT 36,3 · AAPL 25,5 · XOM 0,6.
+- **Crecimiento sostenible** (ROE × retención) y **brecha** contra el real.
+  Crecer por encima de lo sostenible no es una virtud: significa que la
+  diferencia se financia con deuda o con acciones nuevas.
+
+**La guarda que hubo que ponerle.** La fórmula se rompe cuando el patrimonio no
+es una medida real del capital empleado, y eso pasa en cuanto la empresa lleva
+años recomprando: las acciones retiradas salen del patrimonio y el denominador
+se encoge. AAPL tiene un ROE del **151,9 %** —65 000 millones de patrimonio
+contra 100 000 de beneficio— y la primera versión publicó un «crecimiento
+sostenible del 131 %», con una brecha de −129 pp. Varias compañías del S&P
+(MCD, HD, SBUX, BA) llegan directamente a patrimonio negativo por lo mismo.
+
+Por encima del 40 % de ROE se publica el hueco **con su motivo delante**, no la
+cifra: «No aplica con un ROE del 152 %…». Un 131 % en pantalla no se lee como
+«esta fórmula no aplica aquí», se lee como un dato.
+
+### Consecuencia que conviene tener presente
+
+El veredicto COMPRAR / MANTENER / VENDER se calcula sobre el **porcentaje** de
+métricas favorables, así que añadir métricas mueve el denominador y puede mover
+el veredicto. En AAPL pasó de 63,7 % a 65,1 % y siguió en COMPRAR. Si algún día
+se añaden más, hay que mirar si algún valor cambia de banda por eso y no por
+sus números.
+
+Las diez métricas que pueden quedar sin dato entran con `passed=None`, así que
+salen con guion y **no cuentan en el denominador**: un hueco del proveedor no
+puede empeorar la nota de la empresa.
