@@ -34,6 +34,40 @@ import pandas as pd
 import math
 from concurrent.futures import ThreadPoolExecutor
 
+# ══════════════════════════════════════════════════════════════════════════
+#  Barras sin cierre: se descartan en el origen, para TODO el archivo
+#
+#  Fuera de horario Yahoo devuelve ya creada la barra del día en curso con
+#  Open/High/Low/Close a NaN y volumen 0. No es una sesión, es un hueco con
+#  fecha. Y como todo lo que lee `iloc[-1]` hereda ese NaN —VWAP, posición en
+#  el rango, pendiente anual, normalizaciones de gráfico— basta uno para que
+#  la serialización JSON falle con «Out of range float values are not JSON
+#  compliant» y se caiga la respuesta ENTERA, con todos sus paneles.
+#
+#  Ocurrió de verdad, y de noche: en horario de mercado esa barra sí tiene
+#  precio, así que el fallo aparece y desaparece solo según la hora.
+#
+#  Hay 35 llamadas a `.history()` repartidas por el archivo. Parchear cada una
+#  garantiza olvidarse de alguna y que vuelva a pasar la semana que viene, así
+#  que el filtro se pone donde de verdad hay una sola puerta: el propio método.
+#  Se conserva el original y el envoltorio va protegido, para que un cambio de
+#  yfinance no tumbe el arranque.
+# ══════════════════════════════════════════════════════════════════════════
+_yf_history_original = yf.Ticker.history
+
+
+def _history_sin_barras_vacias(self, *args, **kwargs):
+    df = _yf_history_original(self, *args, **kwargs)
+    try:
+        if df is not None and not df.empty and "Close" in df.columns:
+            return df[df["Close"].notna()]
+    except Exception:
+        pass
+    return df
+
+
+yf.Ticker.history = _history_sin_barras_vacias
+
 def sanitize_float(value, default=0.0):
     try:
         if value is None:
@@ -85,6 +119,114 @@ def cache_get(clave: str):
 def cache_put(clave: str, valor, segundos: float):
     with _cache_lock:
         _cache[clave] = (_time.time() + segundos, valor)
+        # Copia de reserva sin caducidad. Ver `cache_reserva`.
+        _reserva[clave] = (_time.time(), valor)
+
+
+# ── Reserva en frío ──────────────────────────────────────────────────────────
+#
+# La caché normal caduca y devuelve None, que es lo correcto cuando el
+# proveedor responde. Pero cuando Yahoo limita por IP —y limita— la alternativa
+# a un dato de hace veinte minutos no es un dato fresco: es una pantalla vacía
+# con un error en rojo. Entre las dos, el dato viejo gana, SIEMPRE que se diga
+# que es viejo y cuánto. Eso último no es opcional: un precio de hace media
+# hora presentado como actual es peor que no enseñar nada.
+_reserva: Dict[str, Tuple[float, Any]] = {}
+
+
+def limpiar_no_finitos(obj):
+    """
+    Sustituye NaN e infinitos por `None`, recorriendo dicts y listas.
+
+    JSON no admite NaN ni Infinity, así que UNO SOLO en cualquier rincón de la
+    respuesta lanza `ValueError: Out of range float values are not JSON
+    compliant` y el endpoint devuelve un 500 — con lo que se cae la pantalla
+    completa por un único campo malo. Pasó de verdad: una barra sin cierre
+    dejaba `vwap.distance_pct` en NaN y con él se iban los quince paneles.
+
+    La causa se corrige en origen (ver `_load_history`), pero esto se queda como
+    red: es preferible un hueco en un campo, que la interfaz ya sabe dibujar,
+    que perder la respuesta entera.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: limpiar_no_finitos(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [limpiar_no_finitos(v) for v in obj]
+    return obj
+
+
+def cache_reserva(clave: str):
+    """Último valor bueno aunque haya caducado. Devuelve `(valor, edad_s)`."""
+    with _cache_lock:
+        entrada = _reserva.get(clave)
+    if not entrada:
+        return None
+    guardado, valor = entrada
+    return valor, _time.time() - guardado
+
+
+# ── Cortafuegos de Yahoo ─────────────────────────────────────────────────────
+#
+# Cuando Yahoo empieza a devolver 429, seguir pidiendo es contraproducente:
+# cada intento cuenta contra la misma ventana y la alarga. Al primer 429 se
+# corta la salida durante unos minutos y se sirve de la reserva. Así la ventana
+# se agota sola en vez de renovarse con cada recarga de pantalla.
+_yahoo_lock = _threading.Lock()
+_yahoo_bloqueado_hasta = 0.0
+BLOQUEO_YAHOO_S = 300
+
+
+def es_error_de_limite(e: Exception) -> bool:
+    t = str(e).lower()
+    return "too many requests" in t or "rate limit" in t or "429" in t
+
+
+def yahoo_limitado() -> bool:
+    with _yahoo_lock:
+        return _time.time() < _yahoo_bloqueado_hasta
+
+
+def segundos_hasta_reintento() -> int:
+    with _yahoo_lock:
+        return max(0, int(_yahoo_bloqueado_hasta - _time.time()))
+
+
+def marcar_yahoo_limitado(segundos: float = BLOQUEO_YAHOO_S):
+    global _yahoo_bloqueado_hasta
+    with _yahoo_lock:
+        nuevo = _time.time() + segundos
+        if nuevo > _yahoo_bloqueado_hasta:
+            _yahoo_bloqueado_hasta = nuevo
+            logging.warning(
+                f"Yahoo limitando: se corta la salida {int(segundos)}s y se sirve de reserva."
+            )
+
+
+def con_reserva(clave: str, valor_fresco=None, motivo: str = ""):
+    """
+    Envuelve una respuesta marcando su procedencia.
+
+    Con dato fresco lo devuelve tal cual. Sin él busca la reserva y la etiqueta
+    con su edad, para que la interfaz pueda decir «hace 12 min» en vez de
+    hacerla pasar por actual. Si tampoco hay reserva, devuelve None y el
+    endpoint decide qué error dar.
+    """
+    if valor_fresco is not None:
+        return valor_fresco
+    guardado = cache_reserva(clave)
+    if guardado is None:
+        return None
+    valor, edad = guardado
+    if isinstance(valor, dict):
+        return {
+            **valor,
+            "_procedencia": "reserva",
+            "_edad_s": int(edad),
+            "_motivo_reserva": motivo or "El proveedor no responde ahora mismo.",
+        }
+    return valor
 
 
 def cache_invalidar(prefijo: str):
@@ -212,13 +354,21 @@ class LlmChat:
             if model is None:
                 return "Error: Modelo IA no disponible. Descarga el modelo en backend/models/"
 
-            response = model.create_chat_completion(
-                messages=self.history,
-                max_tokens=500,
-                temperature=0.1,
-                top_p=0.9,
-                repeat_penalty=1.1,
-            )
+            # `create_chat_completion` bloquea el hilo y el contexto de llama.cpp
+            # no admite llamadas concurrentes (ver `traduccion.LOCK_LLM`): sin el
+            # lock, una traducción de noticias en vuelo a la vez que un mensaje
+            # de chat corrompe el KV-cache y aborta el proceso entero.
+            def _llamar():
+                with LOCK_LLM:
+                    return model.create_chat_completion(
+                        messages=self.history,
+                        max_tokens=500,
+                        temperature=0.1,
+                        top_p=0.9,
+                        repeat_penalty=1.1,
+                    )
+
+            response = await asyncio.to_thread(_llamar)
             assistant_msg = response["choices"][0]["message"]["content"]
             self.history.append({"role": "assistant", "content": assistant_msg})
             return assistant_msg
@@ -237,6 +387,33 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 
+# Traducción de noticias al español con el modelo local. Se importa aquí, ya
+# creada la conexión a Mongo, porque la caché vive en `db.traducciones` y sin
+# ella el coste es inasumible: 1-2 s por titular.
+from traduccion import traducir_noticias, LOCK_LLM  # noqa: E402
+
+
+async def _traducir_articulos(articulos: list) -> list:
+    """
+    Traduce una lista de `NewsArticle` conservando el resto de campos.
+
+    Los modelos de Pydantic no se mutan cómodamente, así que se pasa por dict
+    y se reconstruye. Si algo falla se devuelven los originales: una noticia en
+    inglés se lee, una noticia que revienta el endpoint no.
+    """
+    if not articulos:
+        return articulos
+    try:
+        crudos = [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in articulos]
+        traducidos = await traducir_noticias(
+            db, get_llm_model, crudos, campos=("title", "summary")
+        )
+        return [NewsArticle(**t) for t in traducidos]
+    except Exception as e:
+        logging.warning(f"No se pudieron traducir las noticias: {e}")
+        return articulos
+
+
 # Create the main app without a prefix
 app = FastAPI()
 
@@ -251,7 +428,9 @@ class RatioMetric(BaseModel):
     name: str
     value: Optional[float]
     threshold: Optional[str]
-    passed: bool
+    # `None` = no hay dato para juzgar. Distinto de `False`, que sí es un
+    # juicio sobre la empresa. La interfaz debe pintarlos diferente.
+    passed: Optional[bool]
     interpretation: str
     display_value: str
 
@@ -393,8 +572,20 @@ def cagr_signed(start: float, end: float, years: int) -> Tuple[Optional[float], 
         if ratio <= 0:
             return 0.0, "error"
         raw = (ratio ** (1.0 / years)) - 1.0
-        if end < start:
+
+        # El signo NO se invierte por que el valor haya bajado.
+        #
+        # Con magnitudes positivas la fórmula ya sale negativa sola: unos
+        # ingresos que caen un 8 % anual dan ratio 0.716 y raw −0.08. La línea
+        # anterior hacía `if end < start: raw = -raw`, que volvía a darle la
+        # vuelta y **publicaba esa caída como un crecimiento del +8 %**.
+        #
+        # La inversión solo hace falta cuando ambos extremos son negativos,
+        # porque ahí `abs()` borra el sentido: una pérdida que se reduce de
+        # −100 a −50 es una mejora, aunque el número «suba» hacia cero.
+        if start < 0 and end < 0:
             raw = -raw
+
         if math.isnan(raw) or math.isinf(raw):
             return 0.0, "error"
         return round(raw, 6), "ok"
@@ -871,19 +1062,31 @@ def calculate_ratios(ticker_data):
         # ── CAGRs HISTÓRICOS — BUG CORREGIDO ──────────────────────────────────
         # Bug original: _col() usaba df.get() → busca columnas, no filas
         # Corrección: _get_row() usa df.loc[] para acceder a filas por nombre
-        cagr_revenue_4y = cagr_op_margin_4y = 0.0
-        cagr_fcf_4y = cagr_eps_4y = roa_growth_4y = 0.0
+        # None, no 0.0. Un CAGR del 0 % es un resultado legítimo (ingresos
+        # planos) y no puede significar además "no se pudo calcular". Al
+        # inicializar en cero, un fallo al leer los estados financieros se
+        # publicaba como crecimiento nulo y la interfaz lo marcaba
+        # «Desfavorable»: se estaba juzgando a la empresa por un hueco de datos.
+        cagr_revenue_4y = cagr_op_margin_4y = None
+        cagr_fcf_4y = cagr_eps_4y = roa_growth_4y = None
         cagr_fcf_note = "sin_datos"
         cagr_eps_4y_note = "sin_datos"
+        cagr_diagnostico = "no_evaluado"
 
         try:
             _ai = income_stmt
             _ac = cash_flow
             _ab = balance_sheet
 
+            if _ai.empty:
+                cagr_diagnostico = "cuenta_de_resultados_vacia"
+            elif _ai.shape[1] < 2:
+                cagr_diagnostico = f"solo_{_ai.shape[1]}_ejercicio"
+
             if not _ai.empty and _ai.shape[1] >= 2:
                 n = _ai.shape[1]
                 periods = max(2, min(4, n - 1))
+                cagr_diagnostico = "ok"
 
                 # ✦ BUG FIX: usar _get_row() con df.loc[] en vez de df.get()
                 rev_h  = _get_row(_ai, 'Total Revenue')
@@ -909,6 +1112,12 @@ def calculate_ratios(ticker_data):
                     ast_raw = _get_row(_ab, 'Total Assets')
                     if ast_raw and any(v > 0 for v in ast_raw):
                         ast_h = [v if v > 0 else 1.0 for v in ast_raw]
+
+                # `_get_row` devuelve ceros cuando no encuentra la fila, así que
+                # una lista de ceros no es "ingresos cero": es que la etiqueta
+                # del proveedor no coincide con ninguno de los alias buscados.
+                if not any(v != 0 for v in rev_h):
+                    cagr_diagnostico = "fila_Total_Revenue_no_encontrada"
 
                 # CAGR Ingresos — siempre positivos
                 if len(rev_h) >= 2 and rev_h[-1] > 0 and rev_h[0] > 0:
@@ -1049,6 +1258,7 @@ def calculate_ratios(ticker_data):
         # ── Diccionario final de ratios ───────────────────────────────────────
         ratios = {
             # Growth
+            'cagr_diagnostico':   cagr_diagnostico,
             'cagr_revenue_4y':    cagr_revenue_4y,
             'cagr_op_margin_4y':  cagr_op_margin_4y,
             'cagr_fcf_4y':        cagr_fcf_4y,
@@ -1239,6 +1449,12 @@ def evaluate_ratios(ratios, info):
             name=name, value=value, threshold=threshold, passed=passed,
             interpretation=interpretation, display_value=display_value
         ))
+        # `passed=None` significa "sin dato para juzgar". No entra en el
+        # denominador: si contara, el marcador «X de N favorables» empeoraría
+        # cada vez que el proveedor deja un hueco, y eso no dice nada de la
+        # empresa. La métrica se sigue mostrando, con guion.
+        if passed is None:
+            return
         total_metrics += 1
         if passed:
             favorable += 1
@@ -1302,17 +1518,31 @@ def evaluate_ratios(ratios, info):
     _add(profitability_metrics, "NOPAT Margin", nopat_m, "> 12%",
          nopat_m > 12, "Beneficio operativo neto después de impuestos sobre ventas", f"{nopat_m:.2f}%")
 
-    cagr_rev = ratios.get('cagr_revenue_4y', 0) or 0
-    _add(profitability_metrics, "CAGR Ingresos 4 años", cagr_rev, "> 10%",
-         cagr_rev > 0.10, "Crecimiento compuesto anual de ingresos.", f"{cagr_rev*100:.1f}%")
+    # Los tres CAGR llegan como fracción (0.087 = 8,7 %) o como None si no se
+    # pudieron calcular. `None` NO se marca como desfavorable: no hay dato que
+    # juzgar, y suspender a una empresa por un hueco del proveedor es un error
+    # de lectura, no una opinión prudente.
+    _diag = ratios.get('cagr_diagnostico', 'no_evaluado')
+    _motivo = {
+        "cuenta_de_resultados_vacia": "El proveedor no devolvió la cuenta de resultados.",
+        "fila_Total_Revenue_no_encontrada": "No se encontró la fila de ingresos en los estados.",
+        "no_evaluado": "No se llegó a evaluar.",
+    }.get(_diag, "Histórico insuficiente para un CAGR de 4 años.")
 
-    cagr_op = ratios.get('cagr_op_margin_4y', 0) or 0
-    _add(profitability_metrics, "CAGR Margen Operativo 4 años", cagr_op, "> 10%",
-         cagr_op > 0.10, "Mejora compuesta de eficiencia operativa.", f"{cagr_op*100:.1f}%")
+    def _add_cagr(nombre, valor, descripcion):
+        if valor is None:
+            _add(profitability_metrics, nombre, None, "> 10%", None,
+                 f"{descripcion} Sin datos: {_motivo}", "—")
+        else:
+            _add(profitability_metrics, nombre, valor, "> 10%",
+                 valor > 0.10, descripcion, f"{valor*100:.1f}%")
 
-    roa_g = ratios.get('roa_growth_4y', 0) or 0
-    _add(profitability_metrics, "ROA Growth 4y", roa_g, "> 10%",
-         roa_g > 0.10, "Mejora compuesta de eficiencia de activos.", f"{roa_g*100:.1f}%")
+    _add_cagr("CAGR Ingresos 4 años", ratios.get('cagr_revenue_4y'),
+              "Crecimiento compuesto anual de ingresos.")
+    _add_cagr("CAGR Margen Operativo 4 años", ratios.get('cagr_op_margin_4y'),
+              "Mejora compuesta de eficiencia operativa.")
+    _add_cagr("ROA Growth 4y", ratios.get('roa_growth_4y'),
+              "Mejora compuesta de eficiencia de activos.")
 
     # ✦ NUEVO 13: Incremental ROIC
     iroic_val = ratios.get('incremental_roic')
@@ -2395,12 +2625,30 @@ class ChartDataResponse(BaseModel):
     chart_data: List[ChartDataPoint]
     period: str
 
-@api_router.get("/chart/{ticker}", response_model=ChartDataResponse)
+# Sin `response_model` por el mismo motivo que en `/market-indicators`: FastAPI
+# descartaría las marcas `_procedencia` / `_edad_s` que avisan de una lectura
+# servida desde la reserva. La forma la sigue garantizando `ChartDataResponse`.
+@api_router.get("/chart/{ticker}")
 async def get_chart_data(ticker: str, period: str = "1y"):
     """Get historical price data and compare with S&P 500"""
+    ticker = ticker.upper().strip()
+    # Dos históricos por llamada (el valor y el S&P), y lo pintan dos pantallas.
+    # Diez minutos de caché: son series diarias, no se mueven dentro de la
+    # sesión, y sin esto cada visita gastaba cuota por duplicado.
+    clave_chart = f"chart:{ticker}:{period}"
+    cacheado = cache_get(clave_chart)
+    if cacheado is not None:
+        return cacheado
+
+    if yahoo_limitado():
+        reserva = con_reserva(
+            clave_chart,
+            motivo=f"Yahoo limitando; reintento en {segundos_hasta_reintento()}s.",
+        )
+        if reserva is not None:
+            return reserva
+
     try:
-        ticker = ticker.upper().strip()
-        
         # Fetch stock data
         stock = yf.Ticker(ticker)
         
@@ -2457,7 +2705,7 @@ async def get_chart_data(ticker: str, period: str = "1y"):
             except:
                 continue
         
-        return ChartDataResponse(
+        respuesta_chart = ChartDataResponse(
             ticker=ticker,
             current_price=current_price,
             price_change=price_change,
@@ -2465,10 +2713,27 @@ async def get_chart_data(ticker: str, period: str = "1y"):
             chart_data=chart_data,
             period=period
         )
+        payload_chart = (
+            respuesta_chart.model_dump()
+            if hasattr(respuesta_chart, "model_dump")
+            else respuesta_chart.dict()
+        )
+        # Igual que en /overton: se limpia antes de cachear, para que un NaN no
+        # se quede guardado y repita el 500 durante los diez minutos siguientes.
+        payload_chart = limpiar_no_finitos(payload_chart)
+        cache_put(clave_chart, payload_chart, 600)
+        return payload_chart
         
     except HTTPException:
         raise
     except Exception as e:
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+            reserva = con_reserva(
+                clave_chart, motivo="Yahoo limitando; esta serie es la última guardada."
+            )
+            if reserva is not None:
+                return reserva
         logging.error(f"Error fetching chart data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener datos del gráfico: {str(e)}")
 
@@ -2482,6 +2747,121 @@ class VolumeChartResponse(BaseModel):
     volume_data: List[VolumeDataPoint]
     avg_volume: float
     period: str
+
+# ── Materias primas ────────────────────────────────────────────────────────
+# Un solo endpoint para cualquier futuro cotizado. Nace para el oro, pero el
+# catálogo es abierto: añadir la plata o el cobre no toca código, solo la tabla.
+
+class CommodityChartPoint(BaseModel):
+    date: str
+    close: float
+
+
+class CommodityChartResponse(BaseModel):
+    symbol: str
+    name: str
+    unit: str
+    timeframe: str
+    points: List[CommodityChartPoint]
+    first: float
+    last: float
+    change: float
+    change_percent: float
+    low: float
+    high: float
+    updated: str
+
+
+COMMODITIES = {
+    "oro":       ("GC=F", "Oro",           "USD/oz"),
+    "plata":     ("SI=F", "Plata",         "USD/oz"),
+    "petroleo":  ("CL=F", "Petróleo WTI",  "USD/barril"),
+    "brent":     ("BZ=F", "Brent",         "USD/barril"),
+    "gas":       ("NG=F", "Gas natural",   "USD/MMBtu"),
+    "cobre":     ("HG=F", "Cobre",         "USD/lb"),
+}
+
+# Cada marco temporal es una pareja periodo/intervalo. La granularidad sigue al
+# alcance: pedir un año de velas de un minuto no dice más, solo pesa más.
+TIMEFRAMES = {
+    "1h":      ("5d",  "60m"),
+    "diario":  ("1mo", "1d"),
+    "semanal": ("1y",  "1wk"),
+    "mensual": ("5y",  "1mo"),
+    "anual":   ("max", "3mo"),
+}
+
+
+@api_router.get("/commodity-chart/{symbol}", response_model=CommodityChartResponse)
+async def get_commodity_chart(symbol: str, timeframe: str = "diario"):
+    """Serie histórica de una materia prima en el marco temporal pedido.
+
+    `symbol` acepta tanto un alias del catálogo ("oro") como un ticker de
+    Yahoo ("GC=F"), de modo que la pantalla no necesita saber el ticker real.
+    """
+    try:
+        clave = symbol.strip().lower()
+        if clave in COMMODITIES:
+            ticker, nombre, unidad = COMMODITIES[clave]
+        else:
+            ticker, nombre, unidad = symbol.strip().upper(), symbol.strip().upper(), ""
+
+        marco = timeframe.strip().lower()
+        if marco not in TIMEFRAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Marco temporal no válido. Opciones: {', '.join(TIMEFRAMES)}",
+            )
+        periodo, intervalo = TIMEFRAMES[marco]
+
+        cache_key = f"commodity:{ticker}:{marco}"
+        cacheado = cache_get(cache_key)
+        if cacheado is not None:
+            return cacheado
+
+        hist = yf.Ticker(ticker).history(period=periodo, interval=intervalo)
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"Sin datos para {ticker}")
+
+        cierres = hist["Close"].dropna()
+        if cierres.empty:
+            raise HTTPException(status_code=404, detail=f"Sin cierres para {ticker}")
+
+        # En intradía interesa la hora; en el resto, solo el día.
+        formato = "%Y-%m-%d %H:%M" if intervalo.endswith("m") else "%Y-%m-%d"
+        puntos = [
+            CommodityChartPoint(date=idx.strftime(formato), close=sanitize_float(val))
+            for idx, val in cierres.items()
+        ]
+
+        primero = sanitize_float(float(cierres.iloc[0]))
+        ultimo = sanitize_float(float(cierres.iloc[-1]))
+        variacion = ultimo - primero
+
+        respuesta = CommodityChartResponse(
+            symbol=ticker,
+            name=nombre,
+            unit=unidad,
+            timeframe=marco,
+            points=puntos,
+            first=primero,
+            last=ultimo,
+            change=sanitize_float(variacion),
+            change_percent=sanitize_float((variacion / primero) * 100 if primero else 0),
+            low=sanitize_float(float(cierres.min())),
+            high=sanitize_float(float(cierres.max())),
+            updated=cierres.index[-1].strftime("%Y-%m-%d %H:%M"),
+        )
+        # Intradía envejece rápido; el resto aguanta de sobra media hora.
+        cache_put(cache_key, respuesta, 120 if intervalo.endswith("m") else 1800)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en commodity-chart para {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @api_router.get("/volume/{ticker}", response_model=VolumeChartResponse)
 async def get_volume_data(ticker: str, period: str = "1y", sma_period: int = 20):
@@ -3002,6 +3382,141 @@ class MarketHours(BaseModel):
     status: str  # "Abierto", "Cerrado", "Pre-Market", "After-Hours"
     next_open: str
 
+class EquityIndex(BaseModel):
+    """Un índice de renta variable con el contexto que hace falta para leerlo.
+
+    No basta el último valor: sin el rango de 52 semanas no se sabe si ese
+    número está alto o bajo, y sin el estado de sesión no se sabe si es un
+    precio vivo o el cierre de ayer. Los tres viajan juntos.
+    """
+    name: str
+    ticker: str
+    region: str          # "Americas" | "Europe & Africa" | "Asia-Pacific"
+    last: float
+    change: float
+    change_percent: float
+    week52_low: float
+    week52_high: float
+    week52_position: float   # 0-100: dónde cae `last` dentro del rango
+    session: str             # "Abierto" | "Cerrado"
+    series: List[float] = []  # curva de la sesión, para la línea del gráfico
+    updated: str
+
+
+# Universo de índices. El orden es el que se pinta; la región alimenta las
+# pestañas de la tarjeta. Los husos son los de la plaza, no los del usuario.
+EQUITY_INDICES = [
+    # (nombre, ticker, región, huso, apertura, cierre)
+    ("S&P 500",   "^GSPC", "Americas",        "America/New_York", (9, 30),  (16, 0)),
+    ("Dow",       "^DJI",  "Americas",        "America/New_York", (9, 30),  (16, 0)),
+    ("Nasdaq",    "^IXIC", "Americas",        "America/New_York", (9, 30),  (16, 0)),
+    ("DAX",       "^GDAXI", "Europe & Africa", "Europe/Berlin",   (9, 0),   (17, 30)),
+    ("FTSE 100",  "^FTSE", "Europe & Africa", "Europe/London",    (8, 0),   (16, 30)),
+    ("IBEX 35",   "^IBEX", "Europe & Africa", "Europe/Madrid",    (9, 0),   (17, 30)),
+    ("Euro Stoxx 50", "^STOXX50E", "Europe & Africa", "Europe/Berlin", (9, 0), (17, 30)),
+    ("Nikkei",    "^N225", "Asia-Pacific",    "Asia/Tokyo",       (9, 0),   (15, 0)),
+    ("Hang Seng", "^HSI",  "Asia-Pacific",    "Asia/Hong_Kong",   (9, 30),  (16, 0)),
+
+    # ── Futuros ──────────────────────────────────────────────────────────
+    # Cotizan casi 24 horas, así que dicen hacia dónde abrirá el contado
+    # cuando las bolsas todavía están cerradas. Esa es su utilidad aquí, y
+    # por eso el horario va de 18:00 a 17:00 del día siguiente (CME, con su
+    # pausa diaria de una hora) en vez del horario de una plaza.
+    ("S&P 500 fut.",  "ES=F",  "Futuros", "America/Chicago", (18, 0), (17, 0)),
+    ("Nasdaq fut.",   "NQ=F",  "Futuros", "America/Chicago", (18, 0), (17, 0)),
+    ("Dow fut.",      "YM=F",  "Futuros", "America/Chicago", (18, 0), (17, 0)),
+    ("Russell fut.",  "RTY=F", "Futuros", "America/Chicago", (18, 0), (17, 0)),
+    ("Nikkei fut.",   "NKD=F", "Futuros", "America/Chicago", (18, 0), (17, 0)),
+]
+
+
+def construir_indices_bursatiles() -> List["EquityIndex"]:
+    """Índices con rango de 52 semanas, curva de sesión y estado de plaza.
+
+    Cada índice se resuelve por separado: si Yahoo falla en uno, el resto de
+    la tarjeta sigue en pie. Se cachea porque son nueve peticiones y la
+    pantalla de mercado se recarga a menudo.
+    """
+    cacheado = cache_get("equity_indices")
+    if cacheado is not None:
+        return cacheado
+
+    salida: List[EquityIndex] = []
+    for nombre, ticker, region, huso, apertura, cierre in EQUITY_INDICES:
+        try:
+            t = yf.Ticker(ticker)
+
+            # Rango anual: de aquí salen máximo y mínimo de 52 semanas.
+            anual = t.history(period="1y", interval="1d")
+            if anual.empty:
+                continue
+            ultimo = float(anual["Close"].iloc[-1])
+            previo = float(anual["Close"].iloc[-2]) if len(anual) > 1 else ultimo
+            maximo = float(anual["High"].max())
+            minimo = float(anual["Low"].min())
+
+            # Curva de la sesión. Si el mercado está cerrado, Yahoo devuelve
+            # la última sesión negociada, que es justo lo que queremos pintar.
+            try:
+                intradia = t.history(period="1d", interval="5m")
+                serie = [sanitize_float(v) for v in intradia["Close"].dropna().tolist()]
+                # Un sparkline no necesita 78 puntos: se adelgaza a ~60.
+                if len(serie) > 60:
+                    paso = len(serie) / 60
+                    serie = [serie[int(i * paso)] for i in range(60)]
+                if serie:
+                    ultimo = serie[-1]
+            except Exception:
+                serie = []
+
+            # Los futuros cruzan la medianoche (18:00 → 17:00 del día siguiente)
+            # y `get_market_status` compara horas dentro del mismo día, así que
+            # los daría siempre por cerrados. Se resuelven aparte: abiertos
+            # salvo el fin de semana y la pausa diaria de mantenimiento.
+            if region == "Futuros":
+                try:
+                    import pytz
+                    ahora = datetime.now(pytz.timezone(huso))
+                    dia, hora = ahora.weekday(), ahora.hour
+                    if dia == 5:                              # sábado
+                        abierto = False
+                    elif dia == 6:                            # domingo: abre a las 17
+                        abierto = hora >= 17
+                    elif dia == 4 and hora >= 16:             # viernes: cierra a las 16
+                        abierto = False
+                    else:
+                        abierto = hora != 16                  # pausa diaria
+                    estado = "Abierto" if abierto else "Cerrado"
+                except Exception:
+                    estado = "Cerrado"
+            else:
+                estado, _ = get_market_status(huso, apertura[0], apertura[1], cierre[0], cierre[1])
+            cambio = ultimo - previo
+            recorrido = maximo - minimo
+
+            salida.append(EquityIndex(
+                name=nombre,
+                ticker=ticker,
+                region=region,
+                last=sanitize_float(ultimo),
+                change=sanitize_float(cambio),
+                change_percent=sanitize_float((cambio / previo) * 100 if previo else 0),
+                week52_low=sanitize_float(minimo),
+                week52_high=sanitize_float(maximo),
+                week52_position=sanitize_float(
+                    ((ultimo - minimo) / recorrido) * 100 if recorrido > 0 else 50
+                ),
+                session="Abierto" if estado.startswith("Abierto") else "Cerrado",
+                series=serie,
+                updated=anual.index[-1].strftime("%Y-%m-%d"),
+            ))
+        except Exception as err:
+            logger.warning(f"No se pudo construir el índice {ticker}: {err}")
+
+    cache_put("equity_indices", salida, 300)
+    return salida
+
+
 class MarketIndicatorsResponse(BaseModel):
     vix: MarketIndicator
     treasury_10y: MarketIndicator
@@ -3029,6 +3544,8 @@ class MarketIndicatorsResponse(BaseModel):
     nasdaq: Optional[MarketIndicator] = None
     # Global Indices
     msci_world: Optional[MarketIndicator] = None
+    # Renta variable global, con rango de 52 semanas y curva de sesión
+    equity_indices: List[EquityIndex] = []
     # Market Hours
     market_hours: List[MarketHours]
 
@@ -3071,9 +3588,33 @@ def get_market_status(timezone_name: str, open_hour: int, open_min: int, close_h
     except:
         return "Desconocido", "N/A"
 
-@api_router.get("/market-indicators", response_model=MarketIndicatorsResponse)
+# Sin `response_model`: FastAPI descarta los campos que el modelo no declara, y
+# eso se llevaría por delante las marcas `_procedencia` / `_edad_s` que avisan
+# de que una lectura viene de la reserva. La forma sigue garantizada porque la
+# respuesta se construye con `MarketIndicatorsResponse`.
+@api_router.get("/market-indicators")
 async def get_market_indicators():
     """Get market indicators: VIX, 10Y Treasury, S&P 500, Gold, Oil, EUR/USD, and Market Hours"""
+    # Este endpoint descarga una docena larga de tickers (VIX, ^TNX, índices,
+    # materias primas, divisas, cripto). Lo pintan varias pantallas a la vez y
+    # se repetía en cada montaje: en los registros salía disparándose cada dos
+    # segundos, y es el mayor consumidor de cuota de toda la aplicación. Con
+    # sesenta segundos de caché la lectura sigue siendo actual —ninguno de
+    # estos índices se mueve de forma apreciable en un minuto— y las visitas
+    # repetidas dejan de tocar Yahoo.
+    CLAVE_MI = "market-indicators"
+    cacheado = cache_get(CLAVE_MI)
+    if cacheado is not None:
+        return cacheado
+
+    if yahoo_limitado():
+        reserva = con_reserva(
+            CLAVE_MI,
+            motivo=f"Yahoo limitando; reintento en {segundos_hasta_reintento()}s.",
+        )
+        if reserva is not None:
+            return reserva
+
     try:
         # VIX - Volatility Index
         vix = yf.Ticker("^VIX")
@@ -3184,6 +3725,8 @@ async def get_market_indicators():
             ("USD/MXN", "USDMXN=X"),
             ("USD/CNY", "USDCNY=X"),
             ("EUR/GBP", "EURGBP=X"),
+            ("GBP/JPY", "GBPJPY=X"),
+            ("EUR/JPY", "EURJPY=X"),
         ]
 
         currencies: List[CurrencyPair] = []
@@ -3590,7 +4133,7 @@ async def get_market_indicators():
         oil_current=s(oil_current); oil_change=s(oil_change); oil_change_pct=s(oil_change_pct)
         eurusd_current=s(eurusd_current); eurusd_change=s(eurusd_change); eurusd_change_pct=s(eurusd_change_pct)
 
-        return MarketIndicatorsResponse(
+        respuesta = MarketIndicatorsResponse(
             vix=MarketIndicator(
                 name="VIX - Índice de Volatilidad",
                 ticker="^VIX",
@@ -3654,12 +4197,26 @@ async def get_market_indicators():
             dax=dax_indicator,
             nasdaq=nasdaq_indicator,
             msci_world=msci_world_indicator,
+            equity_indices=construir_indices_bursatiles(),
             market_hours=market_hours,
             fear_greed_level=fear_greed,
             market_sentiment=sentiment
         )
-        
+
+        # Se cachea el dict, no el modelo: la reserva tiene que poder llevar
+        # las marcas `_procedencia` / `_edad_s` cuando se sirva en frío.
+        payload = respuesta.model_dump() if hasattr(respuesta, "model_dump") else respuesta.dict()
+        cache_put(CLAVE_MI, payload, 60)
+        return payload
+
     except Exception as e:
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+            reserva = con_reserva(
+                CLAVE_MI, motivo="Yahoo limitando; estos indicadores son los últimos guardados."
+            )
+            if reserva is not None:
+                return reserva
         logging.error(f"Error fetching market indicators: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener indicadores de mercado: {str(e)}")
 
@@ -3900,6 +4457,16 @@ class PortfolioHolding(BaseModel):
     profit_loss: float
     profit_loss_percent: float
     weight_percent: float = 0.0  # Percentage of portfolio
+    # Contexto por posición para la vista de detalle.
+    beta: Optional[float] = None
+    beta_simplificada: Optional[float] = None   # beta × peso: aportación al riesgo
+    # Antigüedad de la posición: desde la PRIMERA compra que sigue abierta.
+    primera_compra: Optional[str] = None
+    dias_mantenida: Optional[int] = None
+    rentabilidad_anualizada: Optional[float] = None
+    pe_ratio: Optional[float] = None
+    daily_change_percent: Optional[float] = None
+    roi_estimado: Optional[float] = None        # rentabilidad anualizada de la posición
     transactions: List[PortfolioTransaction]
 
 class SectorAllocation(BaseModel):
@@ -3921,6 +4488,12 @@ class PortfolioMetrics(BaseModel):
     treynor_ratio: float = 0.0  # (Return - Risk Free) / Beta
     information_ratio: float = 0.0  # (Return - Benchmark) / Tracking Error
     max_drawdown: float = 0.0
+    # Contexto del cálculo: sin estos tres campos, alpha y Sharpe son cifras
+    # sin denominador visible y no se pueden auditar desde la interfaz.
+    tracking_error: float = 0.0
+    risk_free_rate: float = 0.0
+    benchmark_return: float = 0.0
+    metrics_method: str = "aproximado"
 
 class PortfolioSummary(BaseModel):
     total_invested: float
@@ -4002,6 +4575,53 @@ async def get_current_price(ticker: str):
         logging.error(f"Error fetching price for {ticker}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
 
+def _periodo_tenencia(transacciones, pl_pct):
+    """Antigüedad de la posición y rentabilidad anualizada.
+
+    Se toma la fecha de la PRIMERA compra, no la última: lo que interesa es
+    cuánto tiempo lleva el dinero trabajando, y una compra reciente que amplía
+    una posición vieja no reinicia ese reloj.
+
+    La rentabilidad anualizada permite comparar posiciones de distinta edad.
+    Un +12 % en tres meses y otro +12 % en tres años no son lo mismo, y la
+    columna de P/L sola los muestra idénticos. Por debajo de 30 días no se
+    anualiza: extrapolar una semana a un año da cifras de tres dígitos que no
+    significan nada.
+    """
+    try:
+        compras = [t for t in (transacciones or [])
+                   if str(getattr(t, "transaction_type", "") or "").lower() in ("buy", "compra")]
+        if not compras:
+            return {"primera_compra": None, "dias_mantenida": None, "rentabilidad_anualizada": None}
+
+        fechas = []
+        for t in compras:
+            f = getattr(t, "transaction_date", None)
+            if isinstance(f, datetime):
+                fechas.append(f)
+        if not fechas:
+            return {"primera_compra": None, "dias_mantenida": None, "rentabilidad_anualizada": None}
+
+        primera = min(fechas)
+        dias = max(0, (datetime.utcnow() - primera.replace(tzinfo=None)).days)
+
+        anualizada = None
+        if dias >= 30 and pl_pct is not None:
+            anios = dias / 365.25
+            base = 1 + (pl_pct / 100.0)
+            if base > 0:
+                anualizada = (pow(base, 1 / anios) - 1) * 100
+
+        return {
+            "primera_compra": primera.strftime("%Y-%m-%d"),
+            "dias_mantenida": int(dias),
+            "rentabilidad_anualizada": round(anualizada, 2) if anualizada is not None else None,
+        }
+    except Exception as err:
+        logger.warning(f"Periodo de tenencia: {err}")
+        return {"primera_compra": None, "dias_mantenida": None, "rentabilidad_anualizada": None}
+
+
 @api_router.get("/portfolio", response_model=PortfolioSummary)
 async def get_portfolio(current_user: dict = Depends(get_current_user)):
     """Get portfolio summary with current values, metrics, and sector allocation"""
@@ -4055,6 +4675,9 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             mean_return = 0.0
             volatility = 0.0
             max_dd = 0.0
+            serie = None
+            pe_ratio = None
+            cambio_dia = None
             try:
                 loop = asyncio.get_event_loop()
                 stock = yf.Ticker(ticker)
@@ -4063,6 +4686,10 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                 stock_beta = info.get('beta', 1.0) or 1.0
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
+                pe_ratio = info.get('trailingPE') or info.get('forwardPE')
+                prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+                if prev_close and curr_price:
+                    cambio_dia = ((curr_price - prev_close) / prev_close) * 100
 
                 # Fetch 1 year of historical data for return metrics
                 hist = await loop.run_in_executor(None, lambda: stock.history(period="1y"))
@@ -4071,6 +4698,10 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                     daily_returns = closes.pct_change().dropna()
                     mean_return = float(daily_returns.mean() * 252)  # Annualized
                     volatility = float(daily_returns.std() * (252 ** 0.5))  # Annualized
+                    # La serie completa, no solo su desviación: sin ella no se
+                    # puede calcular la covarianza entre posiciones, y sin
+                    # covarianza la volatilidad de la cartera sale mal.
+                    serie = daily_returns
 
                     # Max drawdown
                     cummax = closes.cummax()
@@ -4080,22 +4711,30 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                 logging.warning(f"Error fetching data for {ticker}: {str(e)}")
                 if data["total_shares"] > 0 and data["total_cost"] > 0:
                     curr_price = data["total_cost"] / data["total_shares"]
-            return ticker, curr_price, stock_beta, sector, industry, mean_return, volatility, max_dd
+            return (ticker, curr_price, stock_beta, sector, industry, mean_return,
+                    volatility, max_dd, serie, pe_ratio, cambio_dia)
 
         valid_holdings_map = {t: d for t, d in holdings_map.items() if d["total_shares"] > 0}
         ticker_results = await asyncio.gather(*[
             fetch_ticker_info(t, d) for t, d in valid_holdings_map.items()
         ])
 
-        for ticker, curr_price, stock_beta, sector, industry, mean_ret, vol, mdd in ticker_results:
+        for (ticker, curr_price, stock_beta, sector, industry, mean_ret, vol, mdd,
+             serie_ret, pe_ratio, cambio_dia) in ticker_results:
             data = valid_holdings_map[ticker]
             curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
             profit_loss = curr_value_stock - data["total_cost"]
             profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
 
-            # Track gains and losses for Gain-Loss Ratio
-            
+            # Ratio ganancias/pérdidas. Estas dos listas se declaraban y nunca
+            # se rellenaban, así que el ratio salía 0.00 en todas las carteras
+            # con independencia de lo que hubiera dentro.
+            if profit_loss >= 0:
+                gains.append(profit_loss)
+            else:
+                losses.append(abs(profit_loss))
+
             holding = PortfolioHolding(
                 ticker=ticker,
                 company_name=data["company_name"],
@@ -4109,6 +4748,13 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                 profit_loss=profit_loss,
                 profit_loss_percent=profit_loss_pct,
                 weight_percent=0,  # Will calculate after we have total
+                beta=round(stock_beta, 4) if stock_beta is not None else None,
+                **_periodo_tenencia(data["transactions"], profit_loss_pct),
+                pe_ratio=round(float(pe_ratio), 2) if pe_ratio else None,
+                daily_change_percent=round(cambio_dia, 2) if cambio_dia is not None else None,
+                # Rentabilidad anualizada observada del valor, no la de la
+                # posición: sirve para comparar activos entre sí.
+                roi_estimado=round(mean_ret * 100, 2) if mean_ret else None,
                 transactions=data["transactions"]
             )
             holdings.append(holding)
@@ -4119,9 +4765,11 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             weights.append(curr_value_stock)
             betas.append(stock_beta)
             returns_data.append({
+                'ticker': ticker,
                 'mean_return': mean_ret,
                 'volatility': vol,
                 'max_drawdown': mdd,
+                'serie': serie_ret,
             })
             
             # Aggregate by sector
@@ -4221,6 +4869,11 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             # Also update holding weight percentages
             for holding in holdings:
                 holding.weight_percent = round((holding.current_value / total_portfolio_value) * 100, 2)
+                # Beta simplificada = beta × peso. Es la aportación de esta
+                # posición a la beta de la cartera, y la suma de todas da la
+                # beta total: se puede auditar sumando la columna.
+                if holding.beta is not None:
+                    holding.beta_simplificada = round(holding.beta * holding.weight_percent / 100, 4)
         
         # Calculate portfolio metrics
         metrics = PortfolioMetrics()
@@ -4253,41 +4906,122 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                         portfolio_max_dd += weights[i] * rd['max_drawdown']
                 
                 portfolio_return = sum(weighted_returns) * 100
-                portfolio_volatility = sum(weighted_volatility) * 100
-                
+
+                # ── Serie diaria de la cartera ────────────────────────────
+                # La volatilidad y el drawdown de una cartera NO son la media
+                # ponderada de los de sus posiciones. Esa era la fórmula
+                # anterior y siempre exagera: ignora la correlación, y solo
+                # sería correcta si todas las posiciones se movieran a la vez
+                # y en la misma dirección. Diversificar sirve precisamente
+                # porque eso no ocurre.
+                #
+                # Lo correcto es construir la serie de la cartera —cada día,
+                # la suma ponderada de los rendimientos— y medir sobre ella.
+                serie_cartera = None
+                try:
+                    columnas = {
+                        rd['ticker']: rd['serie']
+                        for i, rd in enumerate(returns_data)
+                        if i < len(weights) and rd.get('serie') is not None and len(rd['serie']) > 30
+                    }
+                    if len(columnas) >= 1:
+                        marco = pd.DataFrame(columnas).dropna()
+                        pesos_alineados = np.array([
+                            weights[i] for i, rd in enumerate(returns_data)
+                            if i < len(weights) and rd['ticker'] in marco.columns
+                        ])
+                        if len(pesos_alineados) == marco.shape[1] and pesos_alineados.sum() > 0:
+                            pesos_alineados = pesos_alineados / pesos_alineados.sum()
+                            serie_cartera = (marco * pesos_alineados).sum(axis=1)
+                except Exception as err:
+                    logger.warning(f"No se pudo componer la serie de la cartera: {err}")
+
+                if serie_cartera is not None and len(serie_cartera) > 30:
+                    portfolio_volatility = float(serie_cartera.std() * (252 ** 0.5)) * 100
+                    curva = (1 + serie_cartera).cumprod()
+                    portfolio_max_dd = float(((curva - curva.cummax()) / curva.cummax()).min() * 100)
+                    metrics.metrics_method = "covarianza"
+                else:
+                    # Sin series no queda más remedio que la aproximación, pero
+                    # se declara para que no se lea como si fuera exacta.
+                    portfolio_volatility = sum(weighted_volatility) * 100
+                    metrics.metrics_method = "aproximado"
+
                 metrics.average_return = round(portfolio_return, 2)
                 metrics.volatility = round(portfolio_volatility, 2)
                 metrics.max_drawdown = round(portfolio_max_dd, 2)
-                
-                # Sharpe Ratio = (Portfolio Return - Risk Free Rate) / Volatility
-                risk_free_rate = 4.0  # 4% annual
+
+                # ── Tipo sin riesgo y mercado, tomados del mercado ────────
+                # Antes eran 4 % y 10 % fijos en el código. Alpha depende por
+                # completo de esos dos números: con el mercado supuesto al
+                # 10 %, cualquier cartera que rinda menos sale con alpha muy
+                # negativa aunque el mercado real haya caído.
+                risk_free_rate = 4.0
+                market_return = 10.0
+                try:
+                    tnx = cache_get("rf:tnx")
+                    if tnx is None:
+                        h = yf.Ticker("^TNX").history(period="5d")
+                        tnx = float(h["Close"].iloc[-1]) if not h.empty else 4.0
+                        cache_put("rf:tnx", tnx, 3600)
+                    risk_free_rate = float(tnx)
+
+                    spx = cache_get("mkt:spx")
+                    if spx is None:
+                        h = yf.Ticker("^GSPC").history(period="1y")
+                        spx = (float(h["Close"].iloc[-1]) / float(h["Close"].iloc[0]) - 1) * 100 if len(h) > 30 else 10.0
+                        cache_put("mkt:spx", spx, 3600)
+                    market_return = float(spx)
+                except Exception as err:
+                    logger.warning(f"Tipo sin riesgo / mercado por defecto: {err}")
+
+                metrics.risk_free_rate = round(risk_free_rate, 2)
+                metrics.benchmark_return = round(market_return, 2)
+
+                # Sharpe = (rentabilidad − sin riesgo) / volatilidad
                 if portfolio_volatility > 0:
-                    sharpe = (portfolio_return - risk_free_rate) / portfolio_volatility
-                    metrics.sharpe_ratio = round(sharpe, 2)
-                
-                # Alpha = Portfolio Return - (Risk Free + Beta * (Market Return - Risk Free))
-                market_return = 10.0  # Assumed 10%
+                    metrics.sharpe_ratio = round((portfolio_return - risk_free_rate) / portfolio_volatility, 2)
+
+                # Alpha de Jensen
                 expected_return = risk_free_rate + portfolio_beta * (market_return - risk_free_rate)
-                alpha = portfolio_return - expected_return
-                metrics.portfolio_alpha = round(alpha, 2)
-                
-                # Treynor Ratio = (Portfolio Return - Risk Free) / Beta
+                metrics.portfolio_alpha = round(portfolio_return - expected_return, 2)
+
+                # Treynor = (rentabilidad − sin riesgo) / beta
                 if portfolio_beta != 0:
-                    treynor = (portfolio_return - risk_free_rate) / portfolio_beta
-                    metrics.treynor_ratio = round(treynor, 2)
-                
-                # Calmar Ratio = Return / |Max Drawdown|
+                    metrics.treynor_ratio = round((portfolio_return - risk_free_rate) / portfolio_beta, 2)
+
+                # Calmar = rentabilidad / |máxima caída|
                 if portfolio_max_dd != 0:
-                    calmar = portfolio_return / abs(portfolio_max_dd)
-                    metrics.calmar_ratio = round(calmar, 2)
-                
-                # Information Ratio = (Portfolio Return - Benchmark Return) / Tracking Error
-                # Using S&P 500 as benchmark (~10% return)
-                benchmark_return = 10.0
-                tracking_error = portfolio_volatility  # Simplified
-                if tracking_error > 0:
-                    info_ratio = (portfolio_return - benchmark_return) / tracking_error
-                    metrics.information_ratio = round(info_ratio, 2)
+                    metrics.calmar_ratio = round(portfolio_return / abs(portfolio_max_dd), 2)
+
+                # ── Information Ratio ─────────────────────────────────────
+                # El tracking error es la desviación típica de la DIFERENCIA
+                # contra el índice, no la volatilidad de la cartera. Usar esta
+                # última —como se hacía— confunde riesgo total con riesgo
+                # activo, y son cosas distintas: una cartera que replica el
+                # índice tiene volatilidad alta y tracking error casi nulo.
+                try:
+                    bench = cache_get("bench:serie")
+                    if bench is None:
+                        hb = yf.Ticker("^GSPC").history(period="1y")
+                        bench = hb["Close"].pct_change().dropna()
+                        cache_put("bench:serie", bench, 3600)
+
+                    if serie_cartera is not None and bench is not None:
+                        alineado = pd.DataFrame({
+                            "cartera": serie_cartera,
+                            "indice": bench,
+                        }).dropna()
+                        if len(alineado) > 30:
+                            exceso = alineado["cartera"] - alineado["indice"]
+                            tracking_error = float(exceso.std() * (252 ** 0.5)) * 100
+                            metrics.tracking_error = round(tracking_error, 2)
+                            if tracking_error > 0:
+                                metrics.information_ratio = round(
+                                    (portfolio_return - market_return) / tracking_error, 2
+                                )
+                except Exception as err:
+                    logger.warning(f"No se pudo calcular el tracking error: {err}")
         
         return PortfolioSummary(
             total_invested=total_invested,
@@ -5384,7 +6118,12 @@ def get_camarilla_interpretation(current_price: float, pivots: List[CamarillaPiv
     return current_zone, " | ".join(interpretation_parts)
 
 
-@api_router.get("/technical/{ticker}", response_model=TechnicalAnalysisResponse)
+# Sin `response_model` a propósito. Sus campos numéricos son `float` NO
+# opcionales, así que un hueco legítimo (`None`, tras limpiar un NaN) haría
+# fallar la validación y devolvería el mismo 500 que se quiere evitar, sólo que
+# por otra puerta. La forma la sigue garantizando `TechnicalAnalysisResponse`,
+# que es con quien se construye la respuesta.
+@api_router.get("/technical/{ticker}")
 async def get_technical_analysis(ticker: str):
     """Get comprehensive technical analysis including Fibonacci, Moving Averages, and Camarilla Pivots"""
     try:
@@ -5562,8 +6301,14 @@ async def get_technical_analysis(ticker: str):
             technical_recommendation=technical_recommendation,
             key_levels=key_levels
         )
-        cache_put(f"tec:{ticker}", respuesta, 300)
-        return respuesta
+        # Se serializa a dict y se limpia: un NaN en cualquier nivel anidado
+        # (Fibonacci, Camarilla, medias) devolvía un 500 y dejaba la placa de
+        # «Análisis técnico e indicadores» sin datos.
+        payload_tec = limpiar_no_finitos(
+            respuesta.model_dump() if hasattr(respuesta, "model_dump") else respuesta.dict()
+        )
+        cache_put(f"tec:{ticker}", payload_tec, 300)
+        return payload_tec
 
     except HTTPException:
         raise
@@ -5633,6 +6378,12 @@ class NewsArticle(BaseModel):
     published_date: str
     thumbnail: Optional[str] = None
     summary: Optional[str] = None
+    # Procedencia del texto. Si `traducido` es True, `title` y `summary` los
+    # ha escrito un modelo de 1,7 B, no el medio: la interfaz tiene que poder
+    # decirlo para que nadie lea una traducción automática como cita literal.
+    # El enlace sigue llevando al artículo original en su idioma.
+    traducido: bool = False
+    idioma_original: Optional[str] = None
 
 class StockNewsResponse(BaseModel):
     ticker: str
@@ -5718,7 +6469,7 @@ async def get_stock_news(ticker: str, limit: int = 10):
         return StockNewsResponse(
             ticker=ticker,
             company_name=info.get('longName', info.get('shortName', ticker)),
-            news=articles
+            news=await _traducir_articulos(articles)
         )
         
     except HTTPException:
@@ -5813,7 +6564,7 @@ async def get_market_news(limit: int = 15):
         all_news.sort(key=lambda x: x['timestamp'], reverse=True)
         articles = [item['article'] for item in all_news[:limit]]
         
-        return MarketNewsResponse(news=articles)
+        return MarketNewsResponse(news=await _traducir_articulos(articles))
         
     except Exception as e:
         logging.error(f"Error fetching market news: {str(e)}")
@@ -6177,16 +6928,24 @@ def _calc_wma(prices: list, period: int = 30) -> list:
     return result
 
 
-def _calc_coppock(prices: list) -> list:
+def _calc_coppock(prices: list, roc_long: int = 60, roc_short: int = 48,
+                  wma_period: int = 40) -> list:
     """
-    Coppock Curve para datos semanales.
-    Períodos ajustados: ROC 60 semanas (14 meses), ROC 48 semanas (11 meses), WMA 40 semanas.
+    Curva de Coppock sobre datos semanales.
+
+    Por defecto, la traducción a semanas del clásico mensual (ROC 14 y 11 meses
+    suavizados con WMA de 10): 60, 48 y 40 semanas. Necesita unas 105 barras
+    para dar el primer valor.
+
+    Los periodos son parámetros porque el ajuste corto —30/24/20— es una
+    petición explícita del producto para la pantalla de Estrategia, y se
+    calculan LOS DOS sobre la misma serie: el largo alimenta el score, que debe
+    valer lo mismo en todas las pantallas, y el corto se muestra rotulado. Si
+    el score cambiara según la pantalla, el mismo valor tendría dos
+    puntuaciones y volveríamos al problema de las dos verdades.
     """
     n = len(prices)
-    roc_long = 60    # 14 meses en semanas
-    roc_short = 48   # 11 meses en semanas
-    wma_period = 40  # 10 meses en semanas
-    
+
     roc_long_arr = [None] * n
     roc_short_arr = [None] * n
     
@@ -6326,13 +7085,211 @@ def _calc_ofi_proxy(daily_hist) -> float:
 
 
 def _calc_bid_ask_spread_proxy(daily_hist) -> float:
-    """Bid-Ask spread proxy: (High-Low)/Close promedio 20 días (%)."""
+    """
+    Rango diario medio: (High-Low)/Close en 20 sesiones, en %.
+
+    OJO CON EL NOMBRE. Esto NO es la horquilla de compra/venta y nunca lo fue:
+    están separados por dos órdenes de magnitud (un valor líquido tiene un
+    rango diario del ~2 % y un spread del ~0,02 %). El nombre se conserva
+    porque el score multi-factor lleva su historia calibrada sobre esta cifra,
+    pero la horquilla de verdad se estima aparte con Corwin-Schultz, en
+    `_calc_liquidez_ejecucion`, y es la que viaja a la interfaz.
+    """
     try:
         recent = daily_hist.tail(20)
         spread = (recent["High"] - recent["Low"]) / recent["Close"].replace(0, np.nan)
         return round(float(spread.mean(skipna=True)) * 100, 3)
     except Exception:
         return 2.0
+
+
+def _corwin_schultz_spread(daily_hist, ventana: int = 20) -> Optional[float]:
+    """
+    Horquilla efectiva estimada a partir de máximos y mínimos diarios.
+
+    Estimador de Corwin y Schultz (Journal of Finance, 2012). La idea: el
+    rango alto-bajo de UNA sesión contiene la volatilidad del día MÁS la
+    horquilla; el rango de DOS sesiones consecutivas contiene el doble de
+    volatilidad más la misma horquilla. Con esas dos ecuaciones se despeja la
+    horquilla y se cancela la volatilidad.
+
+    Por qué está aquí: el libro de nivel II no existe en esta fuente, pero la
+    pregunta que el libro contesta —¿cuánto me cuesta cruzar el diferencial?—
+    sí se puede contestar con barras diarias, y con un método publicado y
+    contrastado en vez de con un número plausible.
+
+    Devuelve el spread en % o `None` si no hay barras suficientes. Los valores
+    negativos se truncan a cero, que es lo que prescribe el propio artículo:
+    son ruido de estimación, no horquillas negativas.
+
+    SESGO AL ALZA — medido, no supuesto. `test_liquidez.py` recupera la
+    horquilla exacta cuando no hay volatilidad intradía (0,50 % real → 0,50 %
+    estimado), pero con un 0,8 % de volatilidad diaria una horquilla real del
+    0,05 % se estima en 0,65 %. El estimador no separa del todo la volatilidad
+    de la horquilla cuando la primera domina, que es justo el caso de un valor
+    líquido y movido.
+
+    Por eso viaja a la interfaz rotulado como COTA SUPERIOR y no como «la
+    horquilla». El sesgo va además en la dirección segura: sobreestimar el
+    coste de cruzar hace operar menos, no más.
+    """
+    try:
+        df = daily_hist.tail(ventana + 1)
+        h = df["High"].astype(float).values
+        l = df["Low"].astype(float).values
+        if len(h) < 3:
+            return None
+
+        k = 3 - 2 * math.sqrt(2)
+        estimaciones = []
+        for i in range(len(h) - 1):
+            h1, l1, h2, l2 = h[i], l[i], h[i + 1], l[i + 1]
+            if min(l1, l2) <= 0 or h1 <= 0 or h2 <= 0:
+                continue
+            beta = math.log(h1 / l1) ** 2 + math.log(h2 / l2) ** 2
+            gamma = math.log(max(h1, h2) / min(l1, l2)) ** 2
+            alpha = (math.sqrt(2 * beta) - math.sqrt(beta)) / k - math.sqrt(gamma / k)
+            s = 2 * (math.exp(alpha) - 1) / (1 + math.exp(alpha))
+            # Una estimación negativa significa «indistinguible de cero», no
+            # una horquilla negativa. Se trunca, siguiendo el artículo.
+            estimaciones.append(max(0.0, s))
+
+        if not estimaciones:
+            return None
+        return round(float(np.mean(estimaciones)) * 100, 4)
+    except Exception:
+        return None
+
+
+def _calc_liquidez_ejecucion(daily_hist, info: dict, precio: float) -> dict:
+    """
+    Liquidez y capacidad de ejecución medidas sobre barras diarias.
+
+    ESTO SUSTITUYE AL LIBRO DE NIVEL II, y conviene ser exacto sobre en qué
+    sentido lo sustituye. El libro contesta «cuánto papel hay AHORA MISMO a
+    este precio»; esto contesta «cuánto se negocia normalmente en este valor y
+    cuánto movería el precio mi tamaño». No son la misma pregunta.
+
+    La segunda es, además, la que de verdad necesita este robot: decide cada
+    45 minutos, así que la foto instantánea del libro habría cambiado por
+    completo varias veces antes de usarse, mientras que el volumen medio y el
+    impacto por dólar son estables y sí acotan el tamaño de la posición.
+
+    Las tres medidas:
+
+    - **Horquilla (Corwin-Schultz)** — el coste de cruzar, estimado del rango
+      alto-bajo. Contesta a «¿cuánto pierdo sólo por entrar y salir?».
+    - **Amihud** — variación de precio en % por cada millón de dólares
+      negociado. Contesta a «¿cuánto muevo el precio con mi tamaño?».
+    - **Volumen medio y participación** — contesta a «¿qué tamaño máximo puedo
+      llevar sin ser yo el mercado?». La regla del 1 % del volumen medio es la
+      convención de ejecución institucional.
+    """
+    fuera = {
+        "disponible": False,
+        "motivo": "Sin histórico suficiente para medir liquidez.",
+    }
+    try:
+        df = daily_hist.tail(20).copy()
+        if len(df) < 5:
+            return fuera
+
+        cierres = df["Close"].astype(float)
+        volumenes = df["Volume"].astype(float)
+
+        adv_acciones = float(volumenes.mean())
+        if not math.isfinite(adv_acciones) or adv_acciones <= 0:
+            return fuera
+
+        adv_dolares = float((cierres * volumenes).mean())
+        vol_ultimo = float(volumenes.iloc[-1])
+        vol_relativo = round(vol_ultimo / adv_acciones, 2) if adv_acciones > 0 else None
+
+        # Amihud (2002): media de |retorno| / volumen en dólares. Se escala a
+        # «% de movimiento por cada millón de dólares», que es una unidad que
+        # se puede leer sin traducir.
+        retornos = cierres.pct_change().abs()
+        dolares = cierres * volumenes
+        ratio = (retornos / dolares.replace(0, np.nan)).dropna()
+        amihud = round(float(ratio.mean()) * 1e6 * 100, 4) if len(ratio) else None
+
+        spread_pct = _corwin_schultz_spread(daily_hist)
+
+        # ── Comprobación de coherencia del spread ────────────────────────────
+        #
+        # Corwin-Schultz sobreestima cuando la volatilidad domina, y en un valor
+        # movido la sobreestimación deja de ser un sesgo aceptable y pasa a ser
+        # una cifra imposible: medido en PBF salía 1,45 % con 184 M$ de volumen
+        # diario. Una acción que negocia eso NO tiene una horquilla del 1,45 %;
+        # tendrá dos o tres centésimas. El estimador estaba leyendo el ATR del
+        # 5 %, no la horquilla.
+        #
+        # Dejarlo pasar no era cosmético: ese número alimenta el coste de cruce
+        # del plan de posición, y con 25.000 acciones daba un peaje de 28.000 $
+        # que habría desaconsejado una operación perfectamente ejecutable.
+        #
+        # El contraste es el propio volumen, que es dato duro y no estimación:
+        # con mucho dinero negociado la horquilla es pequeña por construcción,
+        # así que si la estimación dice lo contrario, se contradicen y gana el
+        # volumen. Cuando eso pasa NO se sustituye por otra cifra inventada: se
+        # declara que no se puede separar de la volatilidad, y el panel dibuja
+        # el hueco con su motivo.
+        techo_creible = None
+        if adv_dolares >= 50_000_000:
+            techo_creible = 0.30      # valor líquido: horquillas de centésimas
+        elif adv_dolares >= 5_000_000:
+            techo_creible = 1.00
+        else:
+            techo_creible = 3.00      # ilíquido: aquí sí puede ser ancha
+
+        spread_fiable = spread_pct is not None and spread_pct <= techo_creible
+        motivo_spread = None
+        if spread_pct is not None and not spread_fiable:
+            motivo_spread = (
+                f"Estimación descartada ({spread_pct:.2f} %): incompatible con "
+                f"{adv_dolares/1e6:.0f} M$ de volumen diario. Con esta volatilidad "
+                f"(rango diario {float((daily_hist['High'].tail(20) - daily_hist['Low'].tail(20)).mean() / cierres.iloc[-1] * 100):.1f} %) "
+                "el método no separa la horquilla del movimiento del día."
+            )
+        elif spread_pct is None:
+            motivo_spread = "Sin barras suficientes para estimarla."
+
+        # Tamaño máximo sin ser el mercado: 1 % del volumen medio diario es la
+        # regla de participación habitual en ejecución institucional.
+        max_acciones = int(adv_acciones * 0.01)
+        max_dolares = round(max_acciones * precio, 2) if precio > 0 else None
+
+        # Clasificación por volumen negociado en dólares. Los cortes son los
+        # que separan, en la práctica, un valor que absorbe una orden de
+        # tamaño medio de uno en el que esa misma orden es el mercado.
+        if adv_dolares >= 50_000_000:
+            clase, nota = "alta", "Absorbe tamaño sin mover el precio."
+        elif adv_dolares >= 5_000_000:
+            clase, nota = "media", "Tamaño moderado; conviene trocear la orden."
+        else:
+            clase, nota = "baja", "Poco volumen: el propio robot movería el precio."
+
+        return {
+            "disponible": True,
+            # Sólo viaja la estimación que ha pasado el contraste con el
+            # volumen. Si no lo pasa va `None` y el motivo al lado.
+            "spread_estimado_pct": spread_pct if spread_fiable else None,
+            "spread_descartado_pct": None if spread_fiable else spread_pct,
+            "spread_motivo": motivo_spread,
+            "spread_metodo": "Corwin-Schultz (2012) sobre máximos y mínimos diarios",
+            "amihud_pct_por_millon": amihud,
+            "adv_acciones": int(adv_acciones),
+            "adv_dolares": round(adv_dolares, 2),
+            "volumen_relativo": vol_relativo,
+            "max_acciones_1pct_adv": max_acciones,
+            "max_dolares_1pct_adv": max_dolares,
+            "clasificacion": clase,
+            "nota": nota,
+            "ventana_sesiones": int(len(df)),
+        }
+    except Exception as e:
+        logging.warning(f"Liquidez/ejecución no calculable: {e}")
+        return fuera
 
 
 def _calc_gamma_exposure_proxy(info: dict) -> float:
@@ -6973,22 +7930,52 @@ def _calc_weis_wave(daily_hist) -> dict:
     
     return {"waves": [], "current_wave": "none", "score": 5, "volume_trend": "normal", "current_volume": 0, "current_return_pct": 0}
 def _calc_volume_delta(df: pd.DataFrame) -> dict:
+    """Posición del cierre dentro del rango de la vela (CLV).
+
+    Ojo con el nombre heredado: esto NO es volumen de compra frente a volumen
+    de venta. Para separar compras de ventas hay que clasificar cada operación
+    contra el bid y el ask, y Yahoo no sirve datos a nivel de tick. Lo que se
+    mide aquí es dónde cerró el precio dentro del recorrido de la barra, que
+    es un indicador legítimo pero mucho más modesto.
+
+    Nótese que `buy_vol + sell_vol` es idénticamente igual a `vol`, así que la
+    proporción se reduce siempre a (close - low) / (high - low).
+
+    Se mide la penúltima vela porque la última todavía está formándose y
+    cambiaría con cada tick. La marca temporal viaja en la respuesta para que
+    la interfaz pueda decir qué vela está enseñando.
+    """
     if df is None or len(df) < 2:
-        return {'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True}
+        return {'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True, 'barra': None}
     row = df.iloc[-2]
     high = float(row.get('High', 0))
     low = float(row.get('Low', 0))
     close = float(row.get('Close', 0))
     vol = float(row.get('Volume', 0))
+    barra = str(df.index[-2])[:16]
     range_ = high - low
     if range_ == 0 or math.isnan(range_) or vol == 0:
-        return {'buy_pct': None, 'sell_pct': None, 'vol': vol, 'no_range': True}
-    buy_vol = vol * (close - low) / range_
-    sell_vol = vol * (high - close) / range_
-    total = buy_vol + sell_vol
-    buy_pct = round((buy_vol / total) * 100) if total > 0 else 50
-    sell_pct = 100 - buy_pct
-    return {'buy_pct': buy_pct, 'sell_pct': sell_pct, 'vol': round(vol, 0), 'no_range': False}
+        return {'buy_pct': None, 'sell_pct': None, 'vol': vol, 'no_range': True, 'barra': barra}
+    clv_pct = round(((close - low) / range_) * 100)
+    # Media y desviación del volumen en el propio marco: sin esto no se puede
+    # ponderar un marco contra otro sin caer en el error de sumar volúmenes
+    # anidados (la vela semanal contiene a la diaria, que contiene a la de 4H).
+    try:
+        serie_vol = df['Volume'].astype(float).tail(60)
+        vol_media = float(serie_vol.mean())
+        vol_desv = float(serie_vol.std()) or 1.0
+        vol_z = (vol - vol_media) / vol_desv
+    except Exception:
+        vol_media, vol_z = vol, 0.0
+    return {
+        'buy_pct': clv_pct,
+        'sell_pct': 100 - clv_pct,
+        'vol': round(vol, 0),
+        'vol_media': round(vol_media, 0),
+        'vol_z': round(vol_z, 2),
+        'no_range': False,
+        'barra': barra,
+    }
 
 def _calc_countdown(tf_label: str) -> str:
     import time
@@ -7027,7 +8014,7 @@ def _get_volume_delta_mtf(ticker: str) -> list:
                 results.append({'tf': tf_label, 'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True, 'countdown': _calc_countdown(tf_label)})
                 continue
             data = _calc_volume_delta(df)
-            results.append({'tf': tf_label, 'buy_pct': data.get('buy_pct'), 'sell_pct': data.get('sell_pct'), 'vol': data.get('vol', 0), 'no_range': data.get('no_range', True), 'countdown': _calc_countdown(tf_label)})
+            results.append({'tf': tf_label, 'buy_pct': data.get('buy_pct'), 'sell_pct': data.get('sell_pct'), 'vol': data.get('vol', 0), 'vol_media': data.get('vol_media'), 'vol_z': data.get('vol_z'), 'barra': data.get('barra'), 'no_range': data.get('no_range', True), 'countdown': _calc_countdown(tf_label)})
         except Exception as e:
             logging.warning(f'Volume Delta error {ticker} {tf_label}: {e}')
             results.append({'tf': tf_label, 'buy_pct': None, 'sell_pct': None, 'vol': 0, 'no_range': True, 'countdown': _calc_countdown(tf_label)})
@@ -7036,109 +8023,414 @@ def _get_volume_delta_mtf(ticker: str) -> list:
 
 
 def _detect_wyckoff_phase(daily_hist) -> dict:
+    """Fase del ciclo de Wyckoff a partir de rasgos medibles.
+
+    Wyckoff describe cuatro fases —acumulación, tendencia alcista, distribución
+    y tendencia bajista— por la relación entre precio, rango y volumen. Aquí no
+    se «adivina» la fase: se puntúa cada una con rasgos que sí se pueden medir
+    en una serie OHLCV, y se devuelven las cuatro probabilidades normalizadas.
+
+    Rasgos usados:
+      · posición del precio dentro del rango de 60 sesiones,
+      · pendiente de la regresión sobre el logaritmo del precio (tendencia),
+      · ADX (fuerza direccional),
+      · pendiente del volumen (expansión o sequía),
+      · anchura relativa del rango (compresión).
+
+    Dos decisiones importantes:
+
+    1. La fase declarada es SIEMPRE la de mayor probabilidad. La versión
+       anterior podía enseñar un titular («ACUMULACIÓN») distinto de la barra
+       más alta, que es una contradicción visible para el usuario.
+
+    2. Si las dos primeras están a menos de 10 puntos se declara «transición»
+       en vez de elegir por un pelo. Un 35 % contra un 33 % no es una fase
+       identificada, es un empate.
     """
-    Detecta fase de Wyckoff (Accumulation, Markup, Distribution, Markdown).
-    Returns: {"phase": str, "stage": str, "score": int, "confidence": float}
-    """
+    vacio = {"phase": "Sin datos", "stage": "N/A", "score": 5.0, "confidence": 0.0,
+             "probabilidades": {}, "rasgos": {}, "disponible": False,
+             "motivo": "Se necesitan al menos 60 sesiones."}
     try:
-        if isinstance(daily_hist, pd.DataFrame) and not daily_hist.empty:
-            close = _safe_close(daily_hist)
-            volume = _safe_col(daily_hist, "Volume")
-            
-            if len(close) < 50:
-                raise ValueError("Datos insuficientes")
-            
-            # Calcular tendencia y rango
-            sma20 = close.rolling(20).mean()
-            sma50 = close.rolling(50).mean()
-            
-            current_price = close.iloc[-1]
-            price_vs_sma20 = current_price / sma20.iloc[-1] - 1
-            price_vs_sma50 = current_price / sma50.iloc[-1] - 1
-            
-            # Volumen relativo
-            avg_volume = volume.rolling(50).mean()
-            recent_volume = volume.iloc[-10:].mean()
-            volume_ratio = recent_volume / avg_volume.iloc[-1]
-            
-            # Rango de trading
-            recent_high = close.iloc[-20:].max()
-            recent_low = close.iloc[-20:].min()
-            range_size = (recent_high - recent_low) / recent_low
-            
-            # Determinar fase
-            if range_size < 0.15:  # Rango estrecho
-                if price_vs_sma50 > -0.05 and price_vs_sma50 < 0.1:
-                    phase = "Accumulation"
-                    stage = "Spring o Test" if close.iloc[-1] < sma20.iloc[-1] else "SOS"
-                    score = 7
-                    confidence = 0.65
-                elif price_vs_sma50 > 0.05 and price_vs_sma50 < 0.2:
-                    phase = "Distribution"
-                    stage = "UTAD o Test" if close.iloc[-1] > sma20.iloc[-1] else "SOW"
-                    score = 3
-                    confidence = 0.60
-                else:
-                    phase = "Consolidation"
-                    stage = "Rango lateral"
-                    score = 5
-                    confidence = 0.50
-            elif range_size >= 0.15:
-                if price_vs_sma20 > 0.1 and price_vs_sma50 > 0.15:
-                    phase = "Markup"
-                    stage = "Onda 3" if volume_ratio > 1.2 else "Onda 1 o 5"
-                    score = 9
-                    confidence = 0.75
-                elif price_vs_sma20 < -0.1 and price_vs_sma50 < -0.15:
-                    phase = "Markdown"
-                    stage = "Caída libre" if volume_ratio > 1.2 else "Distribución tardía"
-                    score = 2
-                    confidence = 0.70
-                else:
-                    phase = "Transition"
-                    stage = "Cambio de tendencia"
-                    score = 5
-                    confidence = 0.45
-            else:
-                phase = "Unknown"
-                stage = "Sin patrón claro"
-                score = 5
-                confidence = 0.40
-            
-            return {
-                "phase": phase,
-                "stage": stage,
-                "score": score,
-                "confidence": confidence,
-            }
+        if daily_hist is None or len(daily_hist) < 60:
+            return vacio
+
+        df = daily_hist.tail(120).copy()
+        cierre = df["Close"].astype(float)
+        alto = df["High"].astype(float)
+        bajo = df["Low"].astype(float)
+        vol = df["Volume"].astype(float) if "Volume" in df else None
+
+        precio = float(cierre.iloc[-1])
+        # El rango se mide sobre TODA la ventana, no sobre las últimas 60
+        # sesiones. Si la consolidación dura más que el periodo de medida, el
+        # «rango» acaba siendo la propia consolidación y la posición sale
+        # siempre a media altura — que fue el fallo de la primera versión.
+        techo = float(alto.max())
+        suelo = float(bajo.min())
+        recorrido = techo - suelo
+        if recorrido <= 0:
+            return vacio
+
+        # 1. Posición en el rango: 0 = suelo, 1 = techo.
+        posicion = (precio - suelo) / recorrido
+
+        # 2. Tendencia reciente: regresión sobre log(precio), anualizada.
+        y = np.log(cierre.tail(60).values)
+        x = np.arange(len(y))
+        pendiente = float(np.polyfit(x, y, 1)[0]) * 252 * 100  # % anual
+
+        # 3. Tendencia PREVIA: la primera mitad de la ventana.
+        #
+        # Es el rasgo que separa acumulación de distribución, y sin él las dos
+        # son indistinguibles: ambas son rangos planos. Lo que las diferencia
+        # es de dónde viene el precio — se acumula tras una caída, se
+        # distribuye tras una subida.
+        mitad = max(30, len(cierre) // 2)
+        yp = np.log(cierre.head(mitad).values)
+        pendiente_previa = float(np.polyfit(np.arange(len(yp)), yp, 1)[0]) * 252 * 100
+
+        # 3. ADX
+        adx = _adx(df) or 0.0
+
+        # 4. Volumen: pendiente relativa de las últimas 30 sesiones.
+        vol_pend = 0.0
+        if vol is not None and len(vol) >= 30 and vol.tail(30).mean() > 0:
+            vy = vol.tail(30).values
+            vol_pend = float(np.polyfit(np.arange(len(vy)), vy, 1)[0]) / float(vy.mean()) * 100
+
+        # 5. Compresión: rango de 20 sesiones frente al de 60.
+        rango20 = float(alto.tail(20).max() - bajo.tail(20).min())
+        compresion = 1 - (rango20 / recorrido) if recorrido > 0 else 0.0
+
+        def clamp(v, a=0.0, b=1.0):
+            return max(a, min(b, v))
+
+        # ── Puntuación de cada fase ──────────────────────────────────────
+        # Acumulación: suelo del rango, sin tendencia, rango comprimido,
+        # volumen secándose.
+        acumulacion = (
+            clamp(1 - posicion * 1.6) * 0.25 +
+            clamp(1 - abs(pendiente) / 40) * 0.20 +
+            clamp(-pendiente_previa / 40) * 0.30 +   # viene de una caída
+            clamp(1 - adx / 30) * 0.15 +
+            clamp(0.5 - vol_pend / 100) * 0.10
+        )
+        # Tendencia alcista: precio alto en el rango, pendiente positiva, ADX firme.
+        alcista = (
+            clamp(posicion * 1.3) * 0.30 +
+            clamp(pendiente / 45) * 0.35 +
+            clamp(adx / 35) * 0.25 +
+            clamp(0.5 + vol_pend / 100) * 0.10
+        )
+        # Distribución: techo del rango, tendencia plana pese al precio alto,
+        # volumen alto sin avance.
+        distribucion = (
+            clamp(posicion * 1.5 - 0.35) * 0.25 +
+            clamp(1 - abs(pendiente) / 40) * 0.20 +
+            clamp(pendiente_previa / 40) * 0.30 +    # viene de una subida
+            clamp(1 - adx / 30) * 0.15 +
+            clamp(0.5 + vol_pend / 100) * 0.10
+        )
+        # Tendencia bajista: precio bajo, pendiente negativa, ADX firme.
+        bajista = (
+            clamp(1 - posicion * 1.3) * 0.30 +
+            clamp(-pendiente / 45) * 0.35 +
+            clamp(adx / 35) * 0.25 +
+            clamp(0.5 + vol_pend / 100) * 0.10
+        )
+
+        crudas = {
+            "acumulacion": acumulacion, "alcista": alcista,
+            "distribucion": distribucion, "bajista": bajista,
+        }
+        suma = sum(crudas.values()) or 1.0
+        probs = {k: round(v / suma * 100, 1) for k, v in crudas.items()}
+
+        orden = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+        primera, segunda = orden[0], orden[1]
+        margen = primera[1] - segunda[1]
+
+        NOMBRES = {
+            "acumulacion": ("Acumulación", "Precio en la parte baja del rango con poca tendencia. "
+                                           "Es la fase en la que el dinero paciente construye posición."),
+            "alcista": ("Tendencia alcista", "El precio ha salido del rango y avanza con dirección firme."),
+            "distribucion": ("Distribución", "Precio en la parte alta del rango sin avanzar pese al volumen. "
+                                             "Suele preceder al giro."),
+            "bajista": ("Tendencia bajista", "El precio cede con dirección firme. Evitar posiciones largas."),
+        }
+        nombre, desc = NOMBRES[primera[0]]
+
+        # Empate: no se elige por un pelo.
+        transicion = margen < 10
+        if transicion:
+            n2 = NOMBRES[segunda[0]][0]
+            nombre = f"Transición · {nombre} / {n2}"
+            desc = (f"Las dos fases más probables están a {margen:.1f} puntos "
+                    f"({primera[1]:.1f} % frente a {segunda[1]:.1f} %). No hay fase identificada.")
+
+        # Confianza: cuánto destaca la primera sobre la segunda.
+        confianza = clamp(margen / 30)
+
+        ESTRATEGIA = {
+            "acumulacion": ["Comprar en la parte baja del rango, no en la ruptura.",
+                            "Stop bajo el mínimo del rango.",
+                            "Esperar expansión de volumen para confirmar la salida."],
+            "alcista": ["Seguir la tendencia con stop dinámico.",
+                        "Comprar retrocesos, no máximos.",
+                        "Reducir si el ADX pierde fuerza con el precio parado."],
+            "distribucion": ["Recoger beneficios por tramos.",
+                             "Evitar nuevas compras en la parte alta del rango.",
+                             "Vigilar la pérdida del soporte del rango."],
+            "bajista": ["Evitar posiciones largas.",
+                        "Esperar a que la pendiente se aplane antes de buscar suelo.",
+                        "Un rebote sin volumen no es un cambio de fase."],
+        }
+
+        return {
+            "disponible": True,
+            "phase": nombre,
+            "stage": primera[0],
+            "descripcion": desc,
+            "transicion": bool(transicion),
+            "confidence": round(confianza, 2),
+            "probabilidades": probs,
+            "rasgos": {
+                "posicion_en_rango": round(posicion * 100, 1),
+                "tendencia_anual": round(pendiente, 1),
+                "tendencia_previa": round(pendiente_previa, 1),
+                "adx": round(adx, 1),
+                "pendiente_volumen": round(vol_pend, 1),
+                "compresion_rango": round(compresion * 100, 1),
+                "techo_60": round(techo, 2),
+                "suelo_60": round(suelo, 2),
+                "sesiones": int(len(df)),
+            },
+            "estrategia": ESTRATEGIA[primera[0]],
+            # Aporte al score global (0-10): las fases constructivas suman.
+            "score": round(clamp((probs["acumulacion"] + probs["alcista"]) / 100) * 10, 1),
+        }
     except Exception as e:
         logging.warning(f"Wyckoff error: {e}")
-    
-    return {"phase": "Unknown", "stage": "N/A", "score": 5, "confidence": 0.4}
+        return vacio
+
+def _escenarios_30d(daily_close, precio_actual: float) -> dict:
+    """Escenarios de precio a 30 días y probabilidad direccional.
+
+    Dos cálculos distintos que la gente suele confundir:
+
+    - Los **escenarios** salen de la volatilidad histórica proyectada a 21
+      sesiones (un mes bursátil). Bajista y alcista son ±1 desviación típica,
+      que cubre alrededor del 68 % de los desenlaces; el resto se reparte en
+      las colas. No son predicciones, son el rango donde el precio ha solido
+      moverse en periodos de esa duración.
+
+    - La **probabilidad direccional** es empírica: cuántas de todas las
+      ventanas de 30 días del último año acabaron por encima de donde
+      empezaron. Se prefiere al modelo lognormal porque no impone una
+      distribución que los precios no siguen — tienen colas más gruesas.
+
+    Sin al menos 60 sesiones no se devuelve nada: una muestra menor daría
+    cifras con dos decimales y ningún fundamento.
+    """
+    try:
+        serie = pd.Series(daily_close).dropna().astype(float)
+        if len(serie) < 60 or not precio_actual or precio_actual <= 0:
+            return {"disponible": False, "motivo": "Histórico insuficiente (mínimo 60 sesiones)."}
+
+        rend = serie.pct_change().dropna()
+        if len(rend) < 60:
+            return {"disponible": False, "motivo": "Histórico insuficiente (mínimo 60 sesiones)."}
+
+        HORIZONTE = 21  # sesiones bursátiles en un mes natural
+        sigma_dia = float(rend.std())
+        sigma_30 = sigma_dia * math.sqrt(HORIZONTE)
+
+        # Ventanas solapadas de 21 sesiones: la distribución real del valor.
+        futuros = serie.shift(-HORIZONTE) / serie - 1
+        futuros = futuros.dropna()
+        n = int(len(futuros))
+        if n < 30:
+            return {"disponible": False, "motivo": "Muy pocas ventanas de 30 días para medir."}
+
+        prob_alcista = float((futuros > 0).sum()) / n * 100
+        mediana = float(futuros.median())
+
+        # El escenario base sigue la mediana histórica, no el precio actual:
+        # asumir deriva cero es también una hipótesis, y no la más fiel.
+        base = precio_actual * (1 + mediana)
+        bajista = precio_actual * (1 - sigma_30)
+        alcista = precio_actual * (1 + sigma_30)
+
+        # Probabilidad de cada tramo, contada sobre la distribución empírica.
+        p_bajista = float((futuros <= -sigma_30).sum()) / n * 100
+        p_alcista = float((futuros >= sigma_30).sum()) / n * 100
+        p_base = max(0.0, 100.0 - p_bajista - p_alcista)
+
+        def var(p):
+            return ((p / precio_actual) - 1) * 100
+
+        return {
+            "disponible": True,
+            "horizonte_dias": 30,
+            "sesiones_analizadas": n,
+            "volatilidad_30d": round(sigma_30 * 100, 2),
+            "probabilidad_alcista": round(prob_alcista, 1),
+            "probabilidad_bajista": round(100 - prob_alcista, 1),
+            "escenarios": [
+                {"nombre": "Bajista", "precio": round(bajista, 2),
+                 "variacion": round(var(bajista), 2), "probabilidad": round(p_bajista, 1)},
+                {"nombre": "Base", "precio": round(base, 2),
+                 "variacion": round(var(base), 2), "probabilidad": round(p_base, 1)},
+                {"nombre": "Alcista", "precio": round(alcista, 2),
+                 "variacion": round(var(alcista), 2), "probabilidad": round(p_alcista, 1)},
+            ],
+            "metodo": (
+                f"Escenarios a ±1 desviación típica sobre {HORIZONTE} sesiones. "
+                f"Probabilidades contadas sobre {n} ventanas solapadas de 30 días del último año."
+            ),
+        }
+    except Exception as e:
+        logger.warning(f"Escenarios 30d: {e}")
+        return {"disponible": False, "motivo": "No se pudo calcular."}
+
+
+def _proximos_eventos(stock, info: dict) -> list:
+    """Resultados, ex-dividendo y pago, con los días que faltan.
+
+    Solo eventos futuros y con fecha confirmada por el proveedor. Un
+    calendario con fechas estimadas induce a operar contra un reloj que no
+    existe.
+    """
+    eventos = []
+    hoy = datetime.now().date()
+
+    def añadir(nombre, fecha, detalle):
+        if not fecha:
+            return
+        try:
+            if hasattr(fecha, "date"):
+                fecha = fecha.date()
+            elif isinstance(fecha, (int, float)):
+                fecha = datetime.fromtimestamp(fecha).date()
+            elif isinstance(fecha, str):
+                fecha = datetime.fromisoformat(fecha[:10]).date()
+            dias = (fecha - hoy).days
+            if dias < 0:
+                return
+            eventos.append({
+                "evento": nombre,
+                "fecha": fecha.isoformat(),
+                "dias": dias,
+                "detalle": detalle,
+            })
+        except Exception:
+            return
+
+    try:
+        cal = stock.calendar
+        if isinstance(cal, dict):
+            fechas = cal.get("Earnings Date") or []
+            if not isinstance(fechas, list):
+                fechas = [fechas]
+            for f in fechas[:1]:
+                añadir("Resultados trimestrales", f, "Publicación de cuentas. Suele elevar la volatilidad.")
+        elif cal is not None and hasattr(cal, "empty") and not cal.empty:
+            try:
+                añadir("Resultados trimestrales", cal.iloc[0, 0],
+                       "Publicación de cuentas. Suele elevar la volatilidad.")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    añadir("Ex-dividendo", info.get("exDividendDate"),
+           "A partir de esta fecha, comprar ya no da derecho al próximo dividendo.")
+    añadir("Pago de dividendo", info.get("dividendDate"), "Fecha de abono en cuenta.")
+
+    eventos.sort(key=lambda e: e["dias"])
+    return eventos
+
+
+async def _percentil_score(ticker: str, score: int) -> dict:
+    """Percentil del score actual frente al histórico de ESTE valor.
+
+    Requiere histórico propio, así que cada lectura se guarda. Al principio la
+    muestra es pequeña y el percentil no significa gran cosa: por eso el
+    tamaño de muestra viaja siempre en la respuesta y por debajo de diez
+    lecturas se declara no disponible en vez de dar un número que aparenta
+    precisión.
+    """
+    try:
+        hoy = datetime.utcnow().strftime("%Y-%m-%d")
+        await db.overton_scores.update_one(
+            {"ticker": ticker, "fecha": hoy},
+            {"$set": {"ticker": ticker, "fecha": hoy, "score": int(score),
+                      "actualizado": datetime.utcnow()}},
+            upsert=True,
+        )
+
+        previos = await db.overton_scores.find(
+            {"ticker": ticker}, {"_id": 0, "score": 1}
+        ).to_list(length=2000)
+        valores = [p["score"] for p in previos if isinstance(p.get("score"), (int, float))]
+
+        if len(valores) < 10:
+            return {
+                "disponible": False,
+                "muestra": len(valores),
+                "motivo": f"Solo {len(valores)} lecturas guardadas; hacen falta 10 para situar el score.",
+            }
+
+        por_debajo = sum(1 for v in valores if v < score)
+        percentil = (por_debajo / len(valores)) * 100
+        return {
+            "disponible": True,
+            "percentil": round(percentil, 1),
+            "muestra": len(valores),
+            "minimo": min(valores),
+            "maximo": max(valores),
+            "mediana": sorted(valores)[len(valores) // 2],
+        }
+    except Exception as e:
+        logger.warning(f"Percentil del score {ticker}: {e}")
+        return {"disponible": False, "muestra": 0, "motivo": "No se pudo calcular."}
+
 
 def _overton_zone(score: int, news_impact: float) -> tuple:
+    """Zona narrativa y su explicación.
+
+    Las bandas van sobre el score normalizado a 100 y coinciden con las de la
+    decisión, para que la zona y la acción no puedan contradecirse. La versión
+    anterior tenía dos ramas `score >= 33` seguidas: la segunda —«Radical —
+    Reducir»— era inalcanzable, de modo que esa zona no se mostró nunca.
+    """
     sign = '+' if news_impact >= 0 else ''
-    # Escala actualizada: 165 puntos (45% = 74 COMPRAR, 40% = 66 VENDER)
-    if score >= 74:  # 45%
+    s = (score / 165) * 100
+
+    if s >= 65:
         return ("Popular — Comprar",
-                f"Narrativa de mercado firmemente alcista. Las noticias recientes ({sign}{news_impact:.1f}%) "
-                f"refuerzan el momentum. Score >= 45% ({score}/165 = {score/1.65:.0f}%). Zona de compra con convicción; gestiona el tamaño de posición.")
-    elif score >= 66:  # 40%
-        return ("Aceptable — Vigilar",
-                f"Señales mixtas con ligero sesgo positivo. Score {score}/165 ({score/1.65:.0f}%). Las noticias aportan {sign}{news_impact:.1f}% al sesgo "
-                "pero falta confirmación técnica plena. Espera catalizador o cruce WMA para entrar.")
-    elif score >= 33:  # 20%
+                f"Narrativa firmemente alcista. Score {score}/165 ({s:.0f} sobre 100). "
+                f"Las noticias recientes ({sign}{news_impact:.1f} %) refuerzan el momento. "
+                "Zona de compra con convicción; gestiona el tamaño de la posición.")
+    if s >= 56:
+        return ("Popular — Acumular",
+                f"Sesgo alcista con matices. Score {score}/165 ({s:.0f} sobre 100). "
+                f"Las noticias aportan {sign}{news_impact:.1f} % pero falta confirmación técnica plena. "
+                "Entrada escalonada o esperar cruce de la media.")
+    if s >= 45:
         return ("Sensible — Esperar",
-                f"Narrativa en disputa. Score {score}/165 ({score/1.65:.0f}%). Noticias generan ruido ({sign}{news_impact:.1f}%) sin dirección clara. "
-                "Analistas divididos. Evita nueva exposición hasta que el score supere 74.")
-    elif score >= 33:
+                f"Narrativa en disputa. Score {score}/165 ({s:.0f} sobre 100). "
+                f"Las noticias generan ruido ({sign}{news_impact:.1f} %) sin dirección clara. "
+                "Evita nueva exposición hasta que aparezca un catalizador.")
+    if s >= 35:
         return ("Radical — Reducir",
-                f"Sesgo bajista dominante. Score {score}/165 ({score/1.65:.0f}%). Noticias en negativo ({news_impact:.1f}%) aceleran la narrativa. "
-                "Reduce exposición y ajusta stops.")
-    else:
-        return ("Impensable — Vender",
-                f"Pánico generalizado. Score {score}/165 ({score/1.65:.0f}%). Noticias ({news_impact:.1f}%) amplían el deterioro fundamental. "
-                "VIX elevado, Coppock negativo, precio bajo WMA. Sal de posiciones largas.")
+                f"Sesgo bajista moderado. Score {score}/165 ({s:.0f} sobre 100). "
+                f"Las noticias ({news_impact:.1f} %) acompañan al deterioro. "
+                "Reduce exposición y ajusta los stops.")
+    return ("Impensable — Vender",
+            f"Deterioro generalizado. Score {score}/165 ({s:.0f} sobre 100). "
+            f"Las noticias ({news_impact:.1f} %) amplían la caída fundamental. "
+            "Sal de posiciones largas.")
 def _compute_multifactor_score(
     price_vs_wma, coppock_signal, sharpe, cur_vix, cur_yield,
     analyst_ratio, news_impact_total,
@@ -7239,10 +8531,28 @@ def _compute_multifactor_score(
     
     vd_score = max(0, min(5, vd_score))
 
-    # ── SCORE TOTAL (170 puntos) ─────────────────────────────────────
-    total = max(0, min(165, round(f + m + s + u + ew_score + cv_score + ichi_score + ww_score + weis_score + wyck_score)))
+    # ── SCORE TOTAL ───────────────────────────────────────────────────
+    # Topes: fundamental 30 + momentum 25 + sentimiento 20 + microestructura 25
+    #      + Elliott 10 + vela 10 + Ichimoku 10 + Wolfe 10 + Weis 10
+    #      + Wyckoff 10 + posición del cierre 5  =  165
+    #
+    # `vd_score` se calculaba, se publicaba en el desglose y NO se sumaba: el
+    # techo real era 160 y el factor no influía en la decisión pese a salir en
+    # pantalla. Ahora entra.
+    SCORE_MAX = 165
+    componentes = [f, m, s, u, ew_score, cv_score, ichi_score,
+                   ww_score, weis_score, wyck_score, vd_score]
+    total = max(0, min(SCORE_MAX, round(sum(componentes))))
+
+    # Cada componente es neutro en su punto medio, así que una acción sin
+    # sesgo puntúa alrededor del 50 % del techo. Ese es el centro de la escala
+    # y es sobre él —no sobre cero— donde hay que colocar los umbrales.
+    normalizado = round((total / SCORE_MAX) * 100, 1)
+
     return {
         "score": total,
+        "score_max": SCORE_MAX,
+        "score_100": normalizado,
         "breakdown": {
             "fundamental": round(f, 1),
             "momentum":    round(m, 1),
@@ -7286,7 +8596,20 @@ def _safe_col(df, col: str):
 
 
 def _load_history(tkr, period="1y", interval="1d"):
-    """Carga historial con manejo de MultiIndex de yfinance."""
+    """
+    Carga historial con manejo de MultiIndex de yfinance.
+
+    Y descarta las barras SIN CIERRE. Fuera de horario Yahoo devuelve ya creada
+    la barra del día en curso, con Open/High/Low/Close a NaN y volumen 0: no es
+    una sesión, es un hueco con fecha. Dejándola pasar, el último cierre de la
+    serie es NaN y ese NaN se propaga a todo lo que lea `iloc[-1]` — VWAP,
+    posición en el rango de Wyckoff, pendiente anual... — hasta que uno de esos
+    campos revienta la serialización JSON y tumba la respuesta ENTERA, con
+    todos sus paneles, por una barra vacía.
+
+    Se filtra aquí, en la única puerta por la que entra el histórico, en vez de
+    parchear cada consumidor: hay más de una docena y todos eran vulnerables.
+    """
     try:
         df = yf.Ticker(tkr).history(period=period, interval=interval, auto_adjust=True)
         if df is None or df.empty:
@@ -7294,10 +8617,903 @@ def _load_history(tkr, period="1y", interval="1d"):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         df = df.loc[:, ~df.columns.duplicated(keep='first')]
+        if "Close" in df.columns:
+            df = df[df["Close"].notna()]
         return df
     except Exception as e:
         logging.error(f"Error loading history {tkr}: {e}")
         return pd.DataFrame()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Patrones de precio y consenso multi-timeframe — cálculo real
+#
+#  Ambos endpoints sustituyen a paneles que fabricaban sus cifras con un
+#  generador pseudoaleatorio sembrado con el ticker. La diferencia visible
+#  para el usuario es que ahora pueden decir «no hay patrón» y «no hay datos
+#  suficientes», que antes eran respuestas imposibles.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _rsi(serie: pd.Series, periodo: int = 14) -> Optional[float]:
+    if len(serie) < periodo + 1:
+        return None
+    delta = serie.diff()
+    ganancia = delta.clip(lower=0).rolling(periodo).mean()
+    perdida = (-delta.clip(upper=0)).rolling(periodo).mean()
+    ultima_ganancia = ganancia.iloc[-1]
+    ultima_perdida = perdida.iloc[-1]
+    if pd.isna(ultima_perdida) or pd.isna(ultima_ganancia):
+        return None
+    # Serie plana: ni ganancias ni pérdidas. No es sobrecompra — es ausencia
+    # de movimiento, y devolver 100 la haría parecer un techo eufórico.
+    if ultima_perdida == 0 and ultima_ganancia == 0:
+        return 50.0
+    if ultima_perdida == 0:
+        return 100.0
+    rs = ultima_ganancia / ultima_perdida
+    return float(100 - (100 / (1 + rs)))
+
+
+def _macd_hist(serie: pd.Series) -> Optional[float]:
+    if len(serie) < 35:
+        return None
+    ema12 = serie.ewm(span=12, adjust=False).mean()
+    ema26 = serie.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    valor = (macd - signal).iloc[-1]
+    return float(valor) if pd.notna(valor) else None
+
+
+def _adx(df: pd.DataFrame, periodo: int = 14) -> Optional[float]:
+    if len(df) < periodo * 2 + 1:
+        return None
+    alto = df["High"].astype(float)
+    bajo = df["Low"].astype(float)
+    cierre = df["Close"].astype(float)
+    mas_dm = alto.diff()
+    menos_dm = -bajo.diff()
+    mas_dm = mas_dm.where((mas_dm > menos_dm) & (mas_dm > 0), 0.0)
+    menos_dm = menos_dm.where((menos_dm > mas_dm) & (menos_dm > 0), 0.0)
+    tr = pd.concat([
+        alto - bajo,
+        (alto - cierre.shift()).abs(),
+        (bajo - cierre.shift()).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(periodo).mean()
+    mas_di = 100 * (mas_dm.rolling(periodo).mean() / atr)
+    menos_di = 100 * (menos_dm.rolling(periodo).mean() / atr)
+    dx = 100 * ((mas_di - menos_di).abs() / (mas_di + menos_di).replace(0, np.nan))
+    valor = dx.rolling(periodo).mean().iloc[-1]
+    return float(valor) if pd.notna(valor) else None
+
+
+# (etiqueta, intervalo, periodo) — el periodo lo impone Yahoo: los intervalos
+# intradía solo tienen histórico corto, así que no se puede pedir más.
+MTF_FRAMES = [
+    ("1m", "1m", "5d"), ("5m", "5m", "1mo"), ("15m", "15m", "1mo"),
+    ("1H", "1h", "3mo"), ("4H", "1h", "6mo"),
+    ("1D", "1d", "2y"), ("1W", "1wk", "5y"),
+]
+
+
+@api_router.get("/ichimoku/{ticker}")
+async def get_ichimoku(ticker: str, timeframe: str = "1d"):
+    """Ichimoku Kinko Hyo completo, con la nube proyectada.
+
+    Fórmulas canónicas, sobre MÁXIMOS y MÍNIMOS (no sobre cierres):
+
+      Tenkan  = (máx 9  + mín 9)  / 2
+      Kijun   = (máx 26 + mín 26) / 2
+      Senkou A = (Tenkan + Kijun) / 2      desplazada +26 hacia el futuro
+      Senkou B = (máx 52 + mín 52) / 2     desplazada +26 hacia el futuro
+      Chikou  = cierre                     desplazado −26 hacia el pasado
+
+    Dos errores corregidos frente al cálculo anterior:
+
+    1. **La nube que enfrenta el precio hoy se leía 26 barras atrás.** Tras el
+       desplazamiento, la posición −1 de la serie YA contiene el valor
+       calculado hace 26 barras: ese es el techo y el suelo de hoy. El código
+       previo tomaba `.iloc[-26]`, que es la nube de hace un mes, y comparaba
+       el precio de hoy contra ella.
+
+    2. **`price_26_ago` usaba `close.iloc[-26]`.** Para comparar el cierre
+       actual con el de hace 26 periodos hay que ir a `-27`: con listas
+       indexadas desde el final, `-26` es el vigésimo quinto anterior.
+
+    Se devuelve además la nube FUTURA —las 26 barras ya calculadas que el
+    precio aún no ha alcanzado—, que es la mitad útil del indicador y no se
+    dibujaba.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        MARCOS = {"1h": ("60m", "3mo", None), "4h": ("60m", "6mo", "4h"),
+                  "1d": ("1d", "2y", None), "1wk": ("1d", "5y", "1W"),
+                  "1mo": ("1d", "10y", "1ME")}
+        if timeframe not in MARCOS:
+            raise HTTPException(400, f"Marco no válido. Opciones: {', '.join(MARCOS)}")
+        intervalo, periodo, regla = MARCOS[timeframe]
+
+        clave = f"ichimoku:{ticker}:{timeframe}"
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        df = _load_history(ticker, period=periodo, interval=intervalo)
+        if df is None or df.empty:
+            raise HTTPException(404, f"Sin histórico para {ticker}")
+        if regla:
+            df = df.resample(regla).agg({"Open": "first", "High": "max", "Low": "min",
+                                         "Close": "last", "Volume": "sum"}).dropna()
+        if len(df) < 80:
+            raise HTTPException(404, f"Se necesitan 80 barras y hay {len(df)}. "
+                                     "Ichimoku usa 52 periodos y proyecta 26.")
+
+        alto, bajo, cierre = (df["High"].astype(float), df["Low"].astype(float),
+                              df["Close"].astype(float))
+
+        tenkan = (alto.rolling(9).max() + bajo.rolling(9).min()) / 2
+        kijun = (alto.rolling(26).max() + bajo.rolling(26).min()) / 2
+        span_a_base = (tenkan + kijun) / 2
+        span_b_base = (alto.rolling(52).max() + bajo.rolling(52).min()) / 2
+        senkou_a = span_a_base.shift(26)
+        senkou_b = span_b_base.shift(26)
+
+        precio = float(cierre.iloc[-1])
+        t_val, k_val = float(tenkan.iloc[-1]), float(kijun.iloc[-1])
+
+        # Nube de HOY: posición -1 de la serie desplazada.
+        sa_hoy = float(senkou_a.iloc[-1]) if pd.notna(senkou_a.iloc[-1]) else None
+        sb_hoy = float(senkou_b.iloc[-1]) if pd.notna(senkou_b.iloc[-1]) else None
+        if sa_hoy is None or sb_hoy is None:
+            raise HTTPException(404, "La nube aún no tiene valores en este marco.")
+        techo, suelo = max(sa_hoy, sb_hoy), min(sa_hoy, sb_hoy)
+        grosor_pct = (techo - suelo) / precio * 100 if precio else 0.0
+
+        if precio > techo:
+            pos, pos_score = "Sobre la nube", 3.0
+        elif precio < suelo:
+            pos, pos_score = "Bajo la nube", 0.0
+        else:
+            pos, pos_score = "Dentro de la nube", 1.5
+
+        tk = "alcista" if t_val > k_val else "bajista" if t_val < k_val else "neutral"
+        tk_score = 2.5 if tk == "alcista" else 0.0 if tk == "bajista" else 1.25
+
+        # Chikou: cierre actual frente al de hace 26 periodos → índice -27.
+        precio_26 = float(cierre.iloc[-27])
+        chikou_libre = precio > precio_26
+        chikou_score = 2.5 if chikou_libre else 0.0
+
+        # Color de la nube FUTURA: es la que anticipa, no la de hoy.
+        sa_fut = float(span_a_base.iloc[-1]) if pd.notna(span_a_base.iloc[-1]) else sa_hoy
+        sb_fut = float(span_b_base.iloc[-1]) if pd.notna(span_b_base.iloc[-1]) else sb_hoy
+        color_futuro = "verde" if sa_fut > sb_fut else "roja" if sa_fut < sb_fut else "plana"
+        color_score = 2.0 if color_futuro == "verde" else 0.0 if color_futuro == "roja" else 1.0
+
+        total = round(pos_score + tk_score + chikou_score + color_score, 1)
+        if total >= 8:
+            senal, senal_txt = "alcista", "ALCISTA FUERTE"
+        elif total >= 6:
+            senal, senal_txt = "alcista", "ALCISTA"
+        elif total >= 4:
+            senal, senal_txt = "neutral", "MIXTO"
+        elif total >= 2:
+            senal, senal_txt = "bajista", "BAJISTA"
+        else:
+            senal, senal_txt = "bajista", "BAJISTA FUERTE"
+
+        # Series para dibujar: histórico + las 26 barras futuras de la nube.
+        n = min(120, len(df))
+        idx = df.index[-n:]
+        hist = [{
+            "fecha": str(idx[i])[:10],
+            "cierre": round(float(cierre.iloc[-n + i]), 4),
+            "maximo": round(float(alto.iloc[-n + i]), 4),
+            "minimo": round(float(bajo.iloc[-n + i]), 4),
+            "tenkan": round(float(tenkan.iloc[-n + i]), 4) if pd.notna(tenkan.iloc[-n + i]) else None,
+            "kijun": round(float(kijun.iloc[-n + i]), 4) if pd.notna(kijun.iloc[-n + i]) else None,
+            "senkou_a": round(float(senkou_a.iloc[-n + i]), 4) if pd.notna(senkou_a.iloc[-n + i]) else None,
+            "senkou_b": round(float(senkou_b.iloc[-n + i]), 4) if pd.notna(senkou_b.iloc[-n + i]) else None,
+            # Chikou en su sitio: el cierre de 26 barras después, dibujado aquí.
+            "chikou": round(float(cierre.iloc[-n + i + 26]), 4) if (-n + i + 26) < 0 else None,
+        } for i in range(n)]
+
+        # Nube proyectada: ya está calculada, el precio aún no ha llegado.
+        futuro = [{
+            "senkou_a": round(float(span_a_base.iloc[-26 + i]), 4) if pd.notna(span_a_base.iloc[-26 + i]) else None,
+            "senkou_b": round(float(span_b_base.iloc[-26 + i]), 4) if pd.notna(span_b_base.iloc[-26 + i]) else None,
+        } for i in range(26)]
+
+        respuesta = {
+            "ticker": ticker, "timeframe": timeframe, "barras": int(len(df)),
+            "precio": round(precio, 4),
+            "lineas": {
+                "tenkan": round(t_val, 4), "kijun": round(k_val, 4),
+                "senkou_a_hoy": round(sa_hoy, 4), "senkou_b_hoy": round(sb_hoy, 4),
+                "nube_techo": round(techo, 4), "nube_suelo": round(suelo, 4),
+                "grosor_pct": round(grosor_pct, 2),
+                "chikou_referencia": round(precio_26, 4),
+            },
+            "componentes": [
+                {"nombre": "Precio frente a la nube", "valor": pos, "puntos": pos_score, "max": 3.0,
+                 "sesgo": "alcista" if pos_score >= 3 else "bajista" if pos_score == 0 else "neutral",
+                 "explicacion": "La nube es soporte cuando el precio está por encima y resistencia cuando está por debajo."},
+                {"nombre": "Cruce Tenkan / Kijun", "valor": tk.capitalize(), "puntos": tk_score, "max": 2.5,
+                 "sesgo": tk,
+                 "explicacion": "Tenkan sobre Kijun indica impulso reciente a favor. Es la señal más rápida y la más ruidosa."},
+                {"nombre": "Chikou libre", "valor": "Libre" if chikou_libre else "Obstruido",
+                 "puntos": chikou_score, "max": 2.5,
+                 "sesgo": "alcista" if chikou_libre else "bajista",
+                 "explicacion": f"Compara el cierre actual ({precio:.2f}) con el de hace 26 periodos ({precio_26:.2f})."},
+                {"nombre": "Color de la nube futura", "valor": color_futuro.capitalize(),
+                 "puntos": color_score, "max": 2.0,
+                 "sesgo": "alcista" if color_futuro == "verde" else "bajista" if color_futuro == "roja" else "neutral",
+                 "explicacion": "Es la nube que el precio encontrará dentro de 26 periodos. Anticipa, no describe."},
+            ],
+            "score": total, "score_max": 10.0,
+            "senal": senal, "senal_texto": senal_txt,
+            "grosor_lectura": ("Nube gruesa: soporte o resistencia firme, y los giros cuestan más."
+                               if grosor_pct > 4 else
+                               "Nube fina: el precio la atraviesa con facilidad y la señal pesa menos."),
+            "historico": hist, "futuro": futuro,
+        }
+        cache_put(clave, respuesta, 900)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en /ichimoku/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/weis/{ticker}")
+async def get_weis_waves(ticker: str, timeframe: str = "1d", umbral: float = 1.5):
+    """Ondas de Weis: volumen acumulado dentro de cada tramo de precio.
+
+    El método de Weis parte de una idea de Wyckoff — **esfuerzo frente a
+    resultado**. El esfuerzo es el volumen; el resultado, el recorrido del
+    precio. Cuando hace falta mucho volumen para mover poco el precio, alguien
+    está absorbiendo al otro lado, y eso suele preceder al giro.
+
+    El panel anterior no calculaba nada: las ondas estaban escritas a mano en
+    un array (`demoWaves`) con multiplicadores fijos.
+
+    Tres medidas por onda, y las tres importan por separado:
+      · **volumen** acumulado en el tramo (el esfuerzo),
+      · **recorrido** del precio (el resultado),
+      · **esfuerzo/resultado** = volumen por punto de precio movido.
+
+    La comparación decisiva es contra la onda ANTERIOR DEL MISMO SENTIDO: una
+    subida con menos volumen que la subida previa es una subida que se está
+    quedando sin combustible, aunque el precio siga haciendo máximos.
+    """
+    try:
+        from patterns import zigzag
+
+        ticker = ticker.upper().strip()
+        MARCOS = {"1d": ("1d", "1y", None), "1wk": ("1d", "3y", "1W"),
+                  "4h": ("60m", "3mo", "4h"), "1h": ("60m", "1mo", "1h")}
+        if timeframe not in MARCOS:
+            raise HTTPException(400, f"Marco no válido. Opciones: {', '.join(MARCOS)}")
+        intervalo, periodo, regla = MARCOS[timeframe]
+
+        clave = f"weis:{ticker}:{timeframe}:{umbral}"
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        df = _load_history(ticker, period=periodo, interval=intervalo)
+        if df is None or df.empty or len(df) < 40:
+            raise HTTPException(404, f"Histórico insuficiente para {ticker}")
+        if regla:
+            df = df.resample(regla).agg({"Open": "first", "High": "max", "Low": "min",
+                                         "Close": "last", "Volume": "sum"}).dropna()
+
+        pivotes = zigzag(df, umbral)
+        if len(pivotes) < 3:
+            raise HTTPException(404, "No hay tramos suficientes para formar ondas.")
+
+        cierres = df["Close"].astype(float).values
+        vols = df["Volume"].astype(float).fillna(0).values if "Volume" in df else np.zeros(len(df))
+        fechas = df.index
+
+        ondas = []
+        for a, b in zip(pivotes, pivotes[1:]):
+            i, j = a["idx"], b["idx"]
+            if j <= i:
+                continue
+            vol = float(np.nansum(vols[i + 1:j + 1]))
+            p0, p1 = float(cierres[i]), float(cierres[j])
+            recorrido = p1 - p0
+            barras = j - i
+            # Esfuerzo por unidad de resultado. Sin recorrido no es divisible:
+            # se marca como absorción total en vez de dividir por cero.
+            er = (vol / abs(recorrido)) if abs(recorrido) > 1e-9 else None
+            ondas.append({
+                "desde": str(fechas[i])[:10], "hasta": str(fechas[j])[:10],
+                "idx_desde": int(i), "idx_hasta": int(j),
+                "direccion": "alcista" if recorrido > 0 else "bajista",
+                "precio_desde": round(p0, 4), "precio_hasta": round(p1, 4),
+                "recorrido": round(recorrido, 4),
+                "recorrido_pct": round(recorrido / p0 * 100, 2) if p0 else 0.0,
+                "volumen": round(vol, 0),
+                "barras": int(barras),
+                "esfuerzo_resultado": round(er, 0) if er is not None else None,
+                "provisional": bool(b.get("provisional")),
+            })
+
+        if len(ondas) < 2:
+            raise HTTPException(404, "Muy pocas ondas para comparar.")
+
+        # Comparación con la onda anterior del MISMO sentido.
+        for k, o in enumerate(ondas):
+            previa = next((ondas[m] for m in range(k - 1, -1, -1)
+                           if ondas[m]["direccion"] == o["direccion"]), None)
+            if previa and previa["volumen"] > 0:
+                o["vol_vs_previa"] = round((o["volumen"] - previa["volumen"]) / previa["volumen"] * 100, 1)
+                o["recorrido_vs_previa"] = (
+                    round((abs(o["recorrido"]) - abs(previa["recorrido"])) / abs(previa["recorrido"]) * 100, 1)
+                    if abs(previa["recorrido"]) > 1e-9 else None)
+            else:
+                o["vol_vs_previa"] = None
+                o["recorrido_vs_previa"] = None
+
+        ultima = ondas[-1]
+        alcistas = [o for o in ondas if o["direccion"] == "alcista"]
+        bajistas = [o for o in ondas if o["direccion"] == "bajista"]
+        vol_alc = sum(o["volumen"] for o in alcistas)
+        vol_baj = sum(o["volumen"] for o in bajistas)
+        total = vol_alc + vol_baj
+
+        # ── Diagnóstico ──
+        avisos = []
+        if ultima["vol_vs_previa"] is not None and ultima["vol_vs_previa"] < -20:
+            avisos.append({
+                "tipo": "divergencia",
+                "texto": (f"La onda {ultima['direccion']} actual mueve un "
+                          f"{abs(ultima['vol_vs_previa']):.0f} % menos de volumen que la anterior "
+                          f"del mismo sentido: el tramo pierde combustible."),
+                "sesgo": "bajista" if ultima["direccion"] == "alcista" else "alcista",
+            })
+        if (ultima["vol_vs_previa"] is not None and ultima["recorrido_vs_previa"] is not None
+                and ultima["vol_vs_previa"] > 20 and ultima["recorrido_vs_previa"] < 0):
+            avisos.append({
+                "tipo": "absorcion",
+                "texto": ("Más volumen que la onda previa del mismo sentido pero menos recorrido: "
+                          "esfuerzo alto con resultado bajo, señal clásica de absorción."),
+                "sesgo": "bajista" if ultima["direccion"] == "alcista" else "alcista",
+            })
+        if not avisos:
+            avisos.append({
+                "tipo": "normal",
+                "texto": "Esfuerzo y resultado guardan proporción con las ondas anteriores.",
+                "sesgo": "neutral",
+            })
+
+        sesgo = ("alcista" if vol_alc > vol_baj * 1.2
+                 else "bajista" if vol_baj > vol_alc * 1.2 else "equilibrado")
+
+        respuesta = {
+            "ticker": ticker, "timeframe": timeframe, "umbral_atr": umbral,
+            "ondas": ondas[-14:],
+            "resumen": {
+                "ondas_totales": len(ondas),
+                "volumen_alcista": round(vol_alc, 0),
+                "volumen_bajista": round(vol_baj, 0),
+                "reparto_alcista": round(vol_alc / total * 100, 1) if total else None,
+                "sesgo": sesgo,
+                "onda_actual": ultima["direccion"],
+                "onda_en_curso": ultima["provisional"],
+            },
+            "avisos": avisos,
+            "metodo": ("Volumen acumulado entre pivotes de ZigZag a "
+                       f"{umbral} ATR. El esfuerzo/resultado es el volumen por punto de precio "
+                       "movido: cuanto más alto, más cuesta avanzar."),
+        }
+        cache_put(clave, respuesta, 900)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en /weis/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/candles/{ticker}")
+async def get_candle_analysis(ticker: str, timeframe: str = "1d"):
+    """Acción del precio de la última vela cerrada, en el marco pedido.
+
+    Sustituye a la detección anterior, que tenía tres fallos:
+
+    1. **Agrupaba las semanas por posición en el array**, en bloques fijos de
+       cinco. Las semanas con festivo tienen cuatro sesiones y el array puede
+       empezar a media semana, así que cada «vela semanal» mezclaba días de
+       dos semanas distintas. Aquí se reagrupa por calendario con `resample`.
+
+    2. **La fiabilidad era un número fijo** (0.72 para el martillo, etc.). Se
+       presentaba como fiabilidad histórica y no lo era.
+
+    3. **El martillo exigía cuerpo verde.** Lo que define un martillo es la
+       mecha inferior larga, no el color del cuerpo; un martillo rojo sigue
+       siendo un martillo.
+
+    Se mide siempre la ÚLTIMA VELA CERRADA. La que está en formación cambia
+    con cada tick y un patrón sobre ella se invalida solo.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        MARCOS = {
+            "1h": ("60m", "1mo", "1h"),
+            "4h": ("60m", "3mo", "4h"),
+            "1d": ("1d", "1y", None),
+            "1wk": ("1d", "2y", "1W"),
+            "1mo": ("1d", "5y", "1ME"),
+        }
+        if timeframe not in MARCOS:
+            raise HTTPException(400, f"Marco no válido. Opciones: {', '.join(MARCOS)}")
+        intervalo, periodo, regla = MARCOS[timeframe]
+
+        clave = f"candles:{ticker}:{timeframe}"
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        df = _load_history(ticker, period=periodo, interval=intervalo)
+        if df is None or df.empty or len(df) < 12:
+            raise HTTPException(404, f"Histórico insuficiente para {ticker} en {timeframe}")
+
+        # Reagrupado por CALENDARIO, no por posición.
+        if regla:
+            df = df.resample(regla).agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna()
+
+        if len(df) < 6:
+            raise HTTPException(404, "Muy pocas velas tras el reagrupado.")
+
+        # Última CERRADA: la actual sigue formándose.
+        v = df.iloc[-2]
+        prev = df.iloc[-3]
+        fecha = str(df.index[-2])[:16]
+
+        o, h, l, c = (float(v["Open"]), float(v["High"]), float(v["Low"]), float(v["Close"]))
+        vol = float(v.get("Volume", 0) or 0)
+        rango = h - l
+        cuerpo = abs(c - o)
+        alcista = c > o
+
+        if rango <= 0:
+            raise HTTPException(404, "Vela sin rango (máximo igual al mínimo).")
+
+        mecha_sup = h - max(o, c)
+        mecha_inf = min(o, c) - l
+        cuerpo_pct = cuerpo / rango * 100
+        clv = (c - l) / rango * 100          # posición del cierre en el rango
+        variacion = (c - o) / o * 100 if o else 0.0
+        hueco = (o - float(prev["Close"])) / float(prev["Close"]) * 100 if prev["Close"] else 0.0
+
+        # Contexto: tamaño frente a las 20 velas anteriores.
+        rangos = (df["High"] - df["Low"]).tail(21).head(20)
+        rango_medio = float(rangos.mean()) if len(rangos) else rango
+        rango_rel = rango / rango_medio if rango_medio > 0 else 1.0
+        vols = df["Volume"].tail(21).head(20)
+        vol_medio = float(vols.mean()) if len(vols) and vols.mean() > 0 else 0.0
+        vol_rel = vol / vol_medio if vol_medio > 0 else None
+
+        # ── Patrón ────────────────────────────────────────────────────────
+        # Dos ideas que la versión anterior no tenía:
+        #
+        # 1. **La misma forma cambia de nombre y de sentido según el contexto.**
+        #    Un cuerpo pequeño con mecha inferior larga es un MARTILLO tras una
+        #    caída —rechazo de mínimos, alcista— y un HOMBRE COLGADO tras una
+        #    subida —los vendedores ya aparecen, bajista—. Sin mirar la
+        #    tendencia previa no se puede nombrar la figura.
+        #
+        # 2. **Se declara la más específica.** «Marubozu» dice más que «vela de
+        #    cuerpo grande», y una estrella del atardecer más que una envolvente.
+        #    Se ordenan por especificidad y la primera es la principal.
+
+        po, pc = float(prev["Open"]), float(prev["Close"])
+        ph, pl = float(prev["High"]), float(prev["Low"])
+        prev_alcista = pc > po
+        prev_cuerpo = abs(pc - po)
+        prev_rango = ph - pl
+        prev_cuerpo_pct = (prev_cuerpo / prev_rango * 100) if prev_rango > 0 else 0
+
+        # Antepenúltima, para las figuras de tres velas.
+        tiene_tres = len(df) >= 4
+        if tiene_tres:
+            ant = df.iloc[-4]
+            ao, ac = float(ant["Open"]), float(ant["Close"])
+            ant_alcista = ac > ao
+            ant_cuerpo = abs(ac - ao)
+        else:
+            ant_alcista, ant_cuerpo = None, 0.0
+
+        # Tendencia previa: pendiente de los cierres de las 6 velas anteriores.
+        # Es lo que distingue martillo de hombre colgado.
+        try:
+            base = df["Close"].iloc[-8:-2].astype(float).values
+            tendencia = float(np.polyfit(np.arange(len(base)), base, 1)[0]) / base.mean() * 100
+        except Exception:
+            tendencia = 0.0
+        en_caida = tendencia < -0.3
+        en_subida = tendencia > 0.3
+        ctx = ("tras una caída" if en_caida else "tras una subida" if en_subida
+               else "en una zona sin tendencia clara")
+
+        p = []   # (especificidad, nombre, sesgo, explicación)
+
+        # ── Tres velas ──
+        if tiene_tres:
+            if (not ant_alcista and cuerpo_pct > 50 and alcista
+                    and prev_cuerpo_pct < 30 and c > (ao + ac) / 2):
+                p.append((5, "Estrella de la mañana", "alcista",
+                          "Tres velas: bajista, indecisión y alcista que recupera más de la mitad "
+                          "de la primera. Suele marcar suelo."))
+            if (ant_alcista and cuerpo_pct > 50 and not alcista
+                    and prev_cuerpo_pct < 30 and c < (ao + ac) / 2):
+                p.append((5, "Estrella del atardecer", "bajista",
+                          "Tres velas: alcista, indecisión y bajista que devuelve más de la mitad "
+                          "de la primera. Suele marcar techo."))
+            if (ant_alcista and prev_alcista and alcista and cuerpo_pct > 55
+                    and prev_cuerpo_pct > 55 and c > pc > ac):
+                p.append((5, "Tres soldados blancos", "alcista",
+                          "Tres velas alcistas consecutivas con cuerpo amplio y cierres crecientes."))
+            if (not ant_alcista and not prev_alcista and not alcista and cuerpo_pct > 55
+                    and prev_cuerpo_pct > 55 and c < pc < ac):
+                p.append((5, "Tres cuervos negros", "bajista",
+                          "Tres velas bajistas consecutivas con cuerpo amplio y cierres decrecientes."))
+
+        # ── Dos velas ──
+        if alcista and not prev_alcista and c >= po and o <= pc and cuerpo > prev_cuerpo:
+            p.append((4, "Envolvente alcista", "alcista",
+                      "El cuerpo engulle por completo al de la vela bajista anterior."))
+        if not alcista and prev_alcista and c <= po and o >= pc and cuerpo > prev_cuerpo:
+            p.append((4, "Envolvente bajista", "bajista",
+                      "El cuerpo engulle por completo al de la vela alcista anterior."))
+        if alcista and not prev_alcista and o < pl and c > (po + pc) / 2 and c < po:
+            p.append((4, "Penetrante", "alcista",
+                      "Abre por debajo del mínimo anterior y cierra por encima de la mitad "
+                      "del cuerpo bajista previo."))
+        if not alcista and prev_alcista and o > ph and c < (po + pc) / 2 and c > po:
+            p.append((4, "Nube oscura", "bajista",
+                      "Abre por encima del máximo anterior y cierra por debajo de la mitad "
+                      "del cuerpo alcista previo."))
+        if cuerpo < prev_cuerpo * 0.5 and max(o, c) < max(po, pc) and min(o, c) > min(po, pc):
+            p.append((3, "Harami " + ("alcista" if not prev_alcista else "bajista"),
+                      "alcista" if not prev_alcista else "bajista",
+                      "Cuerpo pequeño contenido dentro del cuerpo de la vela anterior: "
+                      "la tendencia pierde impulso."))
+
+        # ── Una vela ──
+        sin_mechas = mecha_sup < rango * 0.03 and mecha_inf < rango * 0.03
+        if cuerpo_pct > 90 and sin_mechas:
+            p.append((4, "Marubozu " + ("alcista" if alcista else "bajista"),
+                      "alcista" if alcista else "bajista",
+                      "Cuerpo completo sin mechas: una sola parte controló toda la sesión."))
+        elif cuerpo_pct > 70:
+            p.append((2, "Vela de fuerza " + ("alcista" if alcista else "bajista"),
+                      "alcista" if alcista else "bajista",
+                      "Cuerpo dominante con mechas cortas."))
+
+        # La mecha OPUESTA se mide contra el RANGO, no contra el cuerpo.
+        # Con un cuerpo diminuto, `cuerpo * 0.6` es casi cero y ninguna vela
+        # pasaba el filtro: un martillo de libro quedaba sin clasificar.
+        largo_inf = mecha_inf > cuerpo * 2 and mecha_inf > rango * 0.5 and mecha_sup < rango * 0.15
+        largo_sup = mecha_sup > cuerpo * 2 and mecha_sup > rango * 0.5 and mecha_inf < rango * 0.15
+
+        if largo_inf and cuerpo_pct > 4:
+            if en_subida:
+                p.append((4, "Hombre colgado", "bajista",
+                          f"Misma forma que el martillo pero {ctx}: los vendedores ya aparecen "
+                          "dentro de la subida. El color del cuerpo no lo cambia."))
+            else:
+                p.append((4, "Martillo", "alcista",
+                          f"Mecha inferior larga {ctx}: el precio cayó y fue rechazado. "
+                          "Un martillo rojo sigue siendo un martillo."))
+        if largo_sup and cuerpo_pct > 4:
+            if en_caida:
+                p.append((4, "Martillo invertido", "alcista",
+                          f"Mecha superior larga {ctx}: intento de rebote. Necesita confirmación "
+                          "en la vela siguiente."))
+            else:
+                p.append((4, "Estrella fugaz", "bajista",
+                          f"Mecha superior larga {ctx}: el precio subió y fue rechazado."))
+
+        if cuerpo_pct < 10:
+            if mecha_inf > rango * 0.6:
+                p.append((4, "Doji libélula", "alcista",
+                          "Apertura y cierre en máximos con mecha inferior larga: rechazo de mínimos."))
+            elif mecha_sup > rango * 0.6:
+                p.append((4, "Doji lápida", "bajista",
+                          "Apertura y cierre en mínimos con mecha superior larga: rechazo de máximos."))
+            elif mecha_sup > rango * 0.35 and mecha_inf > rango * 0.35:
+                p.append((3, "Doji de piernas largas", "neutral",
+                          "Mechas largas a ambos lados: mucha actividad y ningún ganador."))
+            else:
+                p.append((3, "Doji", "neutral",
+                          "Apertura y cierre casi iguales: indecisión, no dirección."))
+        elif cuerpo_pct < 30 and mecha_sup > cuerpo and mecha_inf > cuerpo:
+            p.append((2, "Peonza", "neutral",
+                      "Cuerpo pequeño entre dos mechas: equilibrio entre compra y venta."))
+
+        if abs(hueco) > 1.0:
+            p.append((1, "Hueco " + ("al alza" if hueco > 0 else "a la baja"),
+                      "alcista" if hueco > 0 else "bajista",
+                      f"Abre un {abs(hueco):.1f} % {'por encima' if hueco > 0 else 'por debajo'} "
+                      "del cierre anterior."))
+
+        if not p:
+            p.append((0, "Sin figura clásica", "neutral",
+                      "La vela no encaja en ninguna figura reconocida. Es el caso más frecuente "
+                      "y no significa nada por sí mismo."))
+
+        # La más específica primero: es la que mejor describe la vela.
+        p.sort(key=lambda x: -x[0])
+        patrones = [(n, s, e) for _, n, s, e in p]
+        patron_principal = patrones[0]
+
+        # ── Sesgo, con sus motivos a la vista ─────────────────────────────
+        # No basta el color: una vela verde que cierra en mínimos es débil.
+        votos = []
+        if alcista:
+            votos.append((1, f"Cierra por encima de la apertura ({variacion:+.2f} %)"))
+        else:
+            votos.append((-1, f"Cierra por debajo de la apertura ({variacion:+.2f} %)"))
+
+        if clv >= 66:
+            votos.append((1, f"Cierra en el tercio alto del rango (CLV {clv:.0f} %)"))
+        elif clv <= 33:
+            votos.append((-1, f"Cierra en el tercio bajo del rango (CLV {clv:.0f} %)"))
+
+        if cuerpo_pct >= 60:
+            votos.append((1 if alcista else -1,
+                          f"Cuerpo dominante ({cuerpo_pct:.0f} % del rango): dirección con convicción"))
+        elif cuerpo_pct < 25:
+            votos.append((0, f"Cuerpo pequeño ({cuerpo_pct:.0f} % del rango): sin convicción"))
+
+        if mecha_inf > rango * 0.4:
+            votos.append((1, "Mecha inferior larga: compradores defendiendo mínimos"))
+        if mecha_sup > rango * 0.4:
+            votos.append((-1, "Mecha superior larga: vendedores rechazando máximos"))
+
+        if vol_rel is not None:
+            if vol_rel >= 1.5:
+                votos.append((1 if alcista else -1,
+                              f"Volumen {vol_rel:.1f}× la media: el movimiento tiene respaldo"))
+            elif vol_rel <= 0.6:
+                votos.append((0, f"Volumen {vol_rel:.1f}× la media: movimiento sin participación"))
+
+        if rango_rel >= 1.6:
+            votos.append((1 if alcista else -1,
+                          f"Rango {rango_rel:.1f}× el habitual: sesión de expansión"))
+
+        # La figura principal vota. Antes se detectaba y no influía en el
+        # veredicto, así que podía salir «estrella fugaz» con sesgo alcista.
+        if patron_principal[1] == "alcista":
+            votos.append((1, f"Figura detectada: {patron_principal[0]}"))
+        elif patron_principal[1] == "bajista":
+            votos.append((-1, f"Figura detectada: {patron_principal[0]}"))
+
+        suma = sum(v for v, _ in votos)
+        fuerza = min(100, abs(suma) * 22)
+        if suma >= 2:
+            sesgo, sesgo_txt = "alcista", "ALCISTA"
+        elif suma <= -2:
+            sesgo, sesgo_txt = "bajista", "BAJISTA"
+        else:
+            sesgo, sesgo_txt = "neutral", "SIN SESGO CLARO"
+
+        respuesta = {
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "fecha": fecha,
+            "vela": {
+                "apertura": round(o, 4), "maximo": round(h, 4),
+                "minimo": round(l, 4), "cierre": round(c, 4),
+                "volumen": round(vol, 0),
+            },
+            "medidas": {
+                "variacion": round(variacion, 2),
+                "cuerpo_pct": round(cuerpo_pct, 1),
+                "mecha_superior_pct": round(mecha_sup / rango * 100, 1),
+                "mecha_inferior_pct": round(mecha_inf / rango * 100, 1),
+                "clv": round(clv, 1),
+                "rango": round(rango, 4),
+                "rango_relativo": round(rango_rel, 2),
+                "volumen_relativo": round(vol_rel, 2) if vol_rel is not None else None,
+                "hueco_apertura": round(hueco, 2),
+            },
+            "patron_principal": {"nombre": patron_principal[0], "sesgo": patron_principal[1],
+                                 "explicacion": patron_principal[2]},
+            "patrones": [{"nombre": n, "sesgo": s, "explicacion": e} for n, s, e in patrones],
+            "contexto": {"tendencia_previa": round(tendencia, 3),
+                         "descripcion": ctx,
+                         "direccion": "caída" if en_caida else "subida" if en_subida else "lateral"},
+            "sesgo": sesgo,
+            "sesgo_texto": sesgo_txt,
+            "fuerza": int(fuerza),
+            "motivos": [{"signo": v, "texto": t} for v, t in votos],
+            "nota": ("Se analiza la última vela CERRADA. La que está en formación cambia con "
+                     "cada tick y cualquier patrón sobre ella puede invalidarse antes del cierre."),
+            "velas": [
+                {"fecha": str(idx)[:16], "apertura": round(float(r["Open"]), 4),
+                 "maximo": round(float(r["High"]), 4), "minimo": round(float(r["Low"]), 4),
+                 "cierre": round(float(r["Close"]), 4),
+                 "volumen": round(float(r.get("Volume", 0) or 0), 0)}
+                for idx, r in df.tail(30).iterrows()
+            ],
+        }
+        cache_put(clave, respuesta, 300 if timeframe in ("1h", "4h") else 1800)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en /candles/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/mtf/{ticker}")
+async def get_mtf_consensus(ticker: str):
+    """Consenso multi-timeframe calculado marco a marco.
+
+    Cada fila sale de su propia serie descargada e indicadores propios. El
+    panel anterior derivaba las siete filas de un único número al que sumaba
+    ruido creciente (88 % en la de un minuto), de modo que la confluencia
+    entre marcos estaba garantizada por construcción y no significaba nada.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        cache_key = f"mtf:{ticker}"
+        cacheado = cache_get(cache_key)
+        if cacheado is not None:
+            return cacheado
+
+        filas = []
+        for etiqueta, intervalo, periodo in MTF_FRAMES:
+            try:
+                df = _load_history(ticker, period=periodo, interval=intervalo)
+                # 4H se compone agregando velas horarias: Yahoo no sirve 4h.
+                if etiqueta == "4H" and df is not None and not df.empty:
+                    df = df.resample("4h").agg({
+                        "Open": "first", "High": "max", "Low": "min",
+                        "Close": "last", "Volume": "sum",
+                    }).dropna()
+
+                if df is None or df.empty or len(df) < 30:
+                    filas.append({
+                        "tf": etiqueta, "disponible": False,
+                        "motivo": "Histórico insuficiente en este marco",
+                    })
+                    continue
+
+                cierre = df["Close"].astype(float)
+                sma20 = cierre.rolling(20).mean().iloc[-1]
+                precio = float(cierre.iloc[-1])
+                rsi = _rsi(cierre)
+                macd_h = _macd_hist(cierre)
+                adx = _adx(df)
+                vol_med = df["Volume"].astype(float).rolling(20).mean().iloc[-1]
+                vol_act = float(df["Volume"].astype(float).iloc[-1])
+
+                def senal(v, alto, bajo):
+                    if v is None:
+                        return "sin_dato"
+                    return "alcista" if v > alto else "bajista" if v < bajo else "neutral"
+
+                filas.append({
+                    "tf": etiqueta,
+                    "disponible": True,
+                    "tendencia": "alcista" if (pd.notna(sma20) and precio > sma20)
+                                 else "bajista" if pd.notna(sma20) else "sin_dato",
+                    "rsi": round(rsi, 1) if rsi is not None else None,
+                    "rsi_senal": senal(rsi, 60, 40),
+                    "macd": "alcista" if (macd_h or 0) > 0 else "bajista" if macd_h is not None else "sin_dato",
+                    "adx": round(adx, 1) if adx is not None else None,
+                    "adx_senal": "alcista" if (adx or 0) > 25 else "neutral" if adx is not None else "sin_dato",
+                    "volumen": "alcista" if (pd.notna(vol_med) and vol_act > vol_med) else "bajista" if pd.notna(vol_med) else "sin_dato",
+                    "barras": int(len(df)),
+                    "actualizado": str(df.index[-1])[:16],
+                })
+            except Exception as err:
+                logger.warning(f"MTF {ticker} {etiqueta}: {err}")
+                filas.append({"tf": etiqueta, "disponible": False, "motivo": "Error al descargar"})
+
+        disponibles = [f for f in filas if f.get("disponible")]
+        alcistas = sum(1 for f in disponibles if f["tendencia"] == "alcista")
+        bajistas = sum(1 for f in disponibles if f["tendencia"] == "bajista")
+
+        respuesta = {
+            "ticker": ticker,
+            "frames": filas,
+            "marcos_con_datos": len(disponibles),
+            "marcos_totales": len(MTF_FRAMES),
+            "consenso": ("alcista" if alcistas > bajistas * 2
+                         else "bajista" if bajistas > alcistas * 2
+                         else "mixto") if disponibles else "sin_datos",
+            "detalle_consenso": f"{alcistas} de {len(disponibles)} marcos con precio sobre su media de 20",
+        }
+        cache_put(cache_key, respuesta, 180)
+        return respuesta
+
+    except Exception as e:
+        logger.error(f"Error en /mtf/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/patterns/{ticker}")
+async def get_price_patterns(ticker: str, period: str = "1y", interval: str = "1d",
+                             timeframe: Optional[str] = None):
+    """Elliott y Wolfe detectados sobre el histórico real.
+
+    Puede devolver `encontrado: false` con el motivo del descarte, que es el
+    resultado más frecuente y el más honesto: la mayoría de las series en la
+    mayoría de los momentos no forman un impulso válido de cinco ondas.
+    """
+    try:
+        from patterns import detectar_elliott, detectar_wolfe
+
+        ticker = ticker.upper().strip()
+
+        # Marcos temporales. Los patrones de Elliott y Wolfe existen a
+        # cualquier escala, y el mismo valor puede tener un impulso claro en
+        # diario y ninguno en horario. El periodo se elige para que queden
+        # bastantes barras: con menos de 200 el ZigZag da pocos pivotes y no
+        # hay ventanas que recorrer.
+        MARCOS = {
+            "1h":  ("60m", "3mo", None),
+            "4h":  ("60m", "6mo", "4h"),
+            "1d":  ("1d",  "2y",  None),
+            "1wk": ("1d",  "5y",  "1W"),
+        }
+        regla = None
+        if timeframe:
+            if timeframe not in MARCOS:
+                raise HTTPException(400, f"Marco no válido. Opciones: {', '.join(MARCOS)}")
+            interval, period, regla = MARCOS[timeframe]
+
+        cache_key = f"patterns:{ticker}:{timeframe or period}:{interval}"
+        cacheado = cache_get(cache_key)
+        if cacheado is not None:
+            return cacheado
+
+        df = _load_history(ticker, period=period, interval=interval)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"Sin histórico para {ticker}")
+        if regla:
+            df = df.resample(regla).agg({"Open": "first", "High": "max", "Low": "min",
+                                         "Close": "last", "Volume": "sum"}).dropna()
+        if len(df) < 40:
+            raise HTTPException(404, f"Solo {len(df)} barras en {timeframe or interval}. "
+                                     "Hacen falta al menos 40 para buscar patrones.")
+
+        respuesta = {
+            "ticker": ticker,
+            "timeframe": timeframe or interval,
+            "period": period,
+            "interval": interval,
+            "barras": int(len(df)),
+            "elliott": detectar_elliott(df),
+            "wolfe": detectar_wolfe(df),
+            "metodo": (
+                "Pivotes ZigZag con umbral de 2 ATR y validación de las reglas "
+                "duras del método. Sin patrón válido no se proyectan objetivos."
+            ),
+        }
+        cache_put(cache_key, respuesta, 900)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en /patterns/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.get("/overton/{ticker}")
@@ -7308,13 +9524,48 @@ async def get_overton_signal(ticker: str):
     Momentum 12-1, FGI, PCR, Short Interest, Z-score, Beta,
     Forward Guidance, OFI, VWAP, Bid-Ask Spread, GEX, Market Impact.
     """
+    import time as _time_dbg
+    _t_inicio = _time_dbg.monotonic()
+    def _marca(nombre):
+        logging.warning(f"TIMING overton/{ticker}: {nombre} @ {_time_dbg.monotonic() - _t_inicio:.1f}s")
+
+    ticker = ticker.upper().strip()
+    clave_cache = f"overton:{ticker}"
+
+    # 1. Caché vigente. Este endpoint descarga media docena de series de Yahoo;
+    #    repetirlo porque alguien ha cambiado de pestaña y ha vuelto es lo que
+    #    agota la cuota de la IP. Cinco minutos no envejecen una lectura que se
+    #    calcula sobre barras diarias.
+    cacheado = cache_get(clave_cache)
+    if cacheado is not None:
+        return cacheado
+
+    # 2. Si Yahoo está limitando, ni se intenta: cada intento alarga la ventana.
+    #    Se sirve la última lectura buena, diciendo de cuándo es.
+    if yahoo_limitado():
+        espera = segundos_hasta_reintento()
+        reserva = con_reserva(
+            clave_cache,
+            motivo=f"Yahoo está limitando las peticiones; se reintenta en {espera}s.",
+        )
+        if reserva is not None:
+            return reserva
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Yahoo Finance está limitando las peticiones y aún no hay ninguna lectura "
+                f"guardada de {ticker}. Se reintenta automáticamente en {espera}s."
+            ),
+        )
+
     try:
-        ticker = ticker.upper().strip()
         stock  = yf.Ticker(ticker)
         info   = stock.info or {}
+        _marca("info")
 
         # ── 1. Cargar historial diario (usar helper robusto) ─────────
         hist_daily = _load_history(ticker, period="1y", interval="1d")
+        _marca("hist_daily")
         if hist_daily.empty:
             raise HTTPException(status_code=404, detail=f"No hay datos para {ticker}")
 
@@ -7368,17 +9619,67 @@ async def get_overton_signal(ticker: str):
             market_closes = [float(v) for v in sp_close.dropna().values.tolist()]
         except Exception:
             market_closes = daily_closes
+        _marca("vix_tnx_gspc")
 
         # ── 5. Indicadores base ───────────────────────────────────────
         wma_series  = _calc_wma(prices, 30)
         wma20_series = _calc_wma(prices, 20)
-        copp_series = _calc_coppock(prices)
         sharpe      = _calc_sharpe_from_prices(prices, rf_annual=cur_yield / 100)
         cur_wma     = next((v for v in reversed(wma_series)  if v is not None), current_price)
         cur_wma20   = next((v for v in reversed(wma20_series) if v is not None), current_price)
-        cur_copp    = next((v for v in reversed(copp_series) if v is not None), 0.0)
         price_vs_wma   = "above" if current_price > cur_wma  else "below"
-        coppock_signal = "bull"  if cur_copp > 0             else "bear"
+
+        # ── Coppock ───────────────────────────────────────────────────
+        #
+        # OJO CON LA VENTANA. `_calc_coppock` usa ROC de 60 semanas y WMA de 40,
+        # así que necesita ~100 barras semanales para dar un solo valor. Antes
+        # se le pasaba `prices`, que viene recortado a las últimas 52: TODOS los
+        # valores salían None, `cur_copp` caía al 0.0 por defecto y, como
+        # `0.0 > 0` es falso, la señal era "bear" para todos los tickers y en
+        # todo momento. Encima costaba los 4,5 puntos que el score da al Coppock
+        # alcista, a todo el mundo por igual.
+        #
+        # Se notaba comparando pantallas: el gráfico de Estrategia calcula su
+        # propio Coppock en el cliente con periodos cortos y marcaba alcista
+        # mientras este decía bajista con valor cero.
+        #
+        # Se resuelve con una serie semanal larga de verdad. Y si no llega,
+        # el valor es None y la señal "sin_datos" — no "bear": un indicador que
+        # no se ha podido calcular no es una lectura bajista.
+        copp_series = []
+        cur_copp = None
+        copp30_series = []
+        cur_copp30 = None
+        try:
+            hist_copp = _load_history(ticker, period="5y", interval="1wk")
+            cierres_copp = (
+                [float(v) for v in _safe_close(hist_copp).dropna().values.tolist()]
+                if hist_copp is not None and not hist_copp.empty
+                else []
+            )
+            if len(cierres_copp) >= 105:
+                copp_series = _calc_coppock(cierres_copp)
+                cur_copp = next((v for v in reversed(copp_series) if v is not None), None)
+
+            # Ajuste corto de 30 semanas, pedido para la pantalla de Estrategia.
+            # Mantiene la proporción del clásico (14 : 11 : 10) escalada a 30,
+            # así que sigue siendo un Coppock y no otro indicador con su nombre:
+            # 30 · 11/14 ≈ 24 y 30 · 10/14 ≈ 20. Necesita ~50 barras, no 105.
+            if len(cierres_copp) >= 52:
+                copp30_series = _calc_coppock(cierres_copp, roc_long=30, roc_short=24, wma_period=20)
+                cur_copp30 = next((v for v in reversed(copp30_series) if v is not None), None)
+        except Exception as _ce:
+            logging.warning(f"Coppock no calculable para {ticker}: {_ce}")
+
+        if cur_copp is None:
+            coppock_signal = "sin_datos"
+        else:
+            coppock_signal = "bull" if cur_copp > 0 else "bear"
+
+        if cur_copp30 is None:
+            coppock30_signal = "sin_datos"
+        else:
+            coppock30_signal = "bull" if cur_copp30 > 0 else "bear"
         buy_sigs, sell_sigs = _find_crossings(prices, wma_series)
         # FIX: usar índices reales de precio en vez de valores aleatorios sin sentido
         news_events = [i for i, p in enumerate(prices) if i > 0 and abs((p - prices[i-1]) / prices[i-1] * 100) > 3][:4]
@@ -7396,6 +9697,9 @@ async def get_overton_signal(ticker: str):
         gex_proxy     = _calc_gamma_exposure_proxy(info)
         mi_proxy      = _calc_market_impact_proxy(hist_daily, info)
         fg_proxy      = _calc_forward_guidance_proxy(info)
+        # Liquidez y ejecución: lo que sustituye al libro de nivel II. Va aquí
+        # porque el tamaño de la posición depende de ello, no de la señal.
+        liquidez      = _calc_liquidez_ejecucion(hist_daily, info, current_price)
 
         # ── 6b. Indicadores técnicos adicionales (RSI, ADX, BB, ATR%) ──
         rsi_val = 50.0
@@ -7448,7 +9752,7 @@ async def get_overton_signal(ticker: str):
             # Bollinger Band Width
             sma20 = close_s.rolling(20).mean()
             std20 = close_s.rolling(20).std()
-            bb_width_val = float(((sma20 + 2*std20) - (sma20 - 2*std20)) / sma20.replace(0, 1e-10)).iloc[-1]
+            bb_width_val = float((((sma20 + 2*std20) - (sma20 - 2*std20)) / sma20.replace(0, 1e-10)).iloc[-1])
 
             # Market Regime
             if bb_width_val < 0.03 and adx_val < 20:
@@ -7470,6 +9774,7 @@ async def get_overton_signal(ticker: str):
 
         except Exception as _te:
             logging.warning(f"Technical indicators error for {ticker}: {_te}")
+        _marca("technical_indicators")
 
         # ── 7. Noticias ───────────────────────────────────────────────
         news_items = []
@@ -7529,6 +9834,31 @@ async def get_overton_signal(ticker: str):
         if not news_items:
             news_items = [{"headline": f"Sin noticias recientes para {ticker}", "description": "",
                            "impact": 0.0, "source": "N/A", "published": "N/A"}]
+        _marca(f"news_fetch ({len(news_items)} items)")
+
+        # Traducción al español. Se hace DESPUÉS de calcular el impacto: la
+        # puntuación se obtiene por palabras clave en inglés («beat», «miss»,
+        # «downgrade»), así que traducir antes la dejaría a cero.
+        #
+        # Presupuesto de tiempo estricto: el modelo local no admite decodificar
+        # en paralelo (ver `traduccion.LOCK_LLM`), así que cada titular se
+        # traduce en serie y cada uno puede tardar 15-25 s. Sin límite, cuatro
+        # noticias con dos campos cada una podían superar los 30 s que el
+        # frontend espera — y entonces TODO /overton fallaba por timeout,
+        # dejando en «sin fuente» paneles que no tienen nada que ver con
+        # noticias (precio, señal, técnico, Ichimoku, volatilidad...). Mejor un
+        # titular en inglés a tiempo que una pantalla entera vacía por esperar
+        # la traducción.
+        try:
+            news_items = await asyncio.wait_for(
+                traducir_noticias(db, get_llm_model, news_items, campos=("headline", "description")),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            logging.warning(f"Traducción de noticias de /overton descartada por timeout ({ticker})")
+        except Exception as _e:
+            logging.warning(f"Traducción de noticias de /overton fallida: {_e}")
+        _marca("traduccion_noticias")
 
         news_impact_total = round(sum(n["impact"] for n in news_items), 2)
         bull_count        = sum(1 for n in news_items if n["impact"] > 0)
@@ -7585,18 +9915,39 @@ async def get_overton_signal(ticker: str):
 
         ov_zone, ov_desc = _overton_zone(score, news_impact_total)
 
-        # Umbrales actualizados: 165 puntos (45% = 74 COMPRAR, 40% = 66 VENDER)
-        if score >= 74:  # >= 45%
-            action = "buy"
-        elif score >= 66:  # >= 40%
-            action = "hold"
-        elif score >= 33:
-            action = "watch"
-        else:
-            action = "sell"
+        # ── Decisión ──────────────────────────────────────────────────
+        # Los umbrales anteriores estaban descentrados: COMPRAR abarcaba del
+        # 45 % al 100 % (más de la mitad de la escala), MANTENER solo del 40 %
+        # al 45 % (ocho puntos de 165) y había una rama inalcanzable. Como una
+        # acción sin sesgo puntúa en torno al 50 %, esos cortes no describían
+        # el mercado sino un artefacto de la escala.
+        #
+        # Ahora las cinco bandas se reparten simétricamente alrededor de 50.
+        s100 = score_result.get("score_100", round((score / 165) * 100, 1))
 
-        bias_map = {"buy": "Sesgo alcista confirmado", "hold": "Sin sesgo claro — esperar",
-                    "watch": "Sesgo mixto — vigilar",  "sell": "Sesgo bajista dominante"}
+        if s100 >= 65:
+            action, accion_es = "buy", "COMPRAR"
+        elif s100 >= 56:
+            action, accion_es = "accumulate", "ACUMULAR"
+        elif s100 >= 45:
+            action, accion_es = "hold", "MANTENER"
+        elif s100 >= 35:
+            action, accion_es = "reduce", "REDUCIR"
+        else:
+            action, accion_es = "sell", "VENDER"
+
+        bias_map = {
+            "buy":        "Sesgo alcista confirmado",
+            "accumulate": "Sesgo alcista moderado",
+            "hold":       "Sin sesgo claro",
+            "reduce":     "Sesgo bajista moderado",
+            "sell":       "Sesgo bajista dominante",
+        }
+
+        # Contexto probabilístico: escenarios, percentil y calendario.
+        escenarios_30d = _escenarios_30d(daily_close, current_price)
+        percentil_score = await _percentil_score(ticker, score)
+        proximos_eventos = _proximos_eventos(stock, info)
 
         # ── 10. Precios objetivo ──────────────────────────────────────
         # Usar ATR real calculado de los datos históricos (no porcentaje fijo)
@@ -7663,8 +10014,9 @@ async def get_overton_signal(ticker: str):
             exit_signals.append(f"Z-score={zscore_mr:.2f}: sobrecompra extrema, gestiona el riesgo")
         if momentum_12_1 < -15:
             exit_signals.append(f"Momentum 12-1 negativo: {momentum_12_1:.1f}% — tendencia bajista")
+        _marca("TOTAL")
 
-        return {
+        respuesta_overton = {
             # Base
             "ticker":          ticker,
             "current_price":   round(current_price, 2),
@@ -7672,8 +10024,18 @@ async def get_overton_signal(ticker: str):
             "wma30":           round(cur_wma, 2),
             "wma20":           round(cur_wma20, 2),
             "price_vs_wma":    price_vs_wma,
-            "coppock":         round(cur_copp, 4),
+            # `None` cuando no hay histórico bastante, NO cero: un cero se
+            # lee como «momento neutro medido» y esto es «no medido».
+            "coppock":         None if cur_copp is None else round(cur_copp, 4),
             "coppock_signal":  coppock_signal,
+            "coppock_periodos": "ROC 60 y 48 semanas, suavizado WMA 40 (equivale al Coppock mensual clásico 14/11/10)",
+            # Ajuste corto. Es el que pinta Estrategia; NO entra en el score,
+            # que sigue con el largo para que la puntuación de un valor sea la
+            # misma se mire donde se mire.
+            "coppock_30s":         None if cur_copp30 is None else round(cur_copp30, 4),
+            "coppock_30s_signal":  coppock30_signal,
+            "coppock_30s_periodos": "ROC 30 y 24 semanas, suavizado WMA 20",
+            "coppock_30s_history": [round(v, 4) if v is not None else None for v in copp30_series],
             "sharpe":          sanitize_float(sharpe),
             "vix":             sanitize_float(cur_vix),
             "us10y":           sanitize_float(cur_yield),
@@ -7686,15 +10048,46 @@ async def get_overton_signal(ticker: str):
             "beta":            sanitize_float(beta),
             "vwap":            vwap_info,
             "ofi":             sanitize_float(ofi),
+            # `bid_ask_spread` es el RANGO DIARIO medio, no la horquilla. El
+            # nombre se mantiene por compatibilidad con el score, que está
+            # calibrado sobre esta cifra; la horquilla estimada de verdad va en
+            # `liquidez.spread_estimado_pct`, con su método declarado.
             "bid_ask_spread":  sanitize_float(bas_pct),
+            "rango_diario_pct": sanitize_float(bas_pct),
             "gamma_exposure":  sanitize_float(gex_proxy),
             "market_impact":   sanitize_float(mi_proxy),
             "forward_guidance": fg_proxy,
+            # Sustituye al libro de nivel II: mide lo que sí es medible con
+            # barras diarias y es lo que acota el tamaño de la posición.
+            "liquidez":        liquidez,
+            # Contexto de cabecera. Sale de `info`, que ya se descarga arriba,
+            # así que no añade ninguna petición extra.
+            "week52_low":      sanitize_float(info.get("fiftyTwoWeekLow") or 0),
+            "week52_high":     sanitize_float(info.get("fiftyTwoWeekHigh") or 0),
+            "market_cap":      sanitize_float(info.get("marketCap") or 0),
+            "avg_volume":      sanitize_float(info.get("averageVolume") or 0),
+            "volume":          sanitize_float(info.get("volume") or info.get("regularMarketVolume") or 0),
+            "dividend_yield":  sanitize_float((info.get("dividendYield") or 0)),
+            "dividend_rate":   sanitize_float(info.get("dividendRate") or 0),
+            "company_name":    info.get("longName") or info.get("shortName") or ticker,
+            "exchange":        info.get("exchange") or "",
+            "sector":          info.get("sector") or "",
+            "industry":        info.get("industry") or "",
+            # Contexto probabilístico y calendario
+            "escenarios_30d":  escenarios_30d,
+            "percentil_score": percentil_score,
+            "proximos_eventos": proximos_eventos,
             # Score
             "score":           score,
+            "score_max":       score_result.get("score_max", 165),
+            "score_100":       s100,
             "score_breakdown": breakdown,
             "overton_zone":    ov_zone,
             "overton_action":  action,
+            # La etiqueta que se pinta. Antes solo viajaba la clave inglesa y
+            # la interfaz la comparaba contra "COMPRAR"/"VENDER", que nunca
+            # coincidían: de ahí que el veredicto pareciera atascado.
+            "accion":          accion_es,
             "overton_description": ov_desc,
             "bias":            bias_map[action],
             # Señales
@@ -7746,9 +10139,36 @@ async def get_overton_signal(ticker: str):
             "volume_delta_mtf": volume_delta_mtf,
         }
 
+        # Se limpia ANTES de cachear: si se colara un NaN, quedaría guardado
+        # cinco minutos y el 500 se repetiría en cada visita durante ese rato.
+        respuesta_overton = limpiar_no_finitos(respuesta_overton)
+
+        # Cinco minutos de vigencia y reserva permanente. La reserva es la que
+        # sostiene la pantalla cuando Yahoo corta.
+        cache_put(clave_cache, respuesta_overton, 300)
+        return respuesta_overton
+
     except HTTPException:
         raise
     except Exception as e:
+        # Un 429 no es un fallo de cálculo: es el proveedor diciendo «para».
+        # Se corta la salida, se sirve la última lectura buena con su edad, y
+        # sólo si no hay ninguna se devuelve error.
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+            reserva = con_reserva(
+                clave_cache,
+                motivo="Yahoo está limitando las peticiones; esta lectura es la última guardada.",
+            )
+            if reserva is not None:
+                return reserva
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Yahoo Finance está limitando las peticiones y no hay lectura guardada de "
+                    f"{ticker} todavía. Se reintenta en {segundos_hasta_reintento()}s."
+                ),
+            )
         logging.error(f"Error in overton endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al calcular Overton Signal: {str(e)}")
 
@@ -7909,6 +10329,122 @@ def _to_indicator_list(series: pd.Series, dates: pd.Index) -> list:
 
 # ─── Endpoint ────────────────────────────────────────────────────────────────
 
+@api_router.get("/intradia/{ticker}")
+async def get_intradia(ticker: str, interval: str = "5m", maximo: int = 600):
+    """
+    Velas OHLCV intradía.
+
+    Existe porque el gráfico de Estrategia tenía apagados 1m, 5m, 15m y 30m con
+    el motivo «yfinance no sirve histórico a esta resolución», y eso era falso:
+    medido, 5m devuelve 4.680 barras de 60 días y 1m devuelve 1.949 de 5 días.
+    Lo que faltaba era un endpoint, no el dato.
+
+    Lo que NO trae, y conviene repetirlo porque es la pregunta que siempre
+    vuelve: `history()` devuelve Open, High, Low, Close y Volume, y nada más.
+    Ni bid, ni ask, ni reparto por nivel de precio. Con esto se puede dibujar
+    una vela intradía de verdad y un delta por barra declarado como proxy; NO
+    se puede dibujar un footprint, que necesita clasificar cada operación
+    contra la horquilla del momento.
+
+    `maximo` recorta a las barras más recientes: 4.680 velas son ~300 KB de
+    JSON que el gráfico no llega a pintar —recorta al ancho disponible— así que
+    enviarlas es pagar transferencia por nada.
+    """
+    ticker = ticker.upper().strip()
+
+    # Ventanas máximas que admite el proveedor por resolución. Pedir más
+    # devuelve vacío en vez de error, que es la forma silenciosa de romperlo.
+    VENTANAS = {
+        "1m": "5d",
+        "2m": "5d",
+        "5m": "60d",
+        "15m": "1mo",
+        "30m": "1mo",
+        "1h": "60d",
+        "60m": "60d",
+        # 4h no existe en el proveedor: se reagrupa desde 1h por calendario.
+        "4h": "60d",
+    }
+    clave_int = interval.lower()
+    if clave_int not in VENTANAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Intervalo no válido. Opciones: {', '.join(VENTANAS)}",
+        )
+
+    clave_cache = f"intradia:{ticker}:{clave_int}:{maximo}"
+    cacheado = cache_get(clave_cache)
+    if cacheado is not None:
+        return cacheado
+
+    if yahoo_limitado():
+        reserva = con_reserva(
+            clave_cache, motivo=f"Yahoo limitando; reintento en {segundos_hasta_reintento()}s."
+        )
+        if reserva is not None:
+            return reserva
+
+    try:
+        pedido = "1h" if clave_int == "4h" else clave_int
+        df = await asyncio.to_thread(
+            lambda: _load_history(ticker, period=VENTANAS[clave_int], interval=pedido)
+        )
+        if df is None or df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"El proveedor no devolvió velas de {interval} para {ticker}.",
+            )
+
+        if clave_int == "4h":
+            df = df.resample("4h").agg(
+                {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+            ).dropna()
+
+        df = df.tail(max(50, min(maximo, 5000)))
+
+        velas = []
+        for marca, fila in df.iterrows():
+            try:
+                velas.append({
+                    "date": marca.isoformat(),
+                    "open": sanitize_float(fila["Open"]),
+                    "high": sanitize_float(fila["High"]),
+                    "low": sanitize_float(fila["Low"]),
+                    "close": sanitize_float(fila["Close"]),
+                    "volume": sanitize_float(fila.get("Volume", 0)),
+                })
+            except Exception:
+                continue
+
+        respuesta = limpiar_no_finitos({
+            "ticker": ticker,
+            "interval": clave_int,
+            "barras": len(velas),
+            "candles": velas,
+            "fuente": "Yahoo Finance (diferido ~15 min)",
+            "sin_footprint": (
+                "OHLCV por barra. El proveedor no sirve bid/ask ni reparto por nivel de "
+                "precio, así que no hay footprint ni delta de agresores real."
+            ),
+        })
+
+        # Un minuto de caché: suficiente para que la pantalla se sienta viva sin
+        # pedir la misma vela veinte veces mientras se está formando.
+        cache_put(clave_cache, respuesta, 60)
+        return respuesta
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+            reserva = con_reserva(clave_cache, motivo="Yahoo limitando; últimas velas guardadas.")
+            if reserva is not None:
+                return reserva
+        logging.error(f"Error en /intradia/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener velas intradía: {e}")
+
+
 @api_router.get("/indicators-chart/{ticker}")
 async def get_indicators_chart(ticker: str, period: str = "30wk"):
     """
@@ -8034,6 +10570,305 @@ async def get_indicators_chart(ticker: str, period: str = "30wk"):
 # Devuelve los datos financieros clave para pre-rellenar el modelo FCFF/WACC
 # Todos los valores monetarios en millones USD (M$), acciones en millones (M)
 # ─────────────────────────────────────────────────────────────────────────────
+@api_router.get("/forward-estimates/{ticker}")
+async def get_forward_estimates(ticker: str):
+    """Estimaciones de consenso: ingresos, beneficios y PER adelantado.
+
+    Todo procede del consenso de analistas que publica Yahoo. **No es un
+    modelo propio**: no se proyecta nada aquí, se recoge lo que estiman las
+    casas que cubren el valor. Por eso viaja siempre el número de analistas —
+    un consenso de dos no es un consenso.
+
+    Lo que falta se devuelve como `None` y la interfaz lo pinta con un guion.
+    Muchos valores pequeños no tienen cobertura y ahí no hay estimación que
+    valga: inventar una sería peor que dejar el hueco.
+    """
+    try:
+        ticker = ticker.upper().strip()
+        cache_key = f"fwd:{ticker}"
+        cacheado = cache_get(cache_key)
+        if cacheado is not None:
+            return cacheado
+
+        stock = yf.Ticker(ticker)
+        info = stock.info or {}
+
+        def n_(v):
+            """Número utilizable o None. Un 0 en estos campos casi siempre es
+            un hueco del proveedor, no un valor real."""
+            try:
+                x = float(v)
+                return x if math.isfinite(x) and x != 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        precio = info.get("currentPrice") or info.get("regularMarketPrice")
+        eps_fwd = info.get("forwardEps")
+        eps_ttm = info.get("trailingEps")
+        pe_fwd = info.get("forwardPE")
+        pe_ttm = info.get("trailingPE")
+
+        # Si Yahoo no da el PER adelantado pero sí el BPA, se calcula. Es la
+        # misma división, y así no se pierde el dato por un hueco del proveedor.
+        if pe_fwd is None and eps_fwd and precio and eps_fwd > 0:
+            pe_fwd = precio / eps_fwd
+
+        def tabla(attr):
+            """Convierte los DataFrame de estimaciones en filas por periodo."""
+            try:
+                df = getattr(stock, attr, None)
+                if df is None or not hasattr(df, "empty") or df.empty:
+                    return []
+                filas = []
+                for periodo, fila in df.iterrows():
+                    filas.append({
+                        "periodo": str(periodo),
+                        "media": sanitize_float(fila.get("avg")) if fila.get("avg") is not None else None,
+                        "baja": sanitize_float(fila.get("low")) if fila.get("low") is not None else None,
+                        "alta": sanitize_float(fila.get("high")) if fila.get("high") is not None else None,
+                        "analistas": int(fila.get("numberOfAnalysts")) if fila.get("numberOfAnalysts") else None,
+                        "año_anterior": sanitize_float(fila.get("yearAgoEps") or fila.get("yearAgoRevenue"))
+                                        if (fila.get("yearAgoEps") or fila.get("yearAgoRevenue")) else None,
+                        "crecimiento": sanitize_float(fila.get("growth")) if fila.get("growth") is not None else None,
+                    })
+                return filas
+            except Exception:
+                return []
+
+        beneficios = tabla("earnings_estimate")
+        ingresos = tabla("revenue_estimate")
+
+        # ── PER adelantado estimado ───────────────────────────────────────
+        # Cadena: ingresos previstos → × margen → ÷ acciones → precio ÷ BPA.
+        #
+        # Dos decisiones que determinan la exactitud del resultado:
+        #
+        # 1. Los ingresos se toman del consenso EN VALOR ABSOLUTO para el
+        #    próximo ejercicio. La versión anterior multiplicaba los ingresos
+        #    de los últimos doce meses por la tasa de crecimiento del consenso,
+        #    y eso mezclaba dos bases: `totalRevenue` son doce meses móviles
+        #    mientras que la tasa `+1y` compara ejercicios fiscales completos.
+        #    Con medio año ya publicado, parte del crecimiento se sumaba dos
+        #    veces.
+        #
+        # 2. El margen sale de la MEDIANA del margen operativo de los
+        #    ejercicios disponibles, convertida a neto con el tipo impositivo
+        #    efectivo. Frente al margen neto de los últimos doce meses:
+        #      · la mediana resiste un ejercicio atípico; la media no,
+        #      · el margen operativo excluye el ruido financiero y fiscal,
+        #        que es donde viven casi todos los extraordinarios.
+        #
+        #    Se evita a propósito el margen implícito del consenso: daría el
+        #    mismo PER que ya publica Yahoo y el cálculo no aportaría nada.
+        #    Ese margen se muestra aparte, para ver dónde se discrepa.
+        per_estimado = {"disponible": False, "motivo": "Faltan datos de partida."}
+        try:
+            # ── Acciones ──────────────────────────────────────────────────
+            # Se usan las DILUIDAS, no las básicas. El BPA que publica una
+            # compañía se calcula con las diluidas —incluyen opciones, RSU y
+            # convertibles— y siempre son más. Dividir por las básicas infla
+            # el beneficio por acción y abarata el PER de forma sistemática.
+            #
+            # Y se parte de la media diluida del último ejercicio, que es la
+            # que usa la propia empresa, ajustada por la variación reciente
+            # del recuento en circulación: así el denominador mira hacia el
+            # periodo que se está estimando y no hacia un año atrás.
+            acciones_basicas = n_(info.get("sharesOutstanding"))
+            acciones = acciones_basicas
+            acciones_origen = "acciones en circulación (básicas)"
+            dilucion_pct = None
+            variacion_acciones = None
+
+            try:
+                inc0 = stock.income_stmt
+                if inc0 is not None and not inc0.empty:
+                    def _serie(*claves):
+                        for k in claves:
+                            if k in inc0.index:
+                                return [float(v) for v in inc0.loc[k].values
+                                        if v is not None and not pd.isna(v)]
+                        return []
+
+                    dil = _serie("Diluted Average Shares")
+                    bas = _serie("Basic Average Shares")
+                    if dil:
+                        dil_ult = dil[0]          # columna 0 = ejercicio más reciente
+                        # Factor de dilución observado: cuánto añaden opciones
+                        # y convertibles sobre las básicas.
+                        factor = (dil_ult / bas[0]) if (bas and bas[0]) else 1.0
+                        if acciones_basicas:
+                            # Recuento actual llevado a base diluida.
+                            acciones = acciones_basicas * factor
+                            acciones_origen = (
+                                f"acciones en circulación ajustadas a base diluida "
+                                f"(factor {factor:.4f} del último ejercicio)")
+                        else:
+                            acciones = dil_ult
+                            acciones_origen = "media diluida del último ejercicio"
+                        dilucion_pct = (factor - 1) * 100
+
+                        # Recompras o ampliaciones entre ejercicios: información
+                        # por sí sola, sobre todo en compañías que recompran.
+                        if len(dil) >= 2 and dil[1]:
+                            variacion_acciones = ((dil[0] - dil[1]) / dil[1]) * 100
+                        else:
+                            variacion_acciones = None
+                    else:
+                        variacion_acciones = None
+            except Exception as err:
+                logger.warning(f"Acciones diluidas {ticker}: {err}")
+                variacion_acciones = None
+
+            # ── Ingresos previstos ──
+            fila_1y = next((f for f in ingresos if f["periodo"] == "+1y"), None)
+            ingresos_prev = n_(fila_1y.get("media")) if fila_1y else None
+            origen_ing = (f"consenso para el próximo ejercicio "
+                          f"({fila_1y.get('analistas') or '?'} analistas)") if ingresos_prev else None
+
+            if ingresos_prev is None:
+                base = n_(info.get("totalRevenue"))
+                g = info.get("revenueGrowth")
+                if base and g is not None:
+                    ingresos_prev = base * (1 + float(g))
+                    origen_ing = ("sin consenso: últimos doce meses proyectados con su "
+                                  "propio crecimiento (bases no homogéneas)")
+
+            # ── Margen operativo mediano → neto ──
+            margen, origen_margen, n_ejercicios = None, None, 0
+            try:
+                inc = stock.income_stmt
+                if inc is not None and not inc.empty:
+                    def filas(*claves):
+                        for k in claves:
+                            if k in inc.index:
+                                return [float(v) for v in inc.loc[k].values
+                                        if v is not None and not pd.isna(v)]
+                        return []
+
+                    rev_h = filas("Total Revenue")
+                    ebit_h = filas("EBIT", "Operating Income")
+                    pretax_h = filas("Pretax Income")
+                    tax_h = filas("Tax Provision")
+
+                    pares = [e / r for e, r in zip(ebit_h, rev_h) if r]
+                    if pares:
+                        n_ejercicios = len(pares)
+                        mo = float(np.median(pares))
+                        # Tipo efectivo mediano, acotado: un ejercicio con
+                        # base negativa da tipos absurdos.
+                        tipos = [t / p for t, p in zip(tax_h, pretax_h) if p and p > 0]
+                        tipo = float(np.median(tipos)) if tipos else 0.21
+                        tipo = min(max(tipo, 0.0), 0.45)
+                        margen = mo * (1 - tipo)
+                        origen_margen = (f"mediana del margen operativo de {n_ejercicios} "
+                                         f"ejercicios ({mo*100:.1f} %), neta de un tipo "
+                                         f"efectivo del {tipo*100:.0f} %")
+            except Exception as err:
+                logger.warning(f"Margen mediano {ticker}: {err}")
+
+            if margen is None:
+                margen = n_(info.get("profitMargins"))
+                origen_margen = "margen neto de los últimos doce meses (sin histórico suficiente)"
+
+            # ── Margen implícito del consenso, solo como contraste ──
+            margen_consenso = None
+            fila_eps_1y = next((f for f in beneficios if f["periodo"] == "+1y"), None)
+            if fila_eps_1y and n_(fila_eps_1y.get("media")) and ingresos_prev and acciones:
+                margen_consenso = (float(fila_eps_1y["media"]) * acciones) / ingresos_prev
+
+            # ── PER del consenso, como RANGO ──────────────────────────────
+            # Cuando una fuente publica «49,5× a 59,3×» no está dando dos
+            # métodos: es el mismo precio dividido entre la estimación más
+            # alta y la más baja de los analistas. Publicar solo la media
+            # esconde justo lo que hay que ver — cuánto discrepan entre sí.
+            #
+            # Ojo con el cruce: el PER más ALTO sale del BPA más BAJO.
+            per_consenso = None
+            if fila_eps_1y and precio:
+                eps_lo = n_(fila_eps_1y.get("baja"))
+                eps_hi = n_(fila_eps_1y.get("alta"))
+                eps_med = n_(fila_eps_1y.get("media"))
+                per_consenso = {
+                    "per_min": round(precio / eps_hi, 2) if eps_hi and eps_hi > 0 else None,
+                    "per_max": round(precio / eps_lo, 2) if eps_lo and eps_lo > 0 else None,
+                    "per_medio": round(precio / eps_med, 2) if eps_med and eps_med > 0 else None,
+                    "eps_min": sanitize_float(eps_lo) if eps_lo else None,
+                    "eps_max": sanitize_float(eps_hi) if eps_hi else None,
+                    "eps_medio": sanitize_float(eps_med) if eps_med else None,
+                    "analistas": fila_eps_1y.get("analistas"),
+                    # La caída del beneficio es la causa real de un múltiplo
+                    # disparado: si el BPA se hunde y el precio no, el PER sube
+                    # por aritmética, no porque la acción se haya encarecido.
+                    "caida_bpa": round(((eps_med - eps_ttm) / abs(eps_ttm)) * 100, 1)
+                                 if (eps_med and eps_ttm and eps_ttm != 0) else None,
+                    "eps_ttm": sanitize_float(eps_ttm) if eps_ttm else None,
+                }
+
+            if ingresos_prev and acciones and margen is not None and acciones > 0:
+                beneficio_prev = ingresos_prev * margen
+                eps_estimado = beneficio_prev / acciones
+                per = (precio / eps_estimado) if (precio and eps_estimado > 0) else None
+
+                per_estimado = {
+                    "disponible": True,
+                    "ingresos_previstos": sanitize_float(ingresos_prev),
+                    "ingresos_origen": origen_ing,
+                    "margen": sanitize_float(margen * 100),
+                    "margen_origen": origen_margen,
+                    "ejercicios_margen": n_ejercicios,
+                    "margen_consenso": sanitize_float(margen_consenso * 100) if margen_consenso else None,
+                    "per_consenso": per_consenso,
+                    "beneficio_previsto": sanitize_float(beneficio_prev),
+                    "acciones": sanitize_float(acciones),
+                    "acciones_basicas": sanitize_float(acciones_basicas) if acciones_basicas else None,
+                    "acciones_origen": acciones_origen,
+                    "dilucion_pct": sanitize_float(dilucion_pct) if dilucion_pct is not None else None,
+                    "variacion_acciones": sanitize_float(variacion_acciones) if variacion_acciones is not None else None,
+                    "eps_estimado": sanitize_float(eps_estimado),
+                    "precio": sanitize_float(precio) if precio else None,
+                    "per": round(float(per), 2) if per and per > 0 else None,
+                    "aviso": None if (n_ejercicios >= 5) else (
+                        f"Calculado sobre {n_ejercicios} ejercicios. En una compañía cíclica "
+                        "hacen falta más para fijar el margen normal: tómalo como orientación."
+                    ) if n_ejercicios else None,
+                }
+            else:
+                faltan = [k for k, v in [("ingresos previstos", ingresos_prev),
+                                         ("acciones", acciones), ("margen", margen)] if not v]
+                per_estimado = {"disponible": False,
+                                "motivo": f"Falta: {', '.join(faltan)}." if faltan else "Datos insuficientes.",
+                                "per_consenso": per_consenso}
+        except Exception as err:
+            logger.warning(f"PER estimado {ticker}: {err}")
+            per_estimado = {"disponible": False, "motivo": "No se pudo calcular."}
+
+        respuesta = {
+            "ticker": ticker,
+            "precio": sanitize_float(precio) if precio else None,
+            "eps_ttm": sanitize_float(eps_ttm) if eps_ttm else None,
+            "eps_forward": sanitize_float(eps_fwd) if eps_fwd else None,
+            "pe_ttm": round(float(pe_ttm), 2) if pe_ttm else None,
+            "pe_forward": round(float(pe_fwd), 2) if pe_fwd else None,
+            "ingresos_ttm": sanitize_float(info.get("totalRevenue")) if info.get("totalRevenue") else None,
+            "margen_neto": sanitize_float(info.get("profitMargins") * 100) if info.get("profitMargins") else None,
+            "acciones": sanitize_float(info.get("sharesOutstanding")) if info.get("sharesOutstanding") else None,
+            "precio_objetivo": sanitize_float(info.get("targetMeanPrice")) if info.get("targetMeanPrice") else None,
+            "objetivo_bajo": sanitize_float(info.get("targetLowPrice")) if info.get("targetLowPrice") else None,
+            "objetivo_alto": sanitize_float(info.get("targetHighPrice")) if info.get("targetHighPrice") else None,
+            "analistas": info.get("numberOfAnalystOpinions"),
+            "estimaciones_beneficio": beneficios,
+            "estimaciones_ingresos": ingresos,
+            "per_estimado": per_estimado,
+            "fuente": "Consenso de analistas publicado por Yahoo Finance",
+        }
+        cache_put(cache_key, respuesta, 3600)
+        return respuesta
+
+    except Exception as e:
+        logger.error(f"Error en forward-estimates para {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/financial-statements/{ticker}")
 async def get_financial_statements(ticker: str):
     """
@@ -8262,6 +11097,84 @@ async def search_tickers(q: str = ""):
     except Exception as e:
         logging.error(f"Error searching tickers: {e}")
         return []
+
+
+# ==============================================================================
+# Backtest
+# ==============================================================================
+
+@api_router.get("/backtest/{ticker}")
+async def run_backtest(
+    ticker: str,
+    period: str = "2y",
+    capital: float = 100000.0,
+    comision_pct: float = 0.05,
+    deslizamiento_pct: float = 0.05,
+    riesgo_pct: float = 1.0,
+    stop_atr: float = 2.0,
+    objetivo_atr: float = 3.0,
+):
+    """
+    Backtest por eventos sobre barras diarias reales.
+
+    Todo lo que cambia el resultado va como parámetro y viaja de vuelta en la
+    respuesta: comisión, deslizamiento, riesgo por operación y los múltiplos de
+    ATR del stop y el objetivo. Un backtest cuyos supuestos no se ven es un
+    número sin denominador.
+
+    El motor (`backtest.py`) tiene sus propias pruebas ejecutables, entre ellas
+    la de ausencia de look-ahead: truncar la serie no puede cambiar el pasado.
+
+    La respuesta incluye `avisos`, y hay que leerlos: ahí se dice si la muestra
+    de operaciones es demasiado pequeña para que el win rate signifique algo, o
+    si el periodo termina con una posición abierta.
+    """
+    try:
+        from backtest import Parametros, ejecutar
+
+        ticker = ticker.upper().strip()
+        df = _load_history(ticker, period=period, interval="1d")
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No hay histórico para {ticker}")
+
+        p = Parametros(
+            capital_inicial=capital,
+            comision_pct=comision_pct,
+            deslizamiento_pct=deslizamiento_pct,
+            riesgo_pct=riesgo_pct,
+            stop_atr=stop_atr,
+            objetivo_atr=objetivo_atr,
+        )
+        r = ejecutar(df, ticker, p)
+
+        return {
+            "ticker": r.ticker,
+            "desde": r.desde,
+            "hasta": r.hasta,
+            "periodo": period,
+            "parametros": r.parametros,
+            "metricas": r.metricas,
+            # La curva se adelgaza para no mandar 500 puntos que nadie va a
+            # distinguir en un panel de 300 px de ancho.
+            "curva": r.curva if len(r.curva) <= 400 else r.curva[:: max(1, len(r.curva) // 400)],
+            "operaciones": [o.__dict__ for o in r.operaciones[-50:]],
+            "avisos": r.avisos,
+            "motor": "eventos · ejecución en la apertura siguiente · stop antes que objetivo",
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Histórico insuficiente: es una condición esperable, no un error 500.
+        raise HTTPException(status_code=422, detail=str(e))
+    except AssertionError as e:
+        # El motor ha detectado que un indicador no es causal. Es preferible no
+        # devolver nada a devolver un backtest inválido.
+        logging.error(f"Backtest inválido para {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=f"Backtest inválido: {e}")
+    except Exception as e:
+        logging.error(f"Error en /backtest/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Include the router in the main app

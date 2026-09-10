@@ -190,7 +190,7 @@ export default function AIChatWidget() {
           <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
             <View style={styles.headerLeft}>
               <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-                <Ionicons name="sparkles" size={20} color="#FFFFFF" />
+                <Ionicons name="sparkles" size={20} color={colors.inkOnAccent} />
               </View>
               <View>
                 <Text style={[styles.headerTitle, { color: colors.text }]}>FinBot AI</Text>
@@ -223,7 +223,7 @@ export default function AIChatWidget() {
               >
                 {msg.role === "assistant" && (
                   <View style={[styles.msgAvatar, { backgroundColor: colors.primary }]}>
-                    <Ionicons name="sparkles" size={12} color="#FFFFFF" />
+                    <Ionicons name="sparkles" size={12} color={colors.inkOnAccent} />
                   </View>
                 )}
                 <View
@@ -238,7 +238,7 @@ export default function AIChatWidget() {
                     style={[
                       styles.messageText,
                       msg.role === "user"
-                        ? { color: "#FFFFFF" }
+                        ? { color: colors.inkOnAccent }
                         : { color: colors.text },
                     ]}
                   >
@@ -250,7 +250,7 @@ export default function AIChatWidget() {
             {loading && (
               <View style={[styles.messageRow, styles.assistantMessageRow]}>
                 <View style={[styles.msgAvatar, { backgroundColor: colors.primary }]}>
-                  <Ionicons name="sparkles" size={12} color="#FFFFFF" />
+                  <Ionicons name="sparkles" size={12} color={colors.inkOnAccent} />
                 </View>
                 <View style={[styles.messageBubble, styles.assistantBubble, { backgroundColor: colors.card }]}>
                   <ActivityIndicator size="small" color={colors.primary} />
@@ -281,7 +281,7 @@ export default function AIChatWidget() {
               <Ionicons
                 name="send"
                 size={18}
-                color={input.trim() ? "#FFFFFF" : colors.textSecondary}
+                color={input.trim() ? colors.inkOnAccent : colors.textSecondary}
               />
             </TouchableOpacity>
           </View>

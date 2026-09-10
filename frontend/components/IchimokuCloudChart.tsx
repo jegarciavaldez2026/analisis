@@ -3,6 +3,7 @@ import { View, Text, ScrollView, StyleSheet, Dimensions, TouchableOpacity, Activ
 import { Svg, G, Line, Rect, Circle, Text as SvgText, Path, Defs, ClipPath } from "react-native-svg";
 import axios from "axios";
 import { useTheme } from "../contexts/ThemeContext";
+import { seriesColor } from "../theme/tokens";
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
 
@@ -60,7 +61,7 @@ interface Props {
 }
 
 export default function IchimokuCloudChart({ ticker, onClose }: Props) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const [data, setData] = useState<IchimokuData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState<IchimokuPoint | null>(null);
@@ -107,11 +108,14 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
   const xScale = (i: number) => PADDING.left + (i / (chartData.length - 1)) * (CHART_WIDTH - PADDING.left - PADDING.right);
   const yScale = (price: number) => PADDING.top + (1 - (price - minPrice) / priceRange) * (CHART_HEIGHT - PADDING.top - PADDING.bottom);
 
-  // Colores
-  const bullColor = "#22c55e";
-  const bearColor = "#ef4444";
-  const tenkanColor = "#3b82f6";
-  const kijunColor = "#f97316";
+  // Colores. Verde y rojo SÓLO para dirección (nube alcista/bajista); Tenkan y
+  // Kijun son dos curvas que comparten eje, así que su color es identidad, no
+  // juicio: van a la escala de series para que nadie lea «Tenkan está en azul»
+  // como una señal.
+  const bullColor = colors.up;
+  const bearColor = colors.down;
+  const tenkanColor = seriesColor(isDark, 0);
+  const kijunColor = seriesColor(isDark, 1);
 
   // Generar paths
   const createPath = (getter: (p: IchimokuPoint) => number | null) => {
@@ -135,7 +139,7 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
   const needleX = 60 + 42 * Math.cos(toRad(scoreAngle - 90));
   const needleY = 60 + 42 * Math.sin(toRad(scoreAngle - 90));
 
-  const scoreColor = data.ichimoku.score >= 7.5 ? bullColor : data.ichimoku.score <= 2.5 ? bearColor : "#eab308";
+  const scoreColor = data.ichimoku.score >= 7.5 ? bullColor : data.ichimoku.score <= 2.5 ? bearColor : colors.caution;
   const scoreLabel = data.ichimoku.score >= 7.5 ? "ALCISTA" : data.ichimoku.score <= 2.5 ? "BAJISTA" : "NEUTRAL";
 
   return (
@@ -148,7 +152,7 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
         </View>
         {onClose && (
           <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-            <Text style={styles.closeText}>✕</Text>
+            <Text style={[styles.closeText, { color: colors.inkMuted }]}>✕</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -161,7 +165,7 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
           <Path d={`M18,62 A42,42 0 0,1 102,62`} fill="none" stroke={colors.border} strokeWidth="10" />
           {/* Colored zones */}
           <Path d={`M18,62 A42,42 0 0,1 46,24`} fill="none" stroke={bearColor} strokeWidth="10" opacity="0.3" />
-          <Path d={`M46,24 A42,42 0 0,1 74,24`} fill="none" stroke="#eab308" strokeWidth="10" opacity="0.3" />
+          <Path d={`M46,24 A42,42 0 0,1 74,24`} fill="none" stroke={colors.caution} strokeWidth="10" opacity="0.3" />
           <Path d={`M74,24 A42,42 0 0,1 102,62`} fill="none" stroke={bullColor} strokeWidth="10" opacity="0.3" />
           {/* Needle */}
           <Line x1="60" y1="62" x2={needleX.toFixed(1)} y2={needleY.toFixed(1)} stroke={scoreColor} strokeWidth="3" strokeLinecap="round" />
@@ -177,13 +181,13 @@ export default function IchimokuCloudChart({ ticker, onClose }: Props) {
       {/* Controles */}
       <View style={styles.controls}>
         <TouchableOpacity onPress={() => setShowCloud(!showCloud)} style={[styles.controlBtn, { backgroundColor: showCloud ? bullColor : colors.border }]}>
-          <Text style={styles.controlBtnText}>Nube {showCloud ? "✓" : "✗"}</Text>
+          <Text style={[styles.controlBtnText, { color: colors.inkOnAccent }]}>Nube {showCloud ? "✓" : "✗"}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setShowLines(!showLines)} style={[styles.controlBtn, { backgroundColor: showLines ? tenkanColor : colors.border }]}>
-          <Text style={styles.controlBtnText}>Líneas {showLines ? "✓" : "✗"}</Text>
+          <Text style={[styles.controlBtnText, { color: colors.inkOnAccent }]}>Líneas {showLines ? "✓" : "✗"}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={loadIchimoku} style={[styles.controlBtn, { backgroundColor: colors.primary }]}>
-          <Text style={styles.controlBtnText}>⟳</Text>
+          <Text style={[styles.controlBtnText, { color: colors.inkOnAccent }]}>⟳</Text>
         </TouchableOpacity>
       </View>
 
@@ -404,7 +408,6 @@ const styles = StyleSheet.create({
   },
   closeText: {
     fontSize: 20,
-    color: "#888",
   },
   gaugeContainer: {
     alignItems: "center",
@@ -434,7 +437,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   controlBtnText: {
-    color: "#fff",
     fontSize: 13,
     fontWeight: "600",
   },

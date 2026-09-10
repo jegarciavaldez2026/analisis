@@ -291,9 +291,13 @@ Esquinas contenidas: es una placa, no una pastilla.
 
 **Estado de la migración.** Las diez superficies con ruta —shell, login, Análisis, Resultados, Mercado, Screener, Favoritos, Portafolio, Historial, Overton e Info— están en cero literales de color y cero hallazgos del detector. Entre los componentes, `FCFFValuationCard` y el kit `components/ui/` también.
 
-**No canonizado (deuda que el build aún arrastra, no reglas a heredar):** cinco componentes de gráfico y tarjeta conservan sus paletas fijas y no leen el tema: `FinancialStatements.jsx` (72 literales), `OvertonSignalMatrix.jsx` (48), `OvertonSignalMatrix_v4.jsx` (41), `FinancialRadarChart.tsx` (39), `IndicatorsChartCard.tsx` (30), `AIAssistant.tsx` (20) y `AIChatWidget.tsx` (5). Sus valores no forman parte de este sistema. `IndicatorsChartCard` merece además una decisión previa: su paleta es deliberadamente oscura (fondo de gráfico técnico), así que migrarla es decidir si ese widget sigue siendo oscuro en el tema claro o se adapta.
+**Migración de tema: terminada.** Recuento real sobre el código (9 sep 2026), no sobre esta nota: `FinancialRadarChart.tsx`, `IndicatorsChartCard.tsx`, `AIAssistant.tsx`, `AIChatWidget.tsx` e `IchimokuCloudChart.tsx` están en cero literales. `IndicatorsChartCard` se resolvió con `makeChartPalette(colors)`, que deriva las veintiuna tintas del gráfico de los tokens: sigue el tema (sistema / claro / oscuro) como el resto, sin paleta oscura fija. `OvertonSignalMatrix_v4.jsx` lee el tema por el puente `mapaDeTema()`, que ahora incluye `onAccent` (`inkOnAccent`) — antes había blanco fijo sobre acento, que en tema oscuro caía por debajo de 3:1 contra el turquesa.
 
-También hay código muerto que nadie importa y que conviene borrar antes de migrar nada: `app/screens/{InfoScreen,SearchScreen,HistoryScreen,OvertonScreen}.tsx`, los `.jsx.bak`, `ResultsScreen.tsx.backup` y los componentes `ChatFab`, `IchimokuChart`, `IchimokuCloudChart`, `VolumeDelta*` y `OvertonSignalMatrix_enhanced`.
+**El único literal que queda es deliberado:** el degradado de cabecera del SVG exportado en `FinancialStatements.jsx` (`#0f172a` → `#1e3a5f`). Un documento que se imprime no debe invertirse porque el usuario tenga el modo oscuro puesto; está comentado en el propio archivo.
+
+**Código muerto.** `app/screens/{InfoScreen,SearchScreen,HistoryScreen,OvertonScreen}.tsx` ya se borraron (comprobado antes: ningún import los referenciaba; `ResultsScreen.tsx` sí está vivo y se queda). Siguen en el árbol, sin que nadie los importe: `ChatFab.tsx`, `IchimokuChart.tsx`, `OvertonSignalMatrix.jsx` y `OvertonSignalMatrix_enhanced.jsx`.
+
+Ojo con la versión anterior de esta nota, que se equivocaba: `IchimokuCloudChart`, `VolumeDeltaTable` y `VolumeDeltaAnalysis` **no** son código muerto — los importa `OvertonSignalMatrix_v4.jsx`, que es el componente vivo de la pantalla de Overton. Antes de borrar por lista, comprobar el import.
 
 **Rampas de datos.** `heatColor`, `heatCell`, `mix`, `luminance` e `inkOn` (en `theme/tokens.ts`) existen para el único caso en que el color ES la medida. Fuera de ese caso, los colores salen de los tokens y no se interpolan.
 

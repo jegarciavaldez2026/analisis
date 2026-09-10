@@ -46,8 +46,8 @@ export default function VolumeDeltaTable({ data }: Props) {
     <View style={[styles.container, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 12 }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View>
-          <Text style={[styles.tickerTitle, { color: colors.text, fontWeight: "800", fontSize: 15 }]}>Volume Delta Multi-Timeframe</Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary, fontSize: 11, marginTop: 3 }]}>{"%"} Volumen Compra/Venta por Timeframe</Text>
+          <Text style={[styles.tickerTitle, { color: colors.text, fontWeight: "800", fontSize: 15 }]}>Posición del cierre en el rango</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary, fontSize: 11, marginTop: 3 }]}>CLV por marco temporal · última vela cerrada</Text>
         </View>
       </View>
 
@@ -144,7 +144,9 @@ export default function VolumeDeltaTable({ data }: Props) {
 
       <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: `${colors.accent}05` }]}>
         <Text style={[styles.footerText, { color: colors.textSecondary }]}>
-          ℹ Volume Delta: {"%"} de volumen de compra/venta basado en posición del close dentro del rango H-L
+          CLV = (cierre − mínimo) / (máximo − mínimo). Mide dónde cerró el precio dentro del
+          recorrido de la vela, no cuánto volumen fue de compra y cuánto de venta: separar
+          compras de ventas exige datos de tick contra bid/ask, que esta fuente no ofrece.
         </Text>
       </View>
     </View>

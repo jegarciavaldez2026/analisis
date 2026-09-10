@@ -23,7 +23,7 @@ const color = (v, c) => {
 
 // ─── PDF Generator ───────────────────────────────────────────────────────────
 
-function generatePDF(title, ticker, companyName, rows, years) {
+function generatePDF(title, ticker, companyName, rows, years, c) {
   const W = 794, H = 1123, margin = 48;
   const colW = (W - margin * 2 - 240) / Math.max(years.length, 1);
 
@@ -63,12 +63,12 @@ function generatePDF(title, ticker, companyName, rows, years) {
 
   const yearHeaders = years.map((yr, ci) => {
     const xPos = margin + 240 + ci * colW + colW / 2;
-    return `<text x="${xPos}" y="${margin + titleH + 35}" 
-                  font-family="Georgia, serif" font-size="12" font-weight="bold" 
-                  text-anchor="middle" fill={c.surface}>${escapeXml(yr)}</text>
-            <text x="${xPos}" y="${margin + titleH + 52}" 
-                  font-family="Georgia, serif" font-size="9" 
-                  text-anchor="middle" fill={c.inkFaint}>(M USD)</text>`;
+    return `<text x="${xPos}" y="${margin + titleH + 35}"
+                  font-family="Georgia, serif" font-size="12" font-weight="bold"
+                  text-anchor="middle" fill="${c.surface}">${escapeXml(yr)}</text>
+            <text x="${xPos}" y="${margin + titleH + 52}"
+                  font-family="Georgia, serif" font-size="9"
+                  text-anchor="middle" fill="${c.inkFaint}">(M USD)</text>`;
   }).join("");
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
@@ -83,42 +83,42 @@ function generatePDF(title, ticker, companyName, rows, years) {
   </defs>
   
   <!-- Background -->
-  <rect width="${W}" height="${totalH}" fill={c.surfaceSunken}/>
-  
+  <rect width="${W}" height="${totalH}" fill="${c.surfaceSunken}"/>
+
   <!-- Header gradient block -->
   <rect x="0" y="0" width="${W}" height="${margin + titleH + headerH}" fill="url(#hdrGrad)"/>
-  
+
   <!-- Accent bar -->
-  <rect x="0" y="${margin + titleH + headerH - 4}" width="${W}" height="4" fill={c.accent}/>
+  <rect x="0" y="${margin + titleH + headerH - 4}" width="${W}" height="4" fill="${c.accent}"/>
 
   <!-- Company & Title -->
-  <text x="${margin}" y="${margin + 28}" font-family="Georgia, serif" font-size="22" 
-        font-weight="bold" fill={c.surface}>${escapeXml(companyName)} · ${escapeXml(ticker)}</text>
-  <text x="${margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="15" 
-        fill={c.inkFaint}>${escapeXml(title)}</text>
-  <text x="${W - margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="10" 
-        fill={c.inkMuted} text-anchor="end">Generado: ${new Date().toLocaleDateString("es-ES")}</text>
+  <text x="${margin}" y="${margin + 28}" font-family="Georgia, serif" font-size="22"
+        font-weight="bold" fill="${c.surface}">${escapeXml(companyName)} · ${escapeXml(ticker)}</text>
+  <text x="${margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="15"
+        fill="${c.inkFaint}">${escapeXml(title)}</text>
+  <text x="${W - margin}" y="${margin + 50}" font-family="Georgia, serif" font-size="10"
+        fill="${c.inkMuted}" text-anchor="end">Generado: ${new Date().toLocaleDateString("es-ES")}</text>
 
   <!-- Table header -->
-  <rect x="${margin}" y="${margin + titleH}" width="${W - margin * 2}" height="${headerH - 8}" 
-        fill={c.ink} rx="4"/>
-  <text x="${margin + 12}" y="${margin + titleH + 35}" font-family="Georgia, serif" 
-        font-size="12" font-weight="bold" fill={c.surface}>Concepto</text>
+  <rect x="${margin}" y="${margin + titleH}" width="${W - margin * 2}" height="${headerH - 8}"
+        fill="${c.ink}" rx="4"/>
+  <text x="${margin + 12}" y="${margin + titleH + 35}" font-family="Georgia, serif"
+        font-size="12" font-weight="bold" fill="${c.surface}">Concepto</text>
   ${yearHeaders}
 
   <!-- Rows -->
   ${cells}
 
   <!-- Footer -->
-  <line x1="${margin}" y1="${tableTop + rows.length * rowH + 16}" 
-        x2="${W - margin}" y2="${tableTop + rows.length * rowH + 16}" 
-        stroke={c.rule} stroke-width="1"/>
-  <text x="${margin}" y="${tableTop + rows.length * rowH + 36}" 
-        font-family="Georgia, serif" font-size="9" fill={c.inkFaint}>
+  <line x1="${margin}" y1="${tableTop + rows.length * rowH + 16}"
+        x2="${W - margin}" y2="${tableTop + rows.length * rowH + 16}"
+        stroke="${c.rule}" stroke-width="1"/>
+  <text x="${margin}" y="${tableTop + rows.length * rowH + 36}"
+        font-family="Georgia, serif" font-size="9" fill="${c.inkFaint}">
     * Valores en millones de USD (M). Datos provistos por Yahoo Finance vía API.
   </text>
-  <text x="${W - margin}" y="${tableTop + rows.length * rowH + 36}" 
-        font-family="Georgia, serif" font-size="9" fill={c.inkFaint} text-anchor="end">
+  <text x="${W - margin}" y="${tableTop + rows.length * rowH + 36}"
+        font-family="Georgia, serif" font-size="9" fill="${c.inkFaint}" text-anchor="end">
     FinAnalysis Pro
   </text>
 </svg>`;
@@ -402,15 +402,115 @@ function ejeFmt(v) {
   return v === 0 ? "0" : v.toFixed(1);
 }
 
-function Leyenda({ series, c }) {
+/**
+ * Crecimiento compuesto anual entre el primer y el último ejercicio con dato.
+ *
+ * Devuelve `{ cagr, ultimo, anios, nota }` o `null` si no se puede calcular.
+ *
+ * Dos casos que no admiten CAGR y por eso se marcan aparte en vez de devolver
+ * un número: pasar de pérdidas a beneficios («giro») y de beneficios a
+ * pérdidas («deterioro»). Ahí la tasa compuesta no tiene sentido matemático —
+ * no existe un porcentaje anual que lleve de −50 a +80— y publicarla igualmente
+ * daría cifras absurdas.
+ */
+function crecimiento(values, years) {
+  if (!values || !years || years.length < 2) return null;
+
+  const puntos = years
+    .map((yr) => ({ yr, v: numOf(values[yr]) }))
+    .filter((p) => p.v != null);
+  if (puntos.length < 2) return null;
+
+  const ini = puntos[0].v;
+  const fin = puntos[puntos.length - 1].v;
+  const anios = puntos.length - 1;
+
+  // Variación del último ejercicio: el CAGR promedia y esconde el giro
+  // reciente, que en una compañía cíclica suele ser lo más informativo.
+  const prev = puntos[puntos.length - 2].v;
+  const ultimo = prev !== 0 ? ((fin - prev) / Math.abs(prev)) * 100 : null;
+
+  if (ini === 0) return { cagr: null, ultimo, anios, nota: "Partía de cero" };
+  if (ini < 0 && fin > 0) return { cagr: null, ultimo, anios, nota: "Giro a positivo" };
+  if (ini > 0 && fin < 0) return { cagr: null, ultimo, anios, nota: "Pasó a negativo" };
+
+  let raw = Math.pow(Math.abs(fin) / Math.abs(ini), 1 / anios) - 1;
+  // Con ambos extremos negativos el valor absoluto borra el sentido: una
+  // pérdida que se reduce es una mejora aunque el número suba hacia cero.
+  if (ini < 0 && fin < 0) raw = -raw;
+  if (!Number.isFinite(raw)) return null;
+
+  return { cagr: raw * 100, ultimo, anios, nota: null };
+}
+
+function Leyenda({ series, c, years }) {
+  const fmt = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)} %`;
+  const tinta = (v) => (v > 0 ? c.up : v < 0 ? c.down : c.inkMuted);
+
+  // Hay paneles que comparan un solo ejercicio (corto frente a largo plazo):
+  // sus entradas no llevan serie temporal. Ahí no procede hablar de
+  // crecimiento, y marcarlas «sin datos» sería confundir «no aplica» con
+  // «falta el dato». Se cae a la leyenda simple.
+  const esTemporal = Array.isArray(series) && series.some((s) => s.values);
+  if (!esTemporal) {
+    return (
+      <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
+        {series.map((s) => (
+          <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: c.inkMuted }}>
+            <span style={{ width: 10, height: 10, background: s.color, display: "inline-block", borderRadius: 2 }} />
+            {s.label}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
-      {series.map((s) => (
-        <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: c.inkMuted }}>
-          <span style={{ width: 10, height: 10, background: s.color, display: "inline-block", borderRadius: 2 }} />
-          {s.label}
-        </span>
-      ))}
+    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+      {series.map((s) => {
+        const g = years ? crecimiento(s.values, years) : null;
+        return (
+          <div key={s.label} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11 }}>
+            <span style={{ width: 10, height: 10, background: s.color, display: "inline-block", borderRadius: 2, flexShrink: 0 }} />
+            <span style={{ color: c.inkMuted, flex: 1, minWidth: 0 }}>{s.label}</span>
+
+            {g ? (
+              <>
+                <span style={{ color: c.inkFaint, fontSize: 10 }}>
+                  {g.anios} {g.anios === 1 ? "año" : "años"}
+                </span>
+                <span style={{
+                  fontFamily: "monospace", fontWeight: 700, minWidth: 62, textAlign: "right",
+                  color: g.cagr == null ? c.inkFaint : tinta(g.cagr),
+                }}>
+                  {g.cagr == null ? g.nota : fmt(g.cagr)}
+                </span>
+                {g.ultimo != null ? (
+                  <span style={{
+                    fontFamily: "monospace", fontSize: 10, minWidth: 58, textAlign: "right",
+                    color: tinta(g.ultimo),
+                  }}>
+                    {fmt(g.ultimo)}
+                  </span>
+                ) : <span style={{ minWidth: 58 }} />}
+              </>
+            ) : (
+              <span style={{ color: c.noSignal, fontFamily: "monospace", fontSize: 10 }}>sin datos</span>
+            )}
+          </div>
+        );
+      })}
+
+      {years && years.length >= 2 ? (
+        <div style={{ display: "flex", gap: 8, fontSize: 9, color: c.inkFaint,
+                      textTransform: "uppercase", letterSpacing: 0.6, marginTop: 2 }}>
+          <span style={{ width: 10 }} />
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 9 }}>periodo</span>
+          <span style={{ minWidth: 62, textAlign: "right" }}>anual comp.</span>
+          <span style={{ minWidth: 58, textAlign: "right" }}>último año</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -669,7 +769,7 @@ function StatementCharts({ tab, rows, years, c }) {
           {b.titulo}
         </div>
         {b.grafico}
-        <Leyenda series={b.leyenda} c={c} />
+        <Leyenda series={b.leyenda} c={c} years={anos} />
       </div>
     );
 
@@ -725,7 +825,7 @@ function StatementTable({ title, rows, years, editMode, onCellChange, ticker, co
           </div>
         </div>
         <button
-          onClick={() => generatePDF(title, ticker, companyName, rows, years)}
+          onClick={() => generatePDF(title, ticker, companyName, rows, years, c)}
           style={{
             display: "flex", alignItems: "center", gap: 6,
             padding: "0 16px",
@@ -1050,9 +1150,9 @@ export default function FinancialStatements({ ticker, companyName }) {
             </span>
             <button
               onClick={() => {
-                generatePDF("Cuenta de Resultados", ticker, companyName || ticker, incomeRows, years);
-                setTimeout(() => generatePDF("Balance", ticker, companyName || ticker, balanceRows, years), 500);
-                setTimeout(() => generatePDF("Flujo de Caja", ticker, companyName || ticker, cashflowRows, years), 1000);
+                generatePDF("Cuenta de Resultados", ticker, companyName || ticker, incomeRows, years, c);
+                setTimeout(() => generatePDF("Balance", ticker, companyName || ticker, balanceRows, years, c), 500);
+                setTimeout(() => generatePDF("Flujo de Caja", ticker, companyName || ticker, cashflowRows, years, c), 1000);
               }}
               style={{ ...styles.btn, background: c.accent, color: c.inkOnAccent, borderColor: c.accent }}
             >

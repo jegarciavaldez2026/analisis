@@ -21,6 +21,7 @@ import FinancialRadarChart from '../../components/FinancialRadarChart';
 // Importa el componente
 import FCFFValuationCard from '../../components/FCFFValuationCard';
 import FinancialStatements from '../../components/FinancialStatements';
+import ForwardEstimatesCard from '../../components/ForwardEstimatesCard';
 import IndicatorsChartCard from '../../components/IndicatorsChartCard';
 import {
   Panel,
@@ -33,7 +34,7 @@ import {
   LeyendaFuerza,
   fuerzaDe,
 } from '../../components/ui';
-import { makeResultsStyles } from './resultsStyles';
+import { makeResultsStyles } from '../../styles/resultsStyles';
 import InvestmentSimulator from '../../components/InvestmentSimulator';
 import { Tone, toneColors, decisionBands, verdictTone } from '../../theme/tokens';
 
@@ -568,7 +569,7 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
         <View
           style={[
             styles.companySection,
-            { backgroundColor: colors.surface, borderBottomColor: colors.rule, borderBottomWidth: StyleSheet.hairlineWidth },
+            { backgroundColor: colors.surface, borderColor: colors.rule, borderWidth: StyleSheet.hairlineWidth },
           ]}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 }}>
@@ -961,7 +962,13 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
         <FinancialStatements
           ticker={data.ticker}
            companyName={data.company_name}
-        /> 
+        />
+
+        {/* Estimaciones de consenso, justo debajo de los estados financieros:
+            lo publicado y lo esperado se leen mejor juntos. */}
+        <View style={{ marginTop: 16 }}>
+          <ForwardEstimatesCard ticker={data.ticker} />
+        </View>
 
           </View>
 

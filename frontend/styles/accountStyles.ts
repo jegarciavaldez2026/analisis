@@ -8,7 +8,7 @@
 
 import { Platform, StyleSheet } from 'react-native';
 
-import type { ThemeColors } from '../../contexts/ThemeContext';
+import type { ThemeColors } from '../contexts/ThemeContext';
 
 export function makeAccountStyles(c: ThemeColors) {
   return StyleSheet.create({

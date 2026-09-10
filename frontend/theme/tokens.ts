@@ -268,6 +268,46 @@ export const decisionBands = [
   { from: 60, to: 100, verdict: 'COMPRAR', risk: 'Bajo', tone: 'up' as const },
 ];
 
+/* --------------------------------------------------------------------------
+ * Series categóricas
+ *
+ * Cuando varias curvas comparten un mismo eje, el color deja de significar
+ * dirección y pasa a significar identidad: es una etiqueta, no un juicio. Por
+ * eso estas tintas no se solapan con up/down/caution — nadie debe leer «el
+ * Nikkei está en verde» como «el Nikkei sube». Van desaturadas para convivir
+ * con el esmalte del chasis y ordenadas para que dos vecinas se distingan.
+ * ------------------------------------------------------------------------ */
+
+export const seriesLight = [
+  '#10545B', // petróleo
+  '#8A5A0B', // ámbar
+  '#3B4E8C', // índigo
+  '#4A6B22', // oliva
+  '#6B3A6E', // ciruela
+  '#A6531F', // terracota
+  '#2A6E8A', // acero
+  '#7A3B1F', // castaño
+  '#55606B', // pizarra
+] as const;
+
+export const seriesDark = [
+  '#4FBAC0', // petróleo
+  '#D8A24A', // ámbar
+  '#8A9BD8', // índigo
+  '#9CBF63', // oliva
+  '#B98CBC', // ciruela
+  '#E08A55', // terracota
+  '#6FB6D4', // acero
+  '#C98B66', // castaño
+  '#9AA5B1', // pizarra
+] as const;
+
+/** Color de la serie `i`, cíclico: nunca se queda sin tinta. */
+export function seriesColor(isDark: boolean, i: number): string {
+  const escala = isDark ? seriesDark : seriesLight;
+  return escala[((i % escala.length) + escala.length) % escala.length];
+}
+
 export type Tone = 'up' | 'down' | 'caution' | 'accent' | 'neutral';
 
 export function toneColors(palette: Palette, tone: Tone) {

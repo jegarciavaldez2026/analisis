@@ -25,6 +25,10 @@ import {
   SkeletonRows,
 } from '../../components/ui';
 import { deltaTone, Tone, toneColors } from '../../theme/tokens';
+import EquityIndices, { EquityIndex } from '../../components/market/EquityIndices';
+import CommodityChart from '../../components/market/CommodityChart';
+import SessionsPanel from '../../components/market/SessionsPanel';
+import EconomicCalendar from '../../components/market/EconomicCalendar';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
@@ -97,6 +101,8 @@ interface MarketData {
   ethereum: CryptoIndicator | null;
   hedera: CryptoIndicator | null;
   solana: CryptoIndicator | null;
+  /** Renta variable global con rango de 52 semanas y curva de sesión. */
+  equity_indices?: EquityIndex[];
   market_hours: MarketHours[];
   fear_greed_level: string;
   market_sentiment: string;
@@ -375,12 +381,31 @@ export default function MarketScreen() {
   const decimalesFx = (name: string) =>
     /JPY|MXN|CNY/.test(name) ? 2 : 4;
 
+  /** Orden de lectura de la mesa: los cruces que se siguen a diario primero,
+   *  y detrás el resto en el orden en que llegue del proveedor. */
+  const ORDEN_FX = [
+    'USD/JPY',
+    'GBP/JPY',
+    'AUD/USD',
+    'USD/CAD',
+    'USD/CHF',
+    'EUR/JPY',
+    'EUR/GBP',
+    'EUR/USD',
+    'GBP/USD',
+  ];
+
   const divisas = useMemo(() => {
     if (!data) return [];
     // Si el backend aún no envía la lista (imagen antigua), se cae al par que
     // siempre ha existido para no dejar la sección vacía.
-    if (data.currencies?.length) return data.currencies;
-    return data.eur_usd ? [data.eur_usd] : [];
+    if (!data.currencies?.length) return data.eur_usd ? [data.eur_usd] : [];
+
+    const rango = (n: string) => {
+      const i = ORDEN_FX.indexOf(n);
+      return i === -1 ? ORDEN_FX.length : i;
+    };
+    return [...data.currencies].sort((a, b) => rango(a.name) - rango(b.name));
   }, [data]);
 
   const crypto = useMemo(() => {
@@ -542,8 +567,12 @@ export default function MarketScreen() {
         </View>
       </Panel>
 
-      {/* Índices */}
-      {indices.length > 0 && (
+      {/* Índices: tarjeta completa si el backend manda el bloque nuevo; si no,
+          la lista de siempre, para no dejar la pantalla coja con una imagen
+          antigua del servidor. */}
+      {data.equity_indices && data.equity_indices.length > 0 ? (
+        <EquityIndices indices={data.equity_indices} />
+      ) : indices.length > 0 ? (
         <Panel legend="Renta variable" title="Índices" padded={false}>
           {indices.map((ix, i) => (
             <QuoteRow
@@ -557,7 +586,10 @@ export default function MarketScreen() {
             />
           ))}
         </Panel>
-      )}
+      ) : null}
+
+      {/* Oro */}
+      <CommodityChart symbol="oro" legend="Materias primas" />
 
       {/* Cripto */}
       {crypto.length > 0 && (
@@ -576,8 +608,12 @@ export default function MarketScreen() {
         </Panel>
       )}
 
-      {/* Materias primas y divisa */}
-      <Panel legend="Materias primas y divisa" title="Otros mercados" padded={false}>
+      {/* Materias primas y divisas */}
+      <Panel legend="Materias primas y divisas" title="Otros mercados" padded={false}>
+        <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm }}>
+          <Legend>Materias primas</Legend>
+        </View>
+        <Rule />
         <QuoteRow
           name={data.gold.name}
           ticker={data.gold.ticker}
@@ -593,59 +629,37 @@ export default function MarketScreen() {
           change={data.oil.change}
           changePercent={data.oil.change_percent}
           unit={data.oil.unit}
-        />
-        <QuoteRow
-          name={data.eur_usd.name}
-          ticker={data.eur_usd.ticker}
-          value={data.eur_usd.rate}
-          change={data.eur_usd.change}
-          changePercent={data.eur_usd.change_percent}
-          decimals={4}
           last
         />
+
+        {divisas.length > 0 ? (
+          <>
+            <Rule />
+            <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm }}>
+              <Legend>Divisas</Legend>
+            </View>
+            <Rule />
+            {divisas.map((fx, i) => (
+              <QuoteRow
+                key={fx.ticker}
+                name={fx.name}
+                ticker={fx.ticker}
+                value={fx.rate}
+                change={fx.change}
+                changePercent={fx.change_percent}
+                decimals={decimalesFx(fx.name)}
+                last={i === divisas.length - 1}
+              />
+            ))}
+          </>
+        ) : null}
       </Panel>
 
-      {/* Horarios */}
-      {data.market_hours && data.market_hours.length > 0 && (
-        <Panel legend="Sesiones" title="Horarios de mercado" padded={false}>
-          {data.market_hours.map((m, i) => {
-            const open = m.status.includes('Abierto');
-            const pre = m.status.includes('Pre');
-            const tone: Tone = open ? 'up' : pre ? 'caution' : 'neutral';
-            const fg = tone === 'neutral' ? colors.inkMuted : toneColors(palette, tone).fg;
-            return (
-              <View key={`${m.market_name}-${i}`}>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: space.md,
-                    paddingVertical: space.md,
-                    paddingHorizontal: space.lg,
-                  }}
-                >
-                  <View style={{ width: 3, height: 22, backgroundColor: fg, opacity: open ? 1 : 0.45 }} />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={[type.label, { color: colors.ink }]} numberOfLines={1}>
-                      {m.market_name}
-                    </Text>
-                    <Text style={[type.legend, { color: colors.inkFaint, letterSpacing: 0 }]} numberOfLines={1}>
-                      {m.location} · {m.timezone}
-                    </Text>
-                  </View>
-                  <Text style={[type.caption, numeric, { color: colors.inkMuted }]}>
-                    {m.open_time} – {m.close_time}
-                  </Text>
-                  <Text style={[type.caption, { color: fg, fontWeight: '700', minWidth: 74, textAlign: 'right' }]} numberOfLines={1}>
-                    {m.status}
-                  </Text>
-                </View>
-                {i < data.market_hours.length - 1 ? <Rule /> : null}
-              </View>
-            );
-          })}
-        </Panel>
-      )}
+      {/* Sesiones y horarios, en una sola placa */}
+      <SessionsPanel marketHours={data.market_hours} />
+
+      {/* Calendario económico */}
+      <EconomicCalendar />
 
       {/* Guía de lectura */}
       <Panel legend="Guía" title="Cómo leer estos indicadores">

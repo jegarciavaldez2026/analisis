@@ -251,8 +251,8 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
         ]}
       >
         {!isUser && (
-          <View style={[styles.avatarContainer, { backgroundColor: '#AF52DE20' }]}>
-            <Ionicons name="sparkles" size={16} color="#AF52DE" />
+          <View style={[styles.avatarContainer, { backgroundColor: colors.accentWash }]}>
+            <Ionicons name="sparkles" size={16} color={colors.primary} />
           </View>
         )}
         <View
@@ -266,7 +266,7 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
           <Text
             style={[
               styles.messageText,
-              { color: isUser ? '#FFFFFF' : colors.text },
+              { color: isUser ? colors.inkOnAccent : colors.text },
             ]}
           >
             {message.content}
@@ -280,14 +280,14 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.loadingContainer}>
-          <View style={[styles.loadingIcon, { backgroundColor: '#AF52DE20' }]}>
-            <Ionicons name="sparkles" size={32} color="#AF52DE" />
+          <View style={[styles.loadingIcon, { backgroundColor: colors.accentWash }]}>
+            <Ionicons name="sparkles" size={32} color={colors.primary} />
           </View>
           <Text style={[styles.loadingTitle, { color: colors.text }]}>Iniciando FinBot...</Text>
           <Text style={[styles.loadingSubtitle, { color: colors.textSecondary }]}>
             Preparando análisis de {analysisData?.ticker || 'la acción'}
           </Text>
-          <ActivityIndicator size="large" color="#AF52DE" style={{ marginTop: 20 }} />
+          <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 20 }} />
         </View>
       </SafeAreaView>
     );
@@ -310,8 +310,8 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
             <Text style={[styles.closeButtonText, { color: colors.danger }]}>Cerrar</Text>
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <View style={[styles.aiIcon, { backgroundColor: '#AF52DE20' }]}>
-              <Ionicons name="sparkles" size={20} color="#AF52DE" />
+            <View style={[styles.aiIcon, { backgroundColor: colors.accentWash }]}>
+              <Ionicons name="sparkles" size={20} color={colors.primary} />
             </View>
             <View>
               <Text style={[styles.headerTitle, { color: colors.text }]}>FinBot AI</Text>
@@ -320,9 +320,9 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
               </Text>
             </View>
           </View>
-          <View style={[styles.aiStatusBadge, { backgroundColor: '#34C75920' }]}>
-            <View style={styles.aiStatusDot} />
-            <Text style={styles.aiStatusText}>GPT-4o</Text>
+          <View style={[styles.aiStatusBadge, { backgroundColor: colors.accentWash }]}>
+            <View style={[styles.aiStatusDot, { backgroundColor: colors.primary }]} />
+            <Text style={[styles.aiStatusText, { color: colors.primary }]}>GPT-4o</Text>
           </View>
         </View>
 
@@ -337,12 +337,12 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
           
           {isTyping && (
             <View style={[styles.messageContainer, styles.assistantMessageContainer]}>
-              <View style={[styles.avatarContainer, { backgroundColor: '#AF52DE20' }]}>
-                <Ionicons name="sparkles" size={16} color="#AF52DE" />
+              <View style={[styles.avatarContainer, { backgroundColor: colors.accentWash }]}>
+                <Ionicons name="sparkles" size={16} color={colors.primary} />
               </View>
               <View style={[styles.messageBubble, styles.assistantBubble, { backgroundColor: colors.card }]}>
                 <View style={styles.typingIndicator}>
-                  <ActivityIndicator size="small" color="#AF52DE" />
+                  <ActivityIndicator size="small" color={colors.primary} />
                   <Text style={[styles.typingText, { color: colors.textSecondary }]}>
                     FinBot está pensando...
                   </Text>
@@ -357,18 +357,18 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            style={[styles.quickQuestionsContainer, { backgroundColor: colors.card }]}
+            style={[styles.quickQuestionsContainer, { backgroundColor: colors.card, borderTopColor: colors.border }]}
             contentContainerStyle={styles.quickQuestionsContent}
           >
             {suggestedQuestions.map((question, index) => (
               <TouchableOpacity
                 key={index}
-                style={[styles.quickQuestionButton, { borderColor: '#AF52DE40', backgroundColor: '#AF52DE10' }]}
+                style={[styles.quickQuestionButton, { borderColor: colors.primary + '40', backgroundColor: colors.accentWash }]}
                 onPress={() => handleQuickQuestion(question)}
                 disabled={isTyping}
               >
-                <Ionicons name="chatbubble-outline" size={14} color="#AF52DE" style={{ marginRight: 4 }} />
-                <Text style={[styles.quickQuestionText, { color: '#AF52DE' }]}>{question}</Text>
+                <Ionicons name="chatbubble-outline" size={14} color={colors.primary} style={{ marginRight: 4 }} />
+                <Text style={[styles.quickQuestionText, { color: colors.primary }]}>{question}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -389,12 +389,12 @@ export default function AIAssistant({ analysisData, onClose, colors }: AIAssista
           <TouchableOpacity
             style={[
               styles.sendButton, 
-              { backgroundColor: input.trim() && !isTyping ? '#AF52DE' : colors.border }
+              { backgroundColor: input.trim() && !isTyping ? colors.primary : colors.border }
             ]}
             onPress={sendMessage}
             disabled={!input.trim() || isTyping}
           >
-            <Ionicons name="send" size={20} color="#FFFFFF" />
+            <Ionicons name="send" size={20} color={colors.inkOnAccent} />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -487,12 +487,10 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#34C759',
   },
   aiStatusText: {
     fontSize: 10,
     fontWeight: '600',
-    color: '#34C759',
   },
   messagesContainer: {
     flex: 1,
@@ -550,7 +548,6 @@ const styles = StyleSheet.create({
   quickQuestionsContainer: {
     maxHeight: 54,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
   },
   quickQuestionsContent: {
     paddingHorizontal: 12,

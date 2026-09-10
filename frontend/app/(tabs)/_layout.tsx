@@ -16,6 +16,7 @@ import Svg, { Line, Rect } from 'react-native-svg';
 import { useTheme, ThemeMode } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Rule, Legend } from '../../components/ui';
+import AlertsBell from '../../components/AlertsBell';
 
 /**
  * Las secciones y su orden. Sin emoji: la iconografía es una familia dibujada
@@ -34,6 +35,7 @@ const TABS = [
   { name: 'history', title: 'Historial', short: 'Historial', icon: 'time', iconOut: 'time-outline' },
   { name: 'screener', title: 'Screener', short: 'Screener', icon: 'funnel', iconOut: 'funnel-outline' },
   { name: 'OvertonScreen', title: 'Ventana de Overton', short: 'Overton', icon: 'eye', iconOut: 'eye-outline' },
+  { name: 'strategy', title: 'Estrategia', short: 'Estrategia', icon: 'git-branch', iconOut: 'git-branch-outline' },
   { name: 'info', title: 'Info', short: 'Info', icon: 'information-circle', iconOut: 'information-circle-outline' },
 ] as const;
 
@@ -96,7 +98,7 @@ function Wordmark({
       {!soloMarca && (
         <View>
           <Text style={[type.title3, { color: colors.ink, letterSpacing: -0.2 }]}>FinAnalysis</Text>
-          <Legend>Lectura de fundamentales</Legend>
+          <Legend>Fundamentales</Legend>
         </View>
       )}
     </View>
@@ -288,7 +290,12 @@ function WebSidebar({ plegada, onAlternar }: { plegada: boolean; onAlternar: () 
       <View style={{ padding: plegada ? space.sm : space.lg, gap: space.md }}>
         <View style={{ gap: space.xs }}>
           {!plegada && <Legend>Apariencia</Legend>}
-          <AppearanceControl compact={plegada} />
+          <View style={{ flexDirection: plegada ? 'column' : 'row', alignItems: 'center', gap: 6 }}>
+            <AlertsBell />
+            <View style={{ flex: plegada ? undefined : 1 }}>
+              <AppearanceControl compact={plegada} />
+            </View>
+          </View>
         </View>
 
         {user ? (
@@ -383,8 +390,11 @@ function WebTopBar() {
       ]}
     >
       <Text style={[type.title3, { color: colors.ink }]}>{current?.title ?? 'FinAnalysis'}</Text>
-      <View style={{ width: 180 }}>
-        <AppearanceControl compact />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+        <AlertsBell />
+        <View style={{ width: 180 }}>
+          <AppearanceControl compact />
+        </View>
       </View>
     </View>
   );
@@ -505,16 +515,30 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  /**
+   * Shell de aplicación: alto EXACTO de ventana, no mínimo.
+   *
+   * Con `minHeight: 100vh` el contenedor crecía con el contenido, así que el
+   * `flex: 1` de `webContent` resolvía contra contenido en vez de contra una
+   * altura definida y su `overflow: auto` no llegaba a crear scroll propio:
+   * scrolleaba la página entera. Efecto visible en la pantalla más alta
+   * —Estrategia—, donde la barra lateral (100vh) se quedaba corta y el panel
+   * se despegaba de ella al bajar, que es la «distorsión» que se veía.
+   *
+   * Con altura exacta y `overflow: hidden` aquí, la barra lateral queda fija y
+   * el contenido scrollea dentro de su propio carril, que es como se comporta
+   * un panel de escritorio.
+   */
   webContainer: {
-    flex: 1,
     flexDirection: 'row',
-    minHeight: '100vh' as any,
+    height: '100vh' as any,
+    ...(Platform.OS === 'web' ? ({ overflow: 'hidden' } as any) : null),
   },
   sidebar: {
     // El ancho lo pone el componente según esté plegada o no; aquí sólo el
     // valor de partida y la transición, para que el pliegue se vea moverse.
     width: SIDEBAR_WIDTH,
-    minHeight: '100vh' as any,
+    height: '100%' as any,
     flexDirection: 'column',
     ...(Platform.OS === 'web'
       ? ({ transitionProperty: 'width', transitionDuration: '180ms' } as any)
@@ -522,17 +546,22 @@ const styles = StyleSheet.create({
   },
   mainArea: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'column',
-    minHeight: '100vh' as any,
+    height: '100%' as any,
   },
   topBar: {
     height: 56,
+    // La barra no se encoge cuando el contenido de al lado es alto.
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
   webContent: {
     flex: 1,
+    minHeight: 0,
+    minWidth: 0,
     overflow: 'auto' as any,
   },
 });

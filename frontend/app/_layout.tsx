@@ -1,7 +1,8 @@
 import { Stack, useRouter, useSegments } from 'expo-router';
-import { ThemeProvider } from '../contexts/ThemeContext';
+import { ThemeProvider, useTheme } from '../contexts/ThemeContext';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ChatProvider } from '../contexts/ChatContext';
+import { SimboloProvider } from '../contexts/SimboloContext';
 import AIChatWidget from '../components/AIChatWidget';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
@@ -10,6 +11,7 @@ import { ActivityIndicator, View } from 'react-native';
 
 function AuthGuard() {
   const { isAuthenticated, loading } = useAuth();
+  const { colors } = useTheme();
   const segments = useSegments();
   const router = useRouter();
 
@@ -24,9 +26,20 @@ function AuthGuard() {
   }, [isAuthenticated, loading, segments]);
 
   if (loading) {
+    // Es la primera pantalla que ve nadie al abrir la app. Sin fondo explícito
+    // salía en blanco también en modo oscuro: un destello claro antes de que
+    // la sesión resuelva. El chasis se pinta desde el primer fotograma.
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#007AFF" />
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.canvas,
+        }}
+        accessibilityLabel="Comprobando la sesión"
+      >
+        <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
   }
@@ -52,11 +65,13 @@ export default function RootLayout() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <ChatProvider>
-          <AuthGuard />
-          <Stack screenOptions={{ headerShown: false }} />
-          <AIChatWidget />
-        </ChatProvider>
+        <SimboloProvider>
+          <ChatProvider>
+            <AuthGuard />
+            <Stack screenOptions={{ headerShown: false }} />
+            <AIChatWidget />
+          </ChatProvider>
+        </SimboloProvider>
       </AuthProvider>
     </ThemeProvider>
   );

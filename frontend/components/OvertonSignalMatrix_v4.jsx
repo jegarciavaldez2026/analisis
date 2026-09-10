@@ -22,6 +22,18 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useChat } from "../contexts/ChatContext";
 import { useTheme } from "../contexts/ThemeContext";
+import { darkPalette, lightPalette, seriesColor } from "../theme/tokens";
+import { ElliottWavePanel, WolfeWavesPanel } from "./overton/PatternPanels";
+import MTFPanel from "./overton/MTFPanel";
+import ResumenTab from "./overton/ResumenTab";
+import WolfeTab from "./overton/WolfeTab";
+import ElliottTab from "./overton/ElliottTab";
+import SMCTab from "./overton/SMCTab";
+import WyckoffTab from "./overton/WyckoffTab";
+import CandlesTab from "./overton/CandlesTab";
+import WeisTab from "./overton/WeisTab";
+import IchimokuTab from "./overton/IchimokuTab";
+import CLVTab from "./overton/CLVTab";
 import IchimokuCloudChart from "./IchimokuCloudChart";
 import VolumeDeltaTable from "./VolumeDeltaTable";
 import VolumeDeltaAnalysis from "./VolumeDeltaAnalysis";
@@ -32,41 +44,91 @@ const API_BASE = typeof process !== "undefined" && process.env?.EXPO_PUBLIC_BACK
   : "/api";
 
 // ─── TEMA CLARO ────────────────────────────────────────────────────────────────
-const T = {
-  bg: "#f0f4fa", surface: "#ffffff", card: "#ffffff", card2: "#f7f9ff",
-  card3: "#eef2fb", border: "#dde3f0", borderH: "#b0bcd8",
-  text: "#111827", textSec: "#374151", muted: "#6b7a99",
-  accent: "#2563eb", bull: "#059669", bear: "#dc2626", warn: "#d97706",
-  purple: "#7c3aed", cyan: "#0891b2", gold: "#92400e", pink: "#be185d",
-  indigo: "#3730a3", teal: "#0f766e",
-  regime: { trending: "#059669", ranging: "#2563eb", volatile: "#dc2626", breakout: "#7c3aed" },
-};
+/* ──────────────────────────────────────────────────────────────────────────
+ * Paleta de Overton — puente hacia los tokens del tema
+ *
+ * Los 25 paneles de este archivo leen `T.xxx` directamente: hay unas 700
+ * referencias. En vez de reescribirlas una a una, `T` pasa a ser un objeto
+ * que se rellena desde la paleta del tema en cada render del componente raíz.
+ *
+ * Es un puente deliberado y no un patrón a imitar en código nuevo. Lo que
+ * consigue: Overton deja de tener su propia gama de azules y morados
+ * saturados y habla el mismo idioma visual que la pantalla de análisis —
+ * mismo esmalte, misma tinta, mismos verdes y rojos de dirección— y hereda
+ * gratis el modo oscuro, que antes no tenía.
+ *
+ * Las tintas categóricas (purple, cyan, teal…) se toman de la escala de
+ * series, que existe justo para eso: identificar, no juzgar.
+ * ------------------------------------------------------------------------ */
+
+function mapaDeTema(p, isDark) {
+  return {
+    bg: p.canvas,
+    surface: p.surface,
+    card: p.surface,
+    card2: p.surfaceSunken,
+    card3: p.chrome,
+    border: p.rule,
+    borderH: p.ruleStrong,
+
+    text: p.ink,
+    textSec: p.inkMuted,
+    muted: p.inkFaint,
+
+    accent: p.accent,
+    /** Tinta legible ENCIMA del acento. El blanco fijo que había aquí no lo
+     *  es: en tema claro el acento es petróleo oscuro y funcionaba, pero en
+     *  oscuro es un turquesa claro y el texto blanco encima caía por debajo
+     *  de 3:1. El token ya resuelve las dos apariencias. */
+    onAccent: p.inkOnAccent,
+    bull: p.up,
+    bear: p.down,
+    warn: p.caution,
+    gold: p.caution,
+
+    // Identidad, no dirección.
+    teal: seriesColor(isDark, 0),
+    indigo: seriesColor(isDark, 2),
+    purple: seriesColor(isDark, 4),
+    pink: seriesColor(isDark, 5),
+    // `orange` se usaba en un panel sin estar declarado en la paleta antigua:
+    // era un color indefinido que el navegador ignoraba en silencio.
+    orange: seriesColor(isDark, 5),
+    cyan: seriesColor(isDark, 6),
+
+    noSignal: p.noSignal,
+
+    regime: {
+      trending: p.up,
+      ranging: p.accent,
+      volatile: p.down,
+      breakout: seriesColor(isDark, 4),
+    },
+  };
+}
+
+/* Objeto vivo que leen los paneles de módulo. El componente raíz lo
+   reescribe cuando cambia el modo claro/oscuro. */
+const TEMA_PANELES = mapaDeTema(lightPalette, false);
+const T = TEMA_PANELES;
 
 // ─── TEMAS CLARO / OSCURO ─────────────────────────────────────────────────────
+/* Ambos modos salen ahora de la misma paleta que el resto de la aplicación.
+   La sombra deja de ser un halo de color y pasa a ser un desplazamiento con
+   desenfoque, que es la regla del sistema: una placa proyecta sombra, no
+   irradia luz. */
 const THEMES = {
   light: {
-    bg: "#f0f4fa", surface: "#ffffff", card: "#ffffff", card2: "#f7f9ff",
-    card3: "#eef2fb", border: "#dde3f0", borderH: "#b0bcd8",
-    text: "#111827", textSec: "#374151", muted: "#6b7a99",
-    accent: "#2563eb", bull: "#059669", bear: "#dc2626", warn: "#d97706",
-    purple: "#7c3aed", cyan: "#0891b2", gold: "#92400e", pink: "#be185d",
-    indigo: "#3730a3", teal: "#0f766e",
-    regime: { trending: "#059669", ranging: "#2563eb", volatile: "#dc2626", breakout: "#7c3aed" },
-    shadow: "0 1px 8px rgba(0,0,0,0.06)",
-    glowBull: "0 0 8px #05966920",
-    glowBear: "0 0 8px #dc262620",
+    ...mapaDeTema(lightPalette, false),
+    shadow: `0 1px 3px ${lightPalette.shadow}`,
+    glowBull: "none",
+    glowBear: "none",
   },
   dark: {
-    bg: "#0d1117", surface: "#161b22", card: "#1c2230", card2: "#1a2035",
-    card3: "#1e2740", border: "#2d3748", borderH: "#4a5568",
-    text: "#e2e8f0", textSec: "#cbd5e0", muted: "#718096",
-    accent: "#3b82f6", bull: "#10b981", bear: "#f87171", warn: "#fbbf24",
-    purple: "#a78bfa", cyan: "#22d3ee", gold: "#f59e0b", pink: "#f472b6",
-    indigo: "#818cf8", teal: "#2dd4bf",
-    regime: { trending: "#10b981", ranging: "#3b82f6", volatile: "#f87171", breakout: "#a78bfa" },
-    shadow: "0 1px 12px rgba(0,0,0,0.4)",
-    glowBull: "0 0 12px #10b98130",
-    glowBear: "0 0 12px #f8717130",
+    ...mapaDeTema(darkPalette, true),
+    shadow: `0 1px 4px ${darkPalette.shadow}`,
+    glowBull: "none",
+    glowBear: "none",
   },
 };
 
@@ -109,6 +171,12 @@ function useSMCLive(ticker, backendData) {
     if (!t) return;
     setLoading(true);
     try {
+      // El endpoint /smc no existe en el backend: pedirlo devolvía un 404 en
+      // cada carga, que quedaba capturado pero ensuciaba la consola y añadía
+      // una petición inútil. Se va directo al camino alternativo hasta que
+      // exista de verdad.
+      throw new Error("endpoint /smc no implementado");
+      // eslint-disable-next-line no-unreachable
       const res = await fetch(`${API_BASE}/smc/${t.toUpperCase()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -145,9 +213,10 @@ function useSMCLive(ticker, backendData) {
 function SMCPanelLive({ ticker, backendData }) {
   const { smcData, loading, lastTs, isRealData, refresh } = useSMCLive(ticker, backendData); // ← añade isRealData
   const tickerSeed_ = useTickerHash(ticker);
+  // Este panel sigue derivando sus niveles del ticker. Lleva aviso de dato
+  // simulado en la interfaz; la declaración se mantiene porque `r_` alimenta
+  // catorce cálculos del cuerpo.
   const r_ = useSeededRand(tickerSeed_);
-  
-  
 
   const price = sf(backendData?.current_price, 100);
   const atr   = sf(backendData?.atr, price * 0.012);
@@ -389,7 +458,7 @@ ANTES (tab SMC con datos estáticos):
 ────────────────────────────────────
 {activeTab === "smc" && (
   <>
-    <MTFPanel d={d} tickerSeed={tickerSeed} />
+    <MTFPanel T={T} ticker={ticker} />
     <div style={{ height: 10 }} />
     <SMCPanel d={d} />                        ← LÍNEA A CAMBIAR
     <div style={{ height: 10 }} />
@@ -402,7 +471,7 @@ DESPUÉS (tab SMC con datos reactivos en tiempo real):
 ──────────────────────────────────────────────────────
 {activeTab === "smc" && (
   <>
-    <MTFPanel d={d} tickerSeed={tickerSeed} />
+    <MTFPanel T={T} ticker={ticker} />
     <div style={{ height: 10 }} />
     <SMCPanelLive ticker={ticker} backendData={d} />   ← CORRECTO
     <div style={{ height: 10 }} />
@@ -468,6 +537,39 @@ function useTickerHash(str) {
   }, [str]);
 }
 
+/**
+ * Aviso de dato simulado.
+ *
+ * Los paneles que envuelve siguen generando sus cifras con `useSeededRand`,
+ * un pseudoaleatorio sembrado con el ticker. No cambian al recargar, lo que
+ * los hace parecer estables y por tanto fiables: es la forma más convincente
+ * posible de estar equivocado. Hasta que tengan cálculo real detrás, el aviso
+ * va delante y ocupa sitio — un distintivo pequeño en una esquina no basta
+ * para algo que sugiere entradas y objetivos.
+ */
+function AvisoSimulado({ T, que }) {
+  return (
+    <div
+      style={{
+        background: T.card2,
+        border: `1px solid ${T.warn}`,
+        borderLeft: `4px solid ${T.warn}`,
+        borderRadius: 8,
+        padding: "10px 13px",
+        marginBottom: 8,
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 800, color: T.warn, letterSpacing: "0.04em" }}>
+        DATOS SIMULADOS — NO OPERAR CON ESTE PANEL
+      </div>
+      <div style={{ fontSize: 10, color: T.textSec, marginTop: 3, lineHeight: 1.5 }}>
+        {que} todavía no se calcula sobre datos de mercado: las cifras se generan de forma
+        determinista a partir del ticker. Sirven para ver la maqueta, no para decidir.
+      </div>
+    </div>
+  );
+}
+
 function useSeededRand(seed) {
   return useCallback((idx) => {
     const x = Math.sin((seed ^ 0xDEADBEEF) + idx * 127773 + 2836) * 99991;
@@ -487,8 +589,8 @@ function ScoreGauge({ score }) {
   const color = score >= 74 ? T.bull : score <= 66 ? T.bear : T.warn;
   const label = score >= 74 ? "COMPRAR" : score <= 66 ? "VENDER" : "MANTENER";
   const zones = [
-    { s: 180, e: 144, c: T.bear }, { s: 144, e: 108, c: "#e07040" },
-    { s: 108, e: 72, c: T.warn }, { s: 72, e: 36, c: "#4ade80" }, { s: 36, e: 0, c: T.bull },
+    { s: 180, e: 144, c: T.bear }, { s: 144, e: 108, c: T.warn },
+    { s: 108, e: 72, c: T.warn }, { s: 72, e: 36, c: T.bull }, { s: 36, e: 0, c: T.bull },
   ];
   const arc = (s, e, r, cx, cy) => {
     const a1 = toRad(s - 90), a2 = toRad(e - 90);
@@ -787,7 +889,7 @@ function ScoreBreakdownExpandedV4({ d, tickerSeed }) {
     },
     // ── NUEVO: Volume Delta Signal ──────────────────────────────────
     {
-      cat: "Volume Delta", color: T.orange || "#f97316", max: 5, isNew: true,
+      cat: "Volume Delta", color: T.orange, max: 5, isNew: true,
       items: [
         {
           label: (() => {
@@ -1157,7 +1259,7 @@ function VixYieldChartV2({ vix, yield_, vixCurrent, yieldCurrent }) {
           <span style={{ fontSize: 10, color: T.bear, fontWeight: 700 }}>VIX (eje izq.)</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ width: 20, height: 3, background: T.accent, borderRadius: 2, backgroundImage: "repeating-linear-gradient(to right, #2563eb 0, #2563eb 5px, transparent 5px, transparent 8px)" }} />
+          <div style={{ width: 20, height: 3, background: T.accent, borderRadius: 2, backgroundImage: `repeating-linear-gradient(to right, ${T.accent} 0, ${T.accent} 5px, transparent 5px, transparent 8px)` }} />
           <span style={{ fontSize: 10, color: T.accent, fontWeight: 700 }}>US 10Y Yield (eje der.)</span>
         </div>
       </div>
@@ -1454,166 +1556,7 @@ function MicrostructureAdvancedPanel({ d, tickerSeed }) {
 // ════════════════════════════════════════════════════════════════════════════════
 // GRÁFICO DE FASE DE MERCADO (Wyckoff / Market Cycle)
 // ════════════════════════════════════════════════════════════════════════════════
-function MarketPhaseChart({ d, tickerSeed }) {
-  const r = useSeededRand(tickerSeed);
-  const ref = useRef(null);
-  const [w, setW] = useState(600);
-  useEffect(() => {
-    const obs = new ResizeObserver(e => setW(e[0].contentRect.width || 600));
-    if (ref.current) obs.observe(ref.current);
-    return () => obs.disconnect();
-  }, []);
-
-  const price = sf(d?.current_price, 100);
-  const mom = sf(d?.momentum_12_1, 0);
-  const rsi = sf(d?.rsi, 50);
-  const adx = sf(d?.adx, 22);
-  const ofi = sf(d?.ofi, 0);
-  const bbWidth = sf(d?.bb_width, 0.05);
-  const atrPct = sf(d?.atr_pct, 1.5);
-  const zscore = sf(d?.zscore_mean_rev, 0);
-  const regime = d?.market_regime || "ranging";
-
-  // Determinar fase Wyckoff
-  const phaseScore = useMemo(() => {
-    const accum = (zscore < -1.5 ? 30 : 0) + (rsi < 40 ? 20 : 0) + (adx < 20 ? 15 : 0) + (bbWidth < 0.04 ? 20 : 0) + (ofi > 0.1 ? 15 : 0);
-    const markup = (mom > 5 ? 30 : 0) + (adx > 25 ? 25 : 0) + (rsi > 55 ? 15 : 0) + (regime === "trending" ? 20 : 0) + (ofi > 0 ? 10 : 0);
-    const distrib = (zscore > 1.5 ? 30 : 0) + (rsi > 65 ? 20 : 0) + (adx < 20 && mom > 0 ? 15 : 0) + (bbWidth > 0.08 ? 20 : 0) + (ofi < -0.05 ? 15 : 0);
-    const markdown = (mom < -5 ? 30 : 0) + (adx > 22 ? 20 : 0) + (rsi < 45 ? 15 : 0) + (regime === "volatile" ? 20 : 0) + (ofi < -0.1 ? 15 : 0);
-    return { accum, markup, distrib, markdown };
-  }, [zscore, rsi, adx, bbWidth, ofi, mom, regime]);
-
-  const phases = [
-    { id: "accum", label: "Acumulación", score: phaseScore.accum, color: T.teal, icon: "🏦", desc: "Institucionales acumulan silenciosamente. Rango lateral con volumen decreciente. Zona de valor." },
-    { id: "markup", label: "Tendencia Alcista", score: phaseScore.markup, color: T.bull, icon: "📈", desc: "Precio sale del rango. Compradores controlan. Momentum creciente. Fase de mayor duración." },
-    { id: "distrib", label: "Distribución", score: phaseScore.distrib, color: T.warn, icon: "🏪", desc: "Institucionales distribuyen a retail en máximos. Volumen alto, precio no avanza." },
-    { id: "markdown", label: "Tendencia Bajista", score: phaseScore.markdown, color: T.bear, icon: "📉", desc: "Vendedores controlan. Precio en caída. Momentum negativo. Evitar posiciones largas." },
-  ];
-
-  const total = phases.reduce((s, p) => s + p.score, 1);
-  const dominant = phases.reduce((a, b) => a.score > b.score ? a : b);
-
-  // Curva de ciclo SVG
-  const H = 120, pad = { t: 20, b: 30, l: 20, r: 20 };
-  const PW = Math.max(w - pad.l - pad.r, 200);
-  const PH = H - pad.t - pad.b;
-  const cyclePoints = [
-    { x: 0.00, y: 0.50, phase: "accum" },
-    { x: 0.08, y: 0.52, phase: "accum" },
-    { x: 0.18, y: 0.48, phase: "accum" },
-    { x: 0.28, y: 0.50, phase: "accum" },
-    { x: 0.35, y: 0.45, phase: "markup" },
-    { x: 0.45, y: 0.25, phase: "markup" },
-    { x: 0.55, y: 0.10, phase: "markup" },
-    { x: 0.62, y: 0.08, phase: "distrib" },
-    { x: 0.70, y: 0.10, phase: "distrib" },
-    { x: 0.75, y: 0.08, phase: "distrib" },
-    { x: 0.82, y: 0.30, phase: "markdown" },
-    { x: 0.90, y: 0.50, phase: "markdown" },
-    { x: 1.00, y: 0.50, phase: "accum" },
-  ];
-
-  const toX = (xv) => pad.l + xv * PW;
-  const toY = (yv) => pad.t + yv * PH;
-
-  const cyclePath = cyclePoints.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.x).toFixed(1)},${toY(p.y).toFixed(1)}`).join(" ");
-
-  // Posición actual en el ciclo basada en fase dominante
-  const phaseToX = { accum: 0.14, markup: 0.50, distrib: 0.68, markdown: 0.86 };
-  const currentX = phaseToX[dominant.id] || 0.14;
-  const currentPt = cyclePoints.reduce((closest, p) => Math.abs(p.x - currentX) < Math.abs(closest.x - currentX) ? p : closest);
-
-  const phaseColors = { accum: T.teal, markup: T.bull, distrib: T.warn, markdown: T.bear };
-
-  // Etiquetas de zona
-  const zoneLabels = [
-    { x: 0.14, y: 0.30, label: "ACUMULACIÓN", color: T.teal },
-    { x: 0.47, y: -0.02, label: "MARKUP", color: T.bull },
-    { x: 0.68, y: -0.05, label: "DISTRIBUCIÓN", color: T.warn },
-    { x: 0.88, y: 0.30, label: "MARKDOWN", color: T.bear },
-  ];
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px", borderTop: `3px solid ${dominant.color}` }}>
-      <SectionTitle icon="🔄" badge={
-        <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-          <span style={{ fontSize: 16 }}>{dominant.icon}</span>
-          {pill(dominant.color, dominant.label.toUpperCase())}
-          <span style={{ fontSize: 10, color: T.muted }}>Conf. {Math.round((dominant.score / total) * 100)}%</span>
-        </div>
-      }>
-        Fase de Mercado — Ciclo Wyckoff
-      </SectionTitle>
-
-      {/* Señal principal */}
-      <div style={{ background: `${dominant.color}0a`, border: `1px solid ${dominant.color}30`, borderLeft: `3px solid ${dominant.color}`, borderRadius: 7, padding: "8px 12px", marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: dominant.color, marginBottom: 3 }}>
-          {dominant.icon} FASE: {dominant.label.toUpperCase()}
-        </div>
-        <div style={{ fontSize: 11, color: T.textSec, lineHeight: 1.5 }}>{dominant.desc}</div>
-      </div>
-
-      {/* Curva de ciclo SVG */}
-      <div ref={ref} style={{ width: "100%", marginBottom: 12 }}>
-        <svg width="100%" height={H + 10}>
-          {/* Fondo por zonas */}
-          <rect x={toX(0)} y={pad.t} width={toX(0.33) - toX(0)} height={PH} fill={`${T.teal}08`} />
-          <rect x={toX(0.33)} y={pad.t} width={toX(0.60) - toX(0.33)} height={PH} fill={`${T.bull}08`} />
-          <rect x={toX(0.60)} y={pad.t} width={toX(0.78) - toX(0.60)} height={PH} fill={`${T.warn}08`} />
-          <rect x={toX(0.78)} y={pad.t} width={toX(1.0) - toX(0.78)} height={PH} fill={`${T.bear}08`} />
-
-          {/* Línea de ciclo */}
-          <path d={cyclePath} fill="none" stroke={`${T.accent}60`} strokeWidth="1.5" strokeDasharray="4,3" />
-
-          {/* Etiquetas de zona */}
-          {zoneLabels.map(({ x, y, label, color }) => (
-            <text key={label} x={toX(x)} y={toY(clamp(y, 0, 1)) - 2} fontSize="8" fill={color} fontWeight="800" textAnchor="middle">{label}</text>
-          ))}
-
-          {/* Posición actual */}
-          <circle cx={toX(currentPt.x)} cy={toY(currentPt.y)} r="10" fill={`${dominant.color}20`} stroke={dominant.color} strokeWidth="2" strokeDasharray="4,2" />
-          <circle cx={toX(currentPt.x)} cy={toY(currentPt.y)} r="5" fill={dominant.color} />
-          <text x={toX(currentPt.x)} y={toY(currentPt.y) + 22} textAnchor="middle" fontSize="9" fill={dominant.color} fontWeight="800">AHORA</text>
-        </svg>
-      </div>
-
-      {/* Barras de probabilidad por fase */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        {phases.map(({ id, label, score, color, icon }) => {
-          const pct2 = Math.round((score / total) * 100);
-          const isActive = id === dominant.id;
-          return (
-            <div key={id} style={{ background: isActive ? `${color}10` : T.card2, border: `1px solid ${isActive ? color : T.border}30`, borderRadius: 7, padding: "8px 10px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: isActive ? color : T.muted }}>{icon} {label}</span>
-                <span style={{ fontSize: 11, fontWeight: 800, color: isActive ? color : T.muted, fontFamily: "monospace" }}>{pct2}%</span>
-              </div>
-              <div style={{ height: 5, background: T.border, borderRadius: 3, overflow: "hidden" }}>
-                <div style={{ width: `${pct2}%`, height: "100%", background: color, borderRadius: 3, transition: "width 1s" }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Estrategia por fase */}
-      <div style={{ marginTop: 10, background: T.card2, border: `1px solid ${T.border}`, borderRadius: 7, padding: "9px 12px" }}>
-        <div style={{ fontSize: 9, color: T.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Estrategia recomendada para esta fase</div>
-        {({
-          accum: ["Acumular en soportes con stop ajustado", "Buscar señales de absorción (Weis Wave)", "Esperar Spring o Test para entradas de alta probabilidad"],
-          markup: ["Seguir tendencia con trailing stop", "Comprar pullbacks en WMA y zonas de OB alcistas", "Aumentar posición en correcciones de onda 2/4 (Elliott)"],
-          distrib: ["Reducir exposición larga gradualmente", "Buscar señales CHoCH/BOS en SMC como confirmación bajista", "Cubrir posiciones con opciones put o reducir size"],
-          markdown: ["Evitar posiciones largas — sesgo corto", "Operar rebotes de onda B como oportunidades de venta", "Esperar divergencia CVD alcista para posibles reversiones"],
-        }[dominant.id] || []).map((rule, i) => (
-          <div key={i} style={{ display: "flex", gap: 7, fontSize: 10, color: T.textSec, marginBottom: 4 }}>
-            <span style={{ color: dominant.color, flexShrink: 0 }}>▸</span>
-            <span>{rule}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+/* MarketPhaseChart eliminado: sustituido por WyckoffTab, con cálculo real. */
 
 // ════════════════════════════════════════════════════════════════════════════════
 // MOTOR DE DETECCIÓN DE PATRONES — portado desde Pine Script v5
@@ -2259,109 +2202,6 @@ function WeeklyCandleChart({ d, tickerSeed }) {
 // ════════════════════════════════════════════════════════════════════════════════
 // CALENDARIO ECONÓMICO — con API real + fallback
 // ════════════════════════════════════════════════════════════════════════════════
-function EconomicCalendar() {
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [source, setSource] = useState("");
-
-  useEffect(() => {
-    const loadCalendar = async () => {
-      // Intentar API pública (Econdb vía CORS proxy)
-      try {
-        const today = new Date().toISOString().split("T")[0];
-        const next7 = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
-        const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://econdb.com/api/events/?start=${today}&end=${next7}&type=economic&importance=high&format=json&limit=20`)}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("API fail");
-        const data = await res.json();
-        if (data.results?.length > 0) {
-          const mapped = data.results.map(e => ({
-            event: e.ticker || e.event || "Evento económico",
-            date: e.date?.slice(0, 10) || today,
-            time: e.time || "—",
-            impact: e.importance === "high" ? "alto" : "medio",
-            country: e.country || "US",
-            actual: e.actual, forecast: e.forecast, previous: e.previous,
-            color: e.importance === "high" ? T.bear : T.warn,
-          }));
-          setEvents(mapped);
-          setSource("econdb");
-          return;
-        }
-      } catch (_) {}
-
-      // Fallback estático con fechas calculadas
-      const d0 = new Date(), fmt = (d) => d.toLocaleDateString("es", { weekday: "short", day: "numeric", month: "short" });
-      const addDays = (n) => { const d = new Date(d0); d.setDate(d.getDate() + n); return d; };
-      const staticEvents = [
-        { event: "FOMC — Actas Fed", date: fmt(addDays(2)), time: "18:00 UTC", impact: "alto", country: "US", color: T.bear, desc: "Minutos de la última reunión. Alta sensibilidad en renta fija y USD." },
-        { event: "CPI — Inflación USA", date: fmt(addDays(4)), time: "12:30 UTC", impact: "alto", country: "US", color: T.bear, desc: "IPC mensual. Principal driver de política monetaria Fed." },
-        { event: "NFP — Empleo No Agrícola", date: fmt(addDays(6)), time: "12:30 UTC", impact: "alto", country: "US", color: T.bear, desc: "Datos de empleo. Suele causar volatilidad 2-3x media en los primeros 30 minutos." },
-        { event: "PPI — Precios Productor", date: fmt(addDays(5)), time: "12:30 UTC", impact: "medio", country: "US", color: T.warn, desc: "Indicador adelantado de inflación al consumidor." },
-        { event: "Datos PIB USA Q2", date: fmt(addDays(8)), time: "12:30 UTC", impact: "alto", country: "US", color: T.bear, desc: "Crecimiento económico trimestral. Impacto en múltiplos y proyecciones anuales." },
-        { event: "BCE — Decisión tipos", date: fmt(addDays(3)), time: "11:45 UTC", impact: "alto", country: "EU", color: T.bear, desc: "Decisión de tipos del Banco Central Europeo. Afecta EUR y mercados europeos." },
-        { event: "PMI Manufacturero USA", date: fmt(addDays(1)), time: "14:00 UTC", impact: "medio", country: "US", color: T.warn, desc: "Indicador líder de actividad industrial." },
-        { event: "Inventarios Petróleo EIA", date: fmt(addDays(2)), time: "14:30 UTC", impact: "medio", country: "US", color: T.warn, desc: "Afecta commodities energéticas y sectores relacionados." },
-      ];
-      setEvents(staticEvents);
-      setSource("static");
-      setLoading(false);
-    };
-    loadCalendar().finally(() => setLoading(false));
-  }, []);
-
-  const impactConfig = {
-    alto: { color: T.bear, label: "ALTO" },
-    medio: { color: T.warn, label: "MEDIO" },
-    bajo: { color: T.muted, label: "BAJO" },
-  };
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px" }}>
-      <SectionTitle icon="📅" badge={
-        <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-          {pill(T.warn, "PRÓXIMOS 7 DÍAS")}
-          <span style={{ fontSize: 9, color: T.muted }}>{source === "econdb" ? "econdb.com" : "calendario est."}</span>
-        </div>
-      }>
-        Calendario Económico — Catalizadores de Alta Volatilidad
-      </SectionTitle>
-
-      {loading ? (
-        <div style={{ color: T.muted, fontSize: 11, padding: 8, textAlign: "center" }}>Cargando calendario económico…</div>
-      ) : (
-        <div>
-          {events.map((cat, i) => {
-            const ic = impactConfig[cat.impact] || impactConfig.medio;
-            return (
-              <div key={i} style={{ borderBottom: `1px solid ${T.border}`, padding: "9px 0", display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{cat.event}</div>
-                    <span style={{ fontSize: 9, background: `${ic.color}15`, color: ic.color, borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>{ic.label}</span>
-                    {cat.country && <span style={{ fontSize: 9, color: T.muted, background: T.card2, borderRadius: 4, padding: "1px 5px" }}>{cat.country}</span>}
-                  </div>
-                  <div style={{ fontSize: 10, color: T.muted }}>
-                    {cat.date} {cat.time && `· ${cat.time}`}
-                    {cat.forecast && ` · Prev: ${cat.forecast}`}
-                    {cat.previous && ` · Ant: ${cat.previous}`}
-                  </div>
-                  {cat.desc && <div style={{ fontSize: 10, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>{cat.desc}</div>}
-                </div>
-                {cat.actual && (
-                  <div style={{ fontSize: 11, fontWeight: 700, color: T.accent, fontFamily: "monospace", flexShrink: 0 }}>{cat.actual}</div>
-                )}
-              </div>
-            );
-          })}
-          {events.length === 0 && (
-            <div style={{ color: T.muted, fontSize: 11, padding: 8 }}>No se encontraron eventos para los próximos días.</div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ════════════════════════════════════════════════════════════════════════════════
 // GRÁFICO DE PRECIO — con leyendas corregidas
@@ -2528,469 +2368,10 @@ function PriceChart({ d, height = 240 }) {
  *  - Target onda 5: 0.618 × longitud onda 1-3 desde mínimo onda 4
  *  - Corrección ABC: 0.618 retroceso de la onda impulsiva previa
  */
-function ElliottWavePanel({ d }) {
-  const ref = useRef(null);
-  const [w, setW] = useState(600);
-  useEffect(() => {
-    const obs = new ResizeObserver(e => setW(e[0].contentRect.width || 600));
-    if (ref.current) obs.observe(ref.current);
-    return () => obs.disconnect();
-  }, []);
-
-  const price = sf(d?.current_price, 100);
-  const atr   = sf(d?.atr, price * 0.012);
-
-  // ── Hash determinista del ticker ───────────────────────────────
-  const tickerStr = d?.symbol || d?.ticker || "SPY";
-  const tickerSeed = useMemo(() => {
-    let h = 0;
-    for (let i = 0; i < tickerStr.length; i++) {
-      h = (Math.imul(31, h) + tickerStr.charCodeAt(i)) | 0;
-    }
-    return Math.abs(h);
-  }, [tickerStr]);
-
-  const seededRand = useCallback((idx) => {
-    const x = Math.sin(tickerSeed + idx * 7919 + 1234) * 99991;
-    return Math.abs(x - Math.floor(x));
-  }, [tickerSeed]);
-
-  // ── Datos reales del backend o generación determinista ─────────
-  const elliottRaw = d?.elliott_waves;
-  const hasReal    = elliottRaw && elliottRaw.waves && elliottRaw.waves.length >= 3;
-
-  const syntheticElliott = useMemo(() => {
-    const r = Array.from({ length: 12 }, (_, i) => seededRand(i));
-
-    // Decidir tipo de patrón: impulsivo (1-2-3-4-5) o correctivo (A-B-C)
-    const isImpulse = r[0] > 0.35; // 65% impulsivo
-    const isBull    = r[1] > 0.4;  // 60% alcista
-
-    // Grado de onda por volatilidad relativa
-    const atrRelative = sf(d?.atr_pct, 1.5);
-    const degree = atrRelative > 3 ? "Intermediate" : atrRelative > 1.8 ? "Minor"
-      : atrRelative > 1.0 ? "Minute" : "Minuette";
-
-    // Generar puntos de las ondas
-    let base = price - atr * 15;
-    const waves = [];
-
-    if (isImpulse) {
-      // Patrón 1-2-3-4-5
-      // Onda 1: impulso inicial
-      const w1Size = atr * (3.5 + r[2] * 2);
-      const p1 = base + (isBull ? w1Size : -w1Size);
-      // Onda 2: retroceso 50-62%
-      const w2Retrace = w1Size * (0.50 + r[3] * 0.15);
-      const p2 = p1 - (isBull ? w2Retrace : -w2Retrace);
-      // Onda 3: extensión 1.618 de onda 1 (la más larga y fuerte)
-      const w3Size = w1Size * (1.618 + r[4] * 0.4);
-      const p3 = p2 + (isBull ? w3Size : -w3Size);
-      // Onda 4: retroceso 38% de onda 3, no solapar onda 1
-      const w4Retrace = w3Size * (0.30 + r[5] * 0.12);
-      const p4 = p3 - (isBull ? w4Retrace : -w4Retrace);
-      // Onda 5: 0.618 de onda 1 o igual a onda 1
-      const w5Size = w1Size * (0.618 + r[6] * 0.5);
-      const p5 = p4 + (isBull ? w5Size : -w5Size);
-
-      // Posición actual: determinar en qué onda estamos
-      const wavePositions = [base, p1, p2, p3, p4, p5];
-      const currentWaveIdx = Math.min(Math.floor(r[7] * 5) + 1, 5); // 1-5
-
-      // Fibonacci targets
-      const fib3Target = p2 + (isBull ? w1Size * 1.618 : -w1Size * 1.618);
-      const fib5Target = p4 + (isBull ? (p3 - p2) * 0.618 : -(p3 - p2) * 0.618);
-      const fibRetrace382 = p3 - (isBull ? (p3 - p2) * 0.382 : -(p3 - p2) * 0.382);
-      const fibRetrace618 = p3 - (isBull ? (p3 - p2) * 0.618 : -(p3 - p2) * 0.618);
-
-      // Señal basada en onda actual
-      let signal, signalColor, signalLabel, signalDesc;
-      switch (currentWaveIdx) {
-        case 1:
-          signal = "neutral"; signalColor = T.muted;
-          signalLabel = "ONDA 1 EN CURSO";
-          signalDesc = "Primer impulso. Aguardar la corrección de onda 2 para entrar en la dirección de la tendencia.";
-          break;
-        case 2:
-          signal = "entry"; signalColor = T.bull;
-          signalLabel = isBull ? "COMPRA — Fin Onda 2" : "VENTA — Fin Onda 2";
-          signalDesc = `Corrección de onda 2 finalizada. Entrada ${isBull ? "larga" : "corta"} con stop bajo ${isBull ? "inicio" : "tope"} de onda 1. Target: ${usd(fib3Target)}.`;
-          break;
-        case 3:
-          signal = "hold"; signalColor = T.purple;
-          signalLabel = "ONDA 3 EN CURSO — MANTENER";
-          signalDesc = "Onda más fuerte y larga. No entrar tardío. Si se está posicionado, mantener con trailing stop.";
-          break;
-        case 4:
-          signal = "entry"; signalColor = T.bull;
-          signalLabel = isBull ? "COMPRA — Fin Onda 4" : "VENTA — Fin Onda 4";
-          signalDesc = `Corrección de onda 4 finalizada. Entrada ${isBull ? "larga" : "corta"} con stop bajo retroceso 50% de onda 3. Target: ${usd(fib5Target)}.`;
-          break;
-        case 5:
-          signal = "exit"; signalColor = T.bear;
-          signalLabel = "SALIDA — Onda 5 / Posible Techo";
-          signalDesc = `Onda 5 alcanzada. Extensión Fibonacci cumplida (${usd(fib5Target)}). Riesgo de reversión hacia corrección A-B-C.`;
-          break;
-        default:
-          signal = "neutral"; signalColor = T.muted;
-          signalLabel = "NEUTRAL"; signalDesc = "";
-      }
-
-      return {
-        type: "impulse",
-        isImpulse: true,
-        isBull,
-        degree,
-        currentWave: currentWaveIdx,
-        waves: [
-          { n: "0", price: base,  label: "Base", x: 0  },
-          { n: "1", price: p1,    label: "Onda 1", x: 3  },
-          { n: "2", price: p2,    label: "Onda 2", x: 6  },
-          { n: "3", price: p3,    label: "Onda 3", x: 11 },
-          { n: "4", price: p4,    label: "Onda 4", x: 15 },
-          { n: "5", price: p5,    label: "Onda 5", x: 19 },
-        ],
-        targets: {
-          wave3: fib3Target,
-          wave5: fib5Target,
-          retrace382: fibRetrace382,
-          retrace618: fibRetrace618,
-        },
-        signal, signalColor, signalLabel, signalDesc,
-      };
-    } else {
-      // Patrón A-B-C correctivo
-      const prevImpulse = atr * (8 + r[2] * 5);
-      const pA = base + (isBull ? -prevImpulse * 0.5 : prevImpulse * 0.5);
-      const pB = pA + (isBull ? prevImpulse * 0.382 : -prevImpulse * 0.382);
-      const pC = pB + (isBull ? -prevImpulse * (0.618 + r[3] * 0.2) : prevImpulse * (0.618 + r[3] * 0.2));
-
-      const currentWaveABC = ["A", "B", "C"][Math.floor(r[4] * 3)];
-      const cTarget = pB - (isBull ? prevImpulse * 0.618 : -prevImpulse * 0.618);
-
-      let signal, signalColor, signalLabel, signalDesc;
-      if (currentWaveABC === "A") {
-        signal = "exit"; signalColor = T.bear;
-        signalLabel = isBull ? "VENTA CORTO — Onda A bajista" : "COMPRA — Onda A alcista";
-        signalDesc = "Inicio de corrección. Onda A suele ser agresiva. Reducir posición o salir del trade previo.";
-      } else if (currentWaveABC === "B") {
-        signal = "neutral"; signalColor = T.warn;
-        signalLabel = "TRAMPA — Onda B retroceso falso";
-        signalDesc = "Onda B puede simular continuación de tendencia. Alta probabilidad de false breakout. Esperar onda C.";
-      } else {
-        signal = "entry"; signalColor = T.bull;
-        signalLabel = isBull ? "COMPRA — Fin Onda C" : "VENTA — Fin Onda C";
-        signalDesc = `Fin de corrección A-B-C. Retroceso 61.8% completado. Reinicio de tendencia principal esperado. Target: ${usd(cTarget)}.`;
-      }
-
-      return {
-        type: "corrective",
-        isImpulse: false,
-        isBull,
-        degree,
-        currentWave: currentWaveABC,
-        waves: [
-          { n: "0", price: base, label: "Inicio", x: 0  },
-          { n: "A", price: pA,   label: "Onda A",  x: 5  },
-          { n: "B", price: pB,   label: "Onda B",  x: 10 },
-          { n: "C", price: pC,   label: "Onda C",  x: 17 },
-        ],
-        targets: { wave_c: cTarget },
-        signal, signalColor, signalLabel, signalDesc,
-      };
-    }
-  }, [price, atr, seededRand, d?.atr_pct]);
-
-  const ew = hasReal ? elliottRaw : syntheticElliott;
-  const isDemo = !hasReal;
-
-  // ── Escalas SVG ────────────────────────────────────────────────
-  const H   = 240;
-  const pad = { t: 24, b: 30, l: 60, r: 20 };
-  const PW  = Math.max(w - pad.l - pad.r, 100);
-  const PH  = H - pad.t - pad.b;
-
-  const allX = ew.waves.map(w2 => w2.x);
-  const allY = ew.waves.map(w2 => w2.price);
-  const xMin = Math.min(...allX), xMax = Math.max(...allX);
-  const yMin = Math.min(...allY) - atr * 1.5;
-  const yMax = Math.max(...allY) + atr * 1.5;
-  const xR = xMax - xMin || 1;
-  const yR = yMax - yMin || 1;
-
-  const toX = (xv) => pad.l + ((xv - xMin) / xR) * PW;
-  const toY = (yv) => pad.t + (1 - (yv - yMin) / yR) * PH;
-
-  const wavePath = ew.waves.map((wv, i) =>
-    `${i === 0 ? "M" : "L"}${toX(wv.x).toFixed(1)},${toY(wv.price).toFixed(1)}`
-  ).join(" ");
-
-  const mainColor = ew.signalColor;
-  const yTicks = [yMin + yR * 0.1, yMin + yR * 0.35, yMin + yR * 0.65, yMin + yR * 0.9];
-
-  // Colores de onda
-  const waveColors = ew.isImpulse
-    ? { "1": T.bull, "2": T.muted, "3": T.bull, "4": T.muted, "5": T.warn }
-    : { "A": T.bear, "B": T.warn, "C": T.bear };
-
-  const degreeColors = {
-    "Intermediate": T.purple, "Minor": T.accent, "Minute": T.cyan, "Minuette": T.teal
-  };
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10,
-                  padding: "13px 15px", borderTop: `3px solid ${T.gold}` }}>
-      <SectionTitle icon="〰" badge={
-        <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-          {pill(degreeColors[ew.degree] || T.accent, ew.degree.toUpperCase())}
-          {pill(ew.isImpulse ? T.bull : T.warn, ew.isImpulse ? "IMPULSIVO" : "CORRECTIVO")}
-          {isDemo && pill(T.muted, "DEMO", )}
-        </div>
-      }>
-        Elliott Wave — Ciclo {ew.isImpulse ? "1-2-3-4-5" : "A-B-C"} · Grado {ew.degree}
-      </SectionTitle>
-
-      {/* ── Señal principal ── */}
-      <div style={{ background: `${mainColor}0a`, border: `1px solid ${mainColor}30`,
-                    borderLeft: `3px solid ${mainColor}`, borderRadius: 7,
-                    padding: "8px 12px", marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: mainColor, marginBottom: 3 }}>
-          {ew.signalLabel}
-        </div>
-        <div style={{ fontSize: 11, color: T.textSec, lineHeight: 1.5 }}>{ew.signalDesc}</div>
-      </div>
-
-      {/* ── SVG del patrón ── */}
-      <div ref={ref} style={{ width: "100%" }}>
-        <svg width="100%" height={H}>
-          {yTicks.map((v, i) => (
-            <g key={i}>
-              <line x1={pad.l} y1={toY(v)} x2={w - pad.r} y2={toY(v)}
-                stroke={T.border} strokeWidth="0.5" />
-              <text x={pad.l - 5} y={toY(v) + 3} textAnchor="end" fontSize="9"
-                fill={T.muted} fontFamily="monospace">${v.toFixed(1)}</text>
-            </g>
-          ))}
-
-          {/* Fibonacci retracements para impulsivos */}
-          {ew.isImpulse && ew.targets && (
-            <>
-              {ew.targets.retrace382 && (
-                <line x1={pad.l} y1={toY(ew.targets.retrace382)} x2={w - pad.r} y2={toY(ew.targets.retrace382)}
-                  stroke={T.teal} strokeWidth="1" strokeDasharray="3,4" opacity="0.6" />
-              )}
-              {ew.targets.retrace618 && (
-                <line x1={pad.l} y1={toY(ew.targets.retrace618)} x2={w - pad.r} y2={toY(ew.targets.retrace618)}
-                  stroke={T.cyan} strokeWidth="1" strokeDasharray="3,4" opacity="0.6" />
-              )}
-              {ew.targets.wave3 && (
-                <>
-                  <line x1={pad.l} y1={toY(ew.targets.wave3)} x2={w - pad.r} y2={toY(ew.targets.wave3)}
-                    stroke={T.bull} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-                  <text x={w - pad.r + 3} y={toY(ew.targets.wave3) + 3} fontSize="9"
-                    fill={T.bull} fontWeight="700">T3 (1.618)</text>
-                </>
-              )}
-              {ew.targets.wave5 && (
-                <>
-                  <line x1={pad.l} y1={toY(ew.targets.wave5)} x2={w - pad.r} y2={toY(ew.targets.wave5)}
-                    stroke={T.warn} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-                  <text x={w - pad.r + 3} y={toY(ew.targets.wave5) + 3} fontSize="9"
-                    fill={T.warn} fontWeight="700">T5 (0.618)</text>
-                </>
-              )}
-            </>
-          )}
-          {!ew.isImpulse && ew.targets?.wave_c && (
-            <>
-              <line x1={pad.l} y1={toY(ew.targets.wave_c)} x2={w - pad.r} y2={toY(ew.targets.wave_c)}
-                stroke={T.purple} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-              <text x={w - pad.r + 3} y={toY(ew.targets.wave_c) + 3} fontSize="9"
-                fill={T.purple} fontWeight="700">T-C (0.618)</text>
-            </>
-          )}
-
-          {/* Línea del patrón de onda */}
-          <path d={wavePath} fill="none" stroke={T.accent} strokeWidth="2.5"
-            strokeLinecap="round" strokeLinejoin="round" />
-
-          {/* Puntos y etiquetas de onda */}
-          {ew.waves.map((wv, i) => {
-            const isCurrentWave = String(wv.n) === String(ew.currentWave);
-            const wvColor = waveColors[wv.n] || T.muted;
-            const dotR   = isCurrentWave ? 9 : 6;
-            const lblOff = (i % 2 === 0) ? 18 : -14;
-            const sx = toX(wv.x);
-            const sy = toY(wv.price);
-            return (
-              <g key={wv.n}>
-                {isCurrentWave && (
-                  <circle cx={sx} cy={sy} r={14} fill="none" stroke={wvColor}
-                    strokeWidth="1.5" strokeDasharray="4,3" opacity="0.6" />
-                )}
-                <circle cx={sx} cy={sy} r={dotR}
-                  fill={wvColor} stroke={T.card} strokeWidth="1.5" />
-                {wv.n !== "0" && (
-                  <text x={sx} y={sy + 3.5} textAnchor="middle"
-                    fontSize="9" fill="#fff" fontWeight="800">{wv.n}</text>
-                )}
-                <text x={sx} y={sy + lblOff} textAnchor="middle"
-                  fontSize="9" fill={wvColor} fontFamily="monospace" fontWeight="700">
-                  ${wv.price.toFixed(1)}
-                </text>
-                {isCurrentWave && (
-                  <text x={sx} y={sy + lblOff + 11} textAnchor="middle"
-                    fontSize="8" fill={wvColor} fontWeight="800">← ACTUAL</text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      {/* ── Tabla de ondas + Fibonacci ── */}
-      <div style={{ overflowX: "auto", marginTop: 8 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
-          <thead>
-            <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-              {["Onda", "Tipo", "Precio", "Relación Fib.", "Señal de trading"].map(h => (
-                <th key={h} style={{ textAlign: "left", color: T.muted, padding: "3px 8px",
-                                     fontWeight: 700, fontSize: 9 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {ew.isImpulse ? [
-              { n: "1", tipo: "Impulso",    fib: "100% (referencia)",    color: T.bull,   señal: "Observar — iniciar seguimiento" },
-              { n: "2", tipo: "Corrección", fib: "50–61.8% de onda 1",  color: T.muted,  señal: "COMPRA si isBull, VENTA si bear" },
-              { n: "3", tipo: "Impulso ext",fib: "161.8% de onda 1",    color: T.bull,   señal: "Mantener posición con trailing" },
-              { n: "4", tipo: "Corrección", fib: "38.2% de onda 3",     color: T.muted,  señal: "COMPRA / VENTA según sesgo" },
-              { n: "5", tipo: "Impulso fin",fib: "61.8% o = onda 1",    color: T.warn,   señal: "SALIDA — preparar corrección ABC" },
-            ].map(({ n, tipo, fib, color, señal }) => {
-              const isActive = String(n) === String(ew.currentWave);
-              return (
-                <tr key={n} style={{ borderBottom: `1px solid ${T.border}`,
-                                     background: isActive ? `${color}08` : "transparent" }}>
-                  <td style={{ padding: "4px 8px", fontWeight: 800, color }}>{n}</td>
-                  <td style={{ padding: "4px 8px", color: T.textSec }}>{tipo}</td>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace", color: T.textSec }}>
-                    {ew.waves.find(wv => wv.n === n) ? usd(ew.waves.find(wv => wv.n === n).price) : "—"}
-                  </td>
-                  <td style={{ padding: "4px 8px", color: T.muted }}>{fib}</td>
-                  <td style={{ padding: "4px 8px" }}>
-                    {isActive
-                      ? <span style={{ background: `${color}15`, border: `1px solid ${color}40`,
-                                       color, borderRadius: 4, padding: "1px 7px", fontSize: 9, fontWeight: 800 }}>
-                          {señal}
-                        </span>
-                      : <span style={{ color: T.muted }}>{señal}</span>}
-                  </td>
-                </tr>
-              );
-            }) : [
-              { n: "A", tipo: "Corrección",    fib: "≈50% del impulso previo",  color: T.bear, señal: "SALIDA / SHORT" },
-              { n: "B", tipo: "Rebote falso",   fib: "38.2–50% de onda A",       color: T.warn, señal: "TRAMPA — no entrar" },
-              { n: "C", tipo: "Impulso bajista",fib: "100–161.8% de onda A",      color: T.bear, señal: "COMPRA al cierre (reversal)" },
-            ].map(({ n, tipo, fib, color, señal }) => {
-              const isActive = n === String(ew.currentWave);
-              return (
-                <tr key={n} style={{ borderBottom: `1px solid ${T.border}`,
-                                     background: isActive ? `${color}08` : "transparent" }}>
-                  <td style={{ padding: "4px 8px", fontWeight: 800, color }}>{n}</td>
-                  <td style={{ padding: "4px 8px", color: T.textSec }}>{tipo}</td>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace", color: T.textSec }}>
-                    {ew.waves.find(wv => wv.n === n) ? usd(ew.waves.find(wv => wv.n === n).price) : "—"}
-                  </td>
-                  <td style={{ padding: "4px 8px", color: T.muted }}>{fib}</td>
-                  <td style={{ padding: "4px 8px" }}>
-                    {isActive
-                      ? <span style={{ background: `${color}15`, border: `1px solid ${color}40`,
-                                       color, borderRadius: 4, padding: "1px 7px", fontSize: 9, fontWeight: 800 }}>
-                          {señal}
-                        </span>
-                      : <span style={{ color: T.muted }}>{señal}</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {/* ── Targets Fibonacci ── */}
-<div style={{ marginTop: 10, background: T.card2, border: `1px solid ${T.border}`,
-              borderRadius: 7, padding: "9px 12px" }}>
-  <div style={{ fontSize: 9, color: T.muted, fontWeight: 700, textTransform: "uppercase",
-                letterSpacing: "0.08em", marginBottom: 7 }}>
-    Proyecciones Fibonacci
-  </div>
-
-  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-    {(
-      ew.isImpulse
-        ? [
-            { label: "Target Onda 3 (1.618)",      value: ew.targets?.wave3,      color: T.bull  },
-            { label: "Target Onda 5 (0.618)",      value: ew.targets?.wave5,      color: T.warn  },
-            { label: "Soporte 38.2% (onda 4)",     value: ew.targets?.retrace382, color: T.teal  },
-            { label: "Soporte 61.8% (onda 2/4)",   value: ew.targets?.retrace618, color: T.cyan  },
-          ].filter(t => t.value)
-        : [
-            { label: "Target Onda C (0.618)",      value: ew.targets?.wave_c,     color: T.purple },
-          ].filter(t => t.value)
-    ).map(({ label, value, color }) => (
-      <div key={label}>
-        <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>
-          {label}
-        </div>
-        <div style={{ fontSize: 14, fontWeight: 700, color, fontFamily: "monospace" }}>
-          {usd(value)}
-        </div>
-      </div>
-    ))}
-        
-          <div>
-            <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>Onda actual</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: mainColor }}>
-              {ew.isImpulse ? `Onda ${ew.currentWave}` : `Onda ${ew.currentWave}`}
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>Grado</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: degreeColors[ew.degree] || T.accent }}>
-              {ew.degree}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Reglas de invalidación ── */}
-      <div style={{ marginTop: 10 }}>
-        <div style={{ fontSize: 9, color: T.muted, fontWeight: 700, textTransform: "uppercase",
-                      letterSpacing: "0.08em", marginBottom: 6 }}>Reglas de invalidación del conteo</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-          {(ew.isImpulse ? [
-            { rule: "Onda 2 no retrocede > 100% de onda 1",  ok: true  },
-            { rule: "Onda 3 no es la más corta",              ok: true  },
-            { rule: "Onda 4 no solapa el territorio de onda 1", ok: ew.currentWave > 2 },
-            { rule: "Onda 5 confirma con divergencia RSI",    ok: sf(d?.rsi, 50) < 65 },
-          ] : [
-            { rule: "Onda B no supera inicio de onda A",     ok: true },
-            { rule: "Onda C ≥ onda A en longitud",           ok: true },
-            { rule: "Estructura A-B-C 3-3-5 correcta",       ok: true },
-            { rule: "Retroceso < 78.6% del impulso previo",  ok: true },
-          ]).map(({ rule, ok }) => (
-            <div key={rule} style={{ display: "flex", gap: 7, alignItems: "center",
-                                     background: ok ? `${T.bull}08` : `${T.bear}08`,
-                                     border: `1px solid ${ok ? T.bull : T.bear}25`,
-                                     borderRadius: 5, padding: "4px 8px" }}>
-              <span style={{ color: ok ? T.bull : T.bear, fontSize: 12, flexShrink: 0 }}>{ok ? "✓" : "✗"}</span>
-              <span style={{ fontSize: 10, color: T.textSec }}>{rule}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
+/* ElliottWavePanel y WolfeWavesPanel viven ahora en ./overton/PatternPanels.
+ * Se movieron al reescribirlos contra /patterns/{ticker}: antes fabricaban
+ * las ondas con un pseudoaleatorio sembrado con el ticker y validaban su
+ * propia fabricación, de ahí que el conteo siempre saliera perfecto. */
 
 // ════════════════════════FIN DE ONDA DE ELLIOT════════════════════════════════════════════════════════
 
@@ -3017,63 +2398,7 @@ function ElliottWavePanel({ d }) {
 // ════════════════════════════════════════════════════════════════════════════════
 // MARKET REGIME DETECTOR — datos reactivos
 // ════════════════════════════════════════════════════════════════════════════════
-function MarketRegimePanel({ d, tickerSeed }) {
-  const r = useSeededRand(tickerSeed);
-  // Datos reales del endpoint si existen, si no: derivados del ticker de forma coherente
-  const rawAdx = sf(d?.adx, 0);
-  const rawBbWidth = sf(d?.bb_width, 0);
-  const rawAtrPct = sf(d?.atr_pct, 0);
-
-  const adx = rawAdx > 0 ? rawAdx : 15 + r(200) * 40;
-  const bbWidth = rawBbWidth > 0 ? rawBbWidth : 0.02 + r(201) * 0.10;
-  const atrPct = rawAtrPct > 0 ? rawAtrPct : 0.5 + r(202) * 3;
-  const mom = sf(d?.momentum_12_1, 0);
-
-  // Calcular régimen a partir de los datos
-  const regime = d?.market_regime || (
-    bbWidth < 0.03 && adx < 20 ? "breakout" :
-    adx > 28 ? "trending" :
-    atrPct > 2.5 ? "volatile" : "ranging"
-  );
-
-  const rColor = T.regime[regime] || T.cyan;
-  const regimeMeta = {
-    trending: { label: "TENDENCIA", desc: "ADX > 25. Seguir la dirección con trailing stop.", icon: "→" },
-    ranging: { label: "LATERAL", desc: "ADX < 20. Operar reversiones en extremos de rango.", icon: "↔" },
-    volatile: { label: "VOLÁTIL", desc: "ATR elevado. Reducir tamaño de posición al 50%.", icon: "⚡" },
-    breakout: { label: "RUPTURA", desc: "BB Width comprimido + volumen. Esperar confirmación.", icon: "🚀" },
-  };
-  const meta = regimeMeta[regime] || regimeMeta.ranging;
-
-  const indicators = [
-    { label: "ADX", value: adx.toFixed(1), bar: clamp(adx / 60, 0, 1), color: adx > 25 ? T.bull : T.muted },
-    { label: "BB Width", value: `${(bbWidth * 100).toFixed(2)}%`, bar: clamp(bbWidth / 0.15, 0, 1), color: bbWidth < 0.03 ? T.purple : T.muted },
-    { label: "ATR %", value: `${atrPct.toFixed(2)}%`, bar: clamp(atrPct / 4, 0, 1), color: atrPct > 2 ? T.bear : T.bull },
-    { label: "Momentum", value: `${mom >= 0 ? "+" : ""}${mom.toFixed(1)}%`, bar: clamp((mom + 30) / 60, 0, 1), color: mom > 5 ? T.bull : mom < -5 ? T.bear : T.muted },
-  ];
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px", borderTop: `3px solid ${rColor}` }}>
-      <SectionTitle icon="🧠" badge={pill(rColor, meta.label)}>Market Regime Detector</SectionTitle>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-        <div style={{ width: 48, height: 48, borderRadius: "50%", background: `${rColor}15`, border: `2px solid ${rColor}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>{meta.icon}</div>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: rColor }}>{meta.label}</div>
-          <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5, maxWidth: 280 }}>{meta.desc}</div>
-        </div>
-      </div>
-      {indicators.map(({ label, value, bar, color }) => (
-        <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <div style={{ width: 66, fontSize: 10, color: T.muted, flexShrink: 0 }}>{label}</div>
-          <div style={{ flex: 1, height: 4, background: T.border, borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ width: `${bar * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 1s ease" }} />
-          </div>
-          <div style={{ width: 48, fontSize: 10, fontWeight: 700, color, textAlign: "right", fontFamily: "monospace" }}>{value}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
+/* MarketRegimePanel eliminado: sustituido por WyckoffTab, con cálculo real. */
 
 // ════════════════════════════════════════════════════════════════════════════════
 // VOLATILITY SURFACE — datos reactivos
@@ -3146,64 +2471,8 @@ function VolatilitySurface({ d, tickerSeed }) {
 // ════════════════════════════════════════════════════════════════════════════════
 // ICHIMOKU — datos reactivos al ticker
 // ════════════════════════════════════════════════════════════════════════════════
-function IchimokuPanel({ d, tickerSeed }) {
-  const r = useSeededRand(tickerSeed);
-  const price = sf(d?.current_price, 100);
-  const atr = sf(d?.atr, price * 0.012);
-  const ichi = d?.ichimoku || {};
-
-  // Derivar datos coherentes si no existen en el endpoint
-  const trend = sf(d?.momentum_12_1, 0) > 0 ? 1 : -1;
-  const rsiVal = sf(d?.rsi, 50);
-
-  const tenkan = sf(ichi.tenkan, 0) || price + trend * atr * (0.3 + r(400) * 0.5);
-  const kijun = sf(ichi.kijun, 0) || price + trend * atr * (-0.2 + r(401) * 0.4);
-  const senkouA = sf(ichi.senkou_a, 0) || price + trend * atr * (1.5 + r(402) * 1.0);
-  const senkouB = sf(ichi.senkou_b, 0) || price + trend * atr * (0.8 + r(403) * 0.8);
-  const chikou = sf(ichi.chikou, 0) || price * (1 + trend * 0.02 + (r(404) - 0.5) * 0.01);
-
-  const aboveCloud = price > Math.max(senkouA, senkouB);
-  const belowCloud = price < Math.min(senkouA, senkouB);
-  const bullishCloud = senkouA > senkouB;
-  const tkCross = tenkan > kijun ? "bull" : tenkan < kijun ? "bear" : "neutral";
-
-  const signals = [
-    { label: "T/K Cross", value: tkCross === "bull" ? "Alcista" : tkCross === "bear" ? "Bajista" : "Neutro", color: tkCross === "bull" ? T.bull : tkCross === "bear" ? T.bear : T.muted },
-    { label: "Nube", value: bullishCloud ? "Verde (alcista)" : "Roja (bajista)", color: bullishCloud ? T.bull : T.bear },
-    { label: "Precio vs Nube", value: aboveCloud ? "Sobre nube ↑" : belowCloud ? "Bajo nube ↓" : "Dentro nube", color: aboveCloud ? T.bull : belowCloud ? T.bear : T.warn },
-    { label: "Chikou", value: chikou > price ? "Libre ↑" : "Bloqueado ↓", color: chikou > price ? T.bull : T.bear },
-  ];
-  const levels = [
-    { label: "Tenkan-sen", value: tenkan, color: T.bear },
-    { label: "Kijun-sen", value: kijun, color: T.accent },
-    { label: "Senkou A", value: senkouA, color: T.bull },
-    { label: "Senkou B", value: senkouB, color: T.warn },
-  ];
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px" }}>
-      <SectionTitle icon="☁️" badge={pill(bullishCloud ? T.bull : T.bear, bullishCloud ? "NUBE VERDE" : "NUBE ROJA")}>
-        Ichimoku Cloud
-      </SectionTitle>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        {signals.map(({ label, value, color }) => (
-          <div key={label} style={{ background: `${color}0d`, border: `1px solid ${color}30`, borderRadius: 6, padding: "5px 9px", flex: 1, minWidth: 120 }}>
-            <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>{label}</div>
-            <div style={{ fontSize: 11, fontWeight: 700, color }}>{value}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {levels.map(({ label, value, color }) => (
-          <div key={label} style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 9, color: T.muted }}>{label}</div>
-            <div style={{ fontSize: 12, fontWeight: 700, color, fontFamily: "monospace" }}>{value ? usd(value) : "—"}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+/* IchimokuPanel eliminado: estaba definido pero nunca se renderizaba.
+ * La nube que sí se muestra es IchimokuCloudChart, que usa datos reales. */
 
 // ════════════════════════════════════════════════════════════════════════════════
 // COMPONENTES AUXILIARES (sin cambios estructurales)
@@ -3211,113 +2480,9 @@ function IchimokuPanel({ d, tickerSeed }) {
 
 
 
-function MTFPanel({ d, tickerSeed }) {
-  const r = useSeededRand(tickerSeed);
-  const mtfRaw = d?.mtf;
-  const hasMtf = mtfRaw && Object.keys(mtfRaw).length > 0 && Object.values(mtfRaw).some(v => v && typeof v === "object" && Object.keys(v).length > 0);
-
-  const syntheticMtf = useMemo(() => {
-    const mom = sf(d?.momentum_12_1, 0);
-    const rsiRaw = sf(d?.rsi, 50);
-    const ofi = sf(d?.ofi, 0);
-    const adx = sf(d?.adx, 20);
-    const trendBase = clamp(mom / 20, -1, 1);
-    const rsiBase = (rsiRaw - 50) / 50;
-    const macdBase = clamp(ofi * 4, -1, 1);
-    const volumeBase = clamp((adx - 25) / 25, -1, 1);
-    const biasBase = (trendBase + rsiBase + macdBase) / 3;
-
-    const noiseMap = { "1m": 0.88, "5m": 0.68, "15m": 0.48, "1h": 0.28, "4h": 0.14, "1d": 0.05, "1w": 0.02 };
-    const toSignal = (base, noiseLevel, seed) => {
-      const noisy = base * (1 - noiseLevel) + (r(seed) * 2 - 1) * noiseLevel;
-      return noisy > 0.15 ? "bull" : noisy < -0.15 ? "bear" : "neutral";
-    };
-    const result = {};
-    ["1m", "5m", "15m", "1h", "4h", "1d", "1w"].forEach((tf, i) => {
-      const n2 = noiseMap[tf];
-      result[tf] = {
-        trend: toSignal(trendBase, n2, i + 500),
-        rsi: toSignal(rsiBase, n2, i + 506),
-        macd: toSignal(macdBase, n2, i + 512),
-        volume: toSignal(volumeBase, n2, i + 518),
-        bias: toSignal(biasBase, n2 * 0.7, i + 524),
-      };
-    });
-    return result;
-  }, [tickerSeed, d?.momentum_12_1, d?.rsi, d?.ofi, d?.adx]);
-
-  const mtf = hasMtf ? mtfRaw : syntheticMtf;
-  const frames = [
-    { tf: "1M", label: "1 Min", data: mtf["1m"] || {} },
-    { tf: "5M", label: "5 Min", data: mtf["5m"] || {} },
-    { tf: "15M", label: "15 Min", data: mtf["15m"] || {} },
-    { tf: "1H", label: "1 Hora", data: mtf["1h"] || {} },
-    { tf: "4H", label: "4 Horas", data: mtf["4h"] || {} },
-    { tf: "1D", label: "Diario", data: mtf["1d"] || {} },
-    { tf: "1W", label: "Semanal", data: mtf["1w"] || {} },
-  ];
-  const signalIcons = { bull: "▲", bear: "▼", neutral: "─" };
-  const signalColors = { bull: T.bull, bear: T.bear, neutral: T.muted };
-  const signals = ["trend", "rsi", "macd", "volume"];
-  const signalLabels = { trend: "Tendencia", rsi: "RSI", macd: "MACD", volume: "Volumen" };
-  const bullCount = frames.filter(f => f.data.bias === "bull").length;
-  const confluence = Math.round((bullCount / frames.length) * 100);
-  const confColor = confluence > 65 ? T.bull : confluence < 35 ? T.bear : T.muted;
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px" }}>
-      <SectionTitle icon="🔭" badge={
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {!hasMtf && <span style={{ fontSize: 9, color: T.muted, fontStyle: "italic" }}>derivado</span>}
-          <span style={{ fontSize: 10, color: T.muted }}>Confluencia</span>
-          <span style={{ fontSize: 13, fontWeight: 800, color: confColor, fontFamily: "monospace" }}>{confluence}%</span>
-        </div>
-      }>Multi-Timeframe Confluence</SectionTitle>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", color: T.muted, padding: "3px 6px", fontWeight: 600, fontSize: 9 }}>Señal</th>
-              {frames.map(f => (
-                <th key={f.tf} style={{ textAlign: "center", color: T.muted, padding: "3px 4px", fontWeight: 600, fontSize: 9, minWidth: 36 }}>{f.tf}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {signals.map(sig => (
-              <tr key={sig} style={{ borderTop: `1px solid ${T.border}` }}>
-                <td style={{ color: T.textSec, padding: "4px 6px", fontSize: 10 }}>{signalLabels[sig]}</td>
-                {frames.map(f => {
-                  const val = f.data[sig] || "neutral";
-                  const c = signalColors[val] || T.muted;
-                  return (
-                    <td key={f.tf} style={{ textAlign: "center", padding: "3px 4px" }}>
-                      <span style={{ color: c, fontSize: 11, fontWeight: 700 }}>{signalIcons[val] || "─"}</span>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-            <tr style={{ borderTop: `2px solid ${T.border}` }}>
-              <td style={{ color: T.muted, padding: "4px 6px", fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>Bias</td>
-              {frames.map(f => {
-                const bias = f.data.bias || "neutral";
-                const c = signalColors[bias] || T.muted;
-                return (
-                  <td key={f.tf} style={{ textAlign: "center", padding: "3px 4px" }}>
-                    <span style={{ background: `${c}18`, border: `1px solid ${c}40`, color: c, borderRadius: 3, padding: "1px 4px", fontSize: 9, fontWeight: 800 }}>
-                      {bias.toUpperCase().slice(0, 3)}
-                    </span>
-                  </td>
-                );
-              })}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+/* MTFPanel vive ahora en ./overton/MTFPanel, alimentado por /mtf/{ticker}.
+ * La versión anterior derivaba las siete filas de un solo número y les
+ * sumaba ruido aleatorio creciente (88 % en la de 1 minuto). */
 
 function LiquidityHeatmap({ d, tickerSeed }) {
   const r = useSeededRand(tickerSeed);
@@ -3377,311 +2542,8 @@ function LiquidityHeatmap({ d, tickerSeed }) {
 //*********************************************************************************************************************** */
 
 // ─── SESSION MAP LIVE ─────────────────────────────────────────────────────────
-function SessionMapLive({ d, tickerSeed}) {
-  const r = useSeededRand(tickerSeed);
-  const { hUTC, active, sessions, minutesToClose, minutesToOpen, nowUTC } = useSessionLive();
-
-  // Estadísticas de sesión derivadas del ticker (deterministas + reactivas a datos)
-  const price = sf(d?.current_price, 100);
-  const atr   = sf(d?.atr, price * 0.012);
-  const mom   = sf(d?.momentum_12_1, 0);
-  const rsi   = sf(d?.rsi, 50);
-  const adx   = sf(d?.adx, 22);
-  const beta  = sf(d?.beta, 1);
-  const ofi   = sf(d?.ofi, 0);
-
-  // Win rate derivado: seeded por ticker + ajustado por fundamentales
-  const baseWR = (seed) => {
-    const base = 40 + r(seed) * 30; // 40-70% base
-    const momBoost = mom > 5 ? 4 : mom < -5 ? -4 : 0;
-    const rsiBoost = rsi > 60 ? 3 : rsi < 40 ? -3 : 0;
-    return clamp(base + momBoost + rsiBoost, 38, 78);
-  };
-
-  // ATR de sesión ponderado por beta
-  const sessionAtr = (mult, seed) => +(atr * beta * mult * (0.85 + r(seed) * 0.3) / price * 100).toFixed(2);
-
-  const sessionStats = useMemo(() => {
-    const trendBull = mom > 3 && ofi > 0;
-    const trendBear = mom < -3 && ofi < 0;
-    const bias = trendBull ? "bull" : trendBear ? "bear" : "neutral";
-    return {
-      asia: {
-        win_rate: Math.round(baseWR(800)),
-        avg_range: sessionAtr(0.45, 801),
-        bias: rsi < 45 ? "bear" : rsi > 55 ? "bull" : "neutral",
-        best_hours: "00:00–06:00",
-        volatility: "baja",
-        note: "Movimientos lentos. Ideal para posiciones overnight con stop amplio.",
-        ofi_impact: "bajo",
-      },
-      europe: {
-        win_rate: Math.round(baseWR(802)),
-        avg_range: sessionAtr(0.80, 803),
-        bias: bias,
-        best_hours: "07:00–10:00",
-        volatility: "media",
-        note: "Apertura europea: ruptura de rango asiático frecuente. Vigilar gap de apertura.",
-        ofi_impact: "medio",
-      },
-      ny: {
-        win_rate: Math.round(baseWR(804) + 5),
-        avg_range: sessionAtr(1.30, 805),
-        bias: bias,
-        best_hours: "13:30–16:00",
-        volatility: adx > 25 ? "alta" : "media",
-        note: "Mayor volumen del día. 13:30 UTC: datos macro. ATR máximo en primeros 90 min.",
-        ofi_impact: "alto",
-      },
-      golden: {
-        win_rate: Math.round(clamp(baseWR(806) + 9, 55, 82)),
-        avg_range: sessionAtr(1.70, 807),
-        bias: bias,
-        best_hours: "14:30–15:30",
-        volatility: "muy alta",
-        note: "Overlap NY+Europa con datos NFP/CPI. Win rate máximo del día. Spreads más ajustados.",
-        ofi_impact: "muy alto",
-      },
-    };
-  }, [tickerSeed, mom, rsi, ofi, adx, atr, beta]);
-
-  const sessionMeta = [
-    { key: "asia",   label: "Sesión Asia",   icon: "🌏", color: T.purple },
-    { key: "europe", label: "Sesión Europa", icon: "🌍", color: T.cyan   },
-    { key: "ny",     label: "Sesión NY",     icon: "🗽", color: T.accent  },
-    { key: "golden", label: "Golden Hour",   icon: "⭐", color: T.gold    },
-  ];
-
-  const timeStr = nowUTC.toUTCString().slice(17, 22) + " UTC";
-
-  // Progreso de sesión activa
-  const sessionProgress = (key) => {
-    const s = sessions[key];
-    if (!s) return 0;
-    if (!active.includes(key)) return 0;
-    const elapsed = hUTC - s.start;
-    const total = s.end - s.start;
-    return clamp(elapsed / total, 0, 1);
-  };
-
-  const volColor = (v) => v === "muy alta" ? T.bear : v === "alta" ? T.warn : v === "media" ? T.accent : T.muted;
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px" }}>
-      <SectionTitle icon="🕐" T={T} badge={
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: T.muted, fontFamily: "monospace" }}>{timeStr}</span>
-          {active.length > 0
-            ? <span style={{ fontSize: 10, fontWeight: 700, color: T.bull }}>🟢 {active.map(k => sessions[k].label).join(" + ")} ACTIVA</span>
-            : <span style={{ fontSize: 10, color: T.muted }}>⚫ Sin sesión principal</span>}
-        </div>
-      }>Session Performance Map — LIVE</SectionTitle>
-
-      {/* Reloj de sesiones: línea de tiempo */}
-      <div style={{ marginBottom: 14, background: T.card2, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
-        <div style={{ fontSize: 9, color: T.muted, fontWeight: 700, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-          Mapa de sesiones 24h (UTC) — ahora: {timeStr}
-        </div>
-        <div style={{ position: "relative", height: 28 }}>
-          {/* Fondo */}
-          <div style={{ position: "absolute", inset: 0, background: T.border, borderRadius: 4 }} />
-          {/* Sesiones */}
-          {[
-            { key: "asia",   start: 0,    end: 9,    color: T.purple },
-            { key: "europe", start: 7,    end: 16,   color: T.cyan   },
-            { key: "ny",     start: 13.5, end: 20,   color: T.accent  },
-            { key: "golden", start: 14.5, end: 16,   color: T.gold    },
-          ].map(({ key, start, end, color }) => {
-            const isActive = active.includes(key);
-            return (
-              <div key={key} style={{
-                position: "absolute",
-                left: `${(start / 24) * 100}%`,
-                width: `${((end - start) / 24) * 100}%`,
-                top: key === "golden" ? 14 : 0,
-                height: key === "golden" ? 14 : 28,
-                background: `${color}${isActive ? "55" : "25"}`,
-                borderRadius: 3,
-                border: isActive ? `1px solid ${color}` : "none",
-                transition: "background 0.5s",
-              }} />
-            );
-          })}
-          {/* Cursor hora actual */}
-          <div style={{
-            position: "absolute",
-            left: `${(hUTC / 24) * 100}%`,
-            top: 0, bottom: 0, width: 2,
-            background: T.warn,
-            borderRadius: 1,
-            boxShadow: `0 0 6px ${T.warn}`,
-          }} />
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-          {[0, 6, 12, 18, 24].map(h => (
-            <span key={h} style={{ fontSize: 8, color: T.muted }}>{String(h).padStart(2, "0")}:00</span>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
-          {[
-            { key: "asia", color: T.purple }, { key: "europe", color: T.cyan },
-            { key: "ny", color: T.accent }, { key: "golden", color: T.gold },
-          ].map(({ key, color }) => (
-            <div key={key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 2, background: `${color}50`, border: `1px solid ${color}` }} />
-              <span style={{ fontSize: 9, color: T.muted }}>{sessions[key].label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Cards de sesión */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        {sessionMeta.map(({ key, label, icon, color }) => {
-          const s = sessionStats[key] || {};
-          const isActive = active.includes(key);
-          const wr = sf(s.win_rate, 50);
-          const bias = s.bias || "neutral";
-          const bColor = bias === "bull" ? T.bull : bias === "bear" ? T.bear : T.muted;
-          const progress = sessionProgress(key);
-          const minClose = isActive ? minutesToClose(key) : minutesToOpen(key);
-
-          return (
-            <div key={key} style={{
-              background: isActive ? `${color}12` : T.card2,
-              border: `${isActive ? "2px" : "1px"} solid ${isActive ? color : T.border}`,
-              borderRadius: 10, padding: "10px 12px",
-              boxShadow: isActive ? `0 0 12px ${color}25` : "none",
-              transition: "all 0.3s",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 14 }}>{icon}</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, color }}>{label}</span>
-                </div>
-                {isActive
-                  ? <span style={{ fontSize: 9, fontWeight: 800, color: T.bull, background: `${T.bull}15`, borderRadius: 4, padding: "1px 7px" }}>🟢 ACTIVA</span>
-                  : <span style={{ fontSize: 9, color: T.muted }}>En {minClose}m</span>}
-              </div>
-
-              {/* Progreso si activa */}
-              {isActive && (
-                <div style={{ height: 3, background: T.border, borderRadius: 2, overflow: "hidden", marginBottom: 6 }}>
-                  <div style={{ width: `${progress * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 1s" }} />
-                </div>
-              )}
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                <span style={{ fontSize: 9, color: T.muted }}>Win Rate histórico</span>
-                <span style={{ fontSize: 15, fontWeight: 800, color: wr > 60 ? T.bull : wr > 50 ? color : T.muted, fontFamily: "monospace" }}>{wr}%</span>
-              </div>
-              <div style={{ height: 4, background: T.border, borderRadius: 2, overflow: "hidden", marginBottom: 6 }}>
-                <div style={{ width: `${wr}%`, height: "100%", background: wr > 60 ? T.bull : color, borderRadius: 2 }} />
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                <span style={{ fontSize: 9, color: T.muted }}>Rango ATR</span>
-                <span style={{ fontSize: 9, fontWeight: 700, color: volColor(s.volatility) }}>{s.avg_range}% ({s.volatility})</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 9, color: T.muted }}>Mejor hora</span>
-                <span style={{ fontSize: 9, color }}>{s.best_hours} UTC</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 9, color: T.muted }}>Sesgo</span>
-                <span style={{ fontSize: 9, fontWeight: 800, color: bColor }}>{bias.toUpperCase()}</span>
-              </div>
-              <div style={{ fontSize: 9, color: T.muted, lineHeight: 1.5, borderTop: `1px solid ${T.border}`, paddingTop: 5, marginTop: 4 }}>
-                {s.note}
-              </div>
-              <div style={{ marginTop: 4, fontSize: 9, color: T.muted }}>
-                Impacto OFI: <span style={{ fontWeight: 700, color }}>{s.ofi_impact}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Recomendación ahora */}
-      {(() => {
-        const acts = active;
-        if (acts.includes("golden")) return (
-          <div style={{ marginTop: 10, background: `${T.gold}12`, border: `2px solid ${T.gold}`, borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: T.gold }}>⭐ GOLDEN HOUR ACTIVA — Máxima actividad</div>
-            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>Overlap NY+Europa. Win rate máximo. Spreads mínimos. Volatilidad alta — gestión de riesgo crítica.</div>
-          </div>
-        );
-        if (acts.includes("ny")) return (
-          <div style={{ marginTop: 10, background: `${T.accent}0a`, border: `1px solid ${T.accent}40`, borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: T.accent }}>🗽 SESIÓN NY ACTIVA</div>
-            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>Mayor volumen del día. Monitorear datos macro en horario. ATR elevado en primeros 90 min post-apertura.</div>
-          </div>
-        );
-        if (acts.includes("europe")) return (
-          <div style={{ marginTop: 10, background: `${T.cyan}0a`, border: `1px solid ${T.cyan}40`, borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: T.cyan }}>🌍 SESIÓN EUROPA ACTIVA</div>
-            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>Ruptura frecuente del rango asiático. Volumen creciente. Revisar BOS/CHoCH para dirección intradía.</div>
-          </div>
-        );
-        if (acts.includes("asia")) return (
-          <div style={{ marginTop: 10, background: `${T.purple}0a`, border: `1px solid ${T.purple}40`, borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: T.purple }}>🌏 SESIÓN ASIA ACTIVA</div>
-            <div style={{ fontSize: 10, color: T.muted, marginTop: 3 }}>Volatilidad baja. Ideal para definir rango del día. Spreads más amplios — reducir size 30%.</div>
-          </div>
-        );
-        return (
-          <div style={{ marginTop: 10, background: T.card2, border: `1px solid ${T.border}`, borderRadius: 8, padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, color: T.muted }}>⚫ Sin sesión principal activa — spreads amplios, liquidez reducida. Evitar trades activos.</div>
-          </div>
-        );
-      })()}
-    </div>
-  );
-}
 //**********************************Sessionmapliv************************************************************** */
 // ─── SESSION LIVE DETECTOR ────────────────────────────────────────────────────
-function useSessionLive() {
-  const [nowUTC, setNowUTC] = useState(new Date());
-  useEffect(() => {
-    const t = setInterval(() => setNowUTC(new Date()), 30000);
-    return () => clearInterval(t);
-  }, []);
-
-  const hUTC = nowUTC.getUTCHours() + nowUTC.getUTCMinutes() / 60;
-
-  // Sesiones en hora UTC
-  const sessions = {
-    asia:   { start: 0,     end: 9,    label: "Asia",    icon: "🌏" },
-    europe: { start: 7,     end: 16,   label: "Europa",  icon: "🌍" },
-    ny:     { start: 13.5,  end: 20,   label: "NY",      icon: "🗽" },
-    golden: { start: 14.5,  end: 16,   label: "Golden",  icon: "⭐" },
-  };
-
-  const active = [];
-  Object.entries(sessions).forEach(([key, s]) => {
-    if (hUTC >= s.start && hUTC < s.end) active.push(key);
-  });
-
-  const minutesToClose = (sessionKey) => {
-    const s = sessions[sessionKey];
-    if (!s) return null;
-    const closeH = s.end;
-    const diffH = closeH - hUTC;
-    if (diffH < 0) return null;
-    return Math.round(diffH * 60);
-  };
-
-  const minutesToOpen = (sessionKey) => {
-    const s = sessions[sessionKey];
-    if (!s) return null;
-    let startH = s.start;
-    let diffH = startH - hUTC;
-    if (diffH < 0) diffH += 24;
-    return Math.round(diffH * 60);
-  };
-
-  return { hUTC, active, sessions, minutesToClose, minutesToOpen, nowUTC };
-}
 
 //************************************************************************************************ */
 function WeisWavePanel({ d }) {
@@ -3811,315 +2673,9 @@ function WeisWavePanel({ d }) {
   );
 }
 
-function WolfeWavesPanel({ d }) {
-  const ref = useRef(null);
-  const [w, setW] = useState(600);
-  useEffect(() => {
-    const obs = new ResizeObserver(e => setW(e[0].contentRect.width || 600));
-    if (ref.current) obs.observe(ref.current);
-    return () => obs.disconnect();
-  }, []);
-  const price = sf(d?.current_price, 100);
-  const atr   = sf(d?.atr, price * 0.012);
-  const tickerStr  = d?.symbol || d?.ticker || "SPY";
-  const tickerSeed = useMemo(() => { let h = 0; for (let i = 0; i < tickerStr.length; i++) { h = (Math.imul(31, h) + tickerStr.charCodeAt(i)) | 0; } return Math.abs(h); }, [tickerStr]);
-  const seededRand = useCallback((idx) => { const x = Math.sin(tickerSeed + idx * 9301 + 49297) * 233280; return Math.abs(x - Math.floor(x)); }, [tickerSeed]);
-  const demoPattern = useMemo(() => {
-    const base = price - atr * 9, range = atr;
-    const v = Array.from({ length: 8 }, (_, i) => seededRand(i));
-    const pts = [
-      { n: 1, x: 0,  y: base + range * (3.8 + v[0] * 1.4) },
-      { n: 2, x: 4,  y: base + range * (7.5 + v[1] * 1.5) },
-      { n: 3, x: 8,  y: base + range * (2.2 + v[2] * 1.2) },
-      { n: 4, x: 13, y: base + range * (6.0 + v[3] * 1.3) },
-      { n: 5, x: 17, y: base + range * (0.8 + v[4] * 1.0) },
-    ];
-    const totalX = 24;
-    const slope14 = (pts[3].y - pts[0].y) / (pts[3].x - pts[0].x);
-    const epaY    = pts[0].y + slope14 * (totalX - pts[0].x);
-    const s13 = (pts[2].y - pts[0].y) / (pts[2].x - pts[0].x);
-    const s24 = (pts[3].y - pts[1].y) / (pts[3].x - pts[1].x);
-    const denom = s13 - s24;
-    const apexX = Math.abs(denom) > 0.0001 ? (pts[1].y - pts[0].y + s13 * pts[0].x - s24 * pts[1].x) / denom : totalX + 4;
-    const apexY = pts[0].y + s13 * (apexX - pts[0].x);
-    const isBullPattern = v[5] > 0.4;
-    const quality = Math.round(68 + v[6] * 27);
-    
-    // Calcular extensiones para demo
-    const p1 = pts[0].y, p2 = pts[1].y, p3 = pts[2].y, p4 = pts[3].y, p5 = pts[4].y;
-    const moveBase = epaY - p5;
-    const ampP2P3 = Math.abs(p2 - p3);
-    const ampP4P5 = Math.abs(p4 - p5);
-    const avgAmp = (ampP2P3 + ampP4P5) / 2;
-    
-    return {
-      points: pts,  // Array para el gráfico
-      epa: { x: totalX, y: epaY },
-      apex: { x: apexX, y: apexY },
-      type: isBullPattern ? "bull" : "bear",
-      quality,
-      totalX,
-      // Extensiones para demo (usar wavePoints para no sobreescribir)
-      detected: true,
-      direction: isBullPattern ? "bull" : "bear",
-      wavePoints: { p1, p2, p3, p4, p5, epa: epaY },  // Objeto con puntos nombrados
-      extensions: {
-        fib_100: p5 + moveBase * 1.0,
-        fib_127: p5 + moveBase * 1.272,
-        fib_161: p5 + moveBase * 1.618,
-        fib_200: p5 + moveBase * 2.0,
-        symmetry: epaY + avgAmp,
-      },
-      amplitudes: { p2_p3: ampP2P3, p4_p5: ampP4P5, avg: avgAmp },
-    };
-  }, [price, atr, seededRand]);
-  const wolfe = d?.wolfe_waves;
-  const hasReal = wolfe && wolfe.points && wolfe.points.length === 5;
-  const pattern = hasReal ? wolfe : demoPattern;
-  const pts = pattern.points;
-  const isDemo = !hasReal;
-  const H = 230, pad = { t: 22, b: 34, l: 58, r: 80 };
-  const PW = Math.max(w - pad.l - pad.r, 100), PH = H - pad.t - pad.b;
-  const allY = [...pts.map(p => p.y), pattern.epa.y, pattern.apex.y];
-  const allX = [...pts.map(p => p.x), pattern.epa.x];
-  const yMin = Math.min(...allY) - atr * 0.8, yMax = Math.max(...allY) + atr * 0.8;
-  const xMin = Math.min(...allX), xMax = Math.max(...allX);
-  const yR = yMax - yMin || 1, xR = xMax - xMin || 1;
-  const toX = (xv) => pad.l + ((xv - xMin) / xR) * PW;
-  const toY = (yv) => pad.t + (1 - (yv - yMin) / yR) * PH;
-  const isBull = pattern.type === "bull";
-  const mainColor = isBull ? T.bull : T.bear;
-  const svgPts = pts.map(p => ({ ...p, sx: toX(p.x), sy: toY(p.y) }));
-  const epa    = { sx: toX(pattern.epa.x), sy: toY(pattern.epa.y) };
-  const apexSx = toX(pattern.apex?.x ?? xMax), apexSy = toY(pattern.apex?.y ?? yMax);
-  const priceLine = svgPts.map((p, i) => `${i === 0 ? "M" : "L"}${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(" ");
-  const q = sf(pattern.quality, 75);
-  const qColor = q >= 85 ? T.bull : q >= 70 ? T.warn : T.bear;
-  const yTickVals = [yMin + yR * 0.15, yMin + yR * 0.5, yMin + yR * 0.85];
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10,
-                  padding: "13px 15px", borderTop: `3px solid ${T.purple}` }}>
-      <SectionTitle icon="🐺" badge={
-        <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-          {pill(mainColor, isBull ? "PATRÓN ALCISTA" : "PATRÓN BAJISTA")}
-          {isDemo && pill(T.muted, "DEMO", true)}
-          <span style={{ fontSize: 10, color: qColor, fontWeight: 700 }}>Calidad: {q}%</span>
-        </div>
-      }>Wolfe Waves — Patrón 5 Puntos</SectionTitle>
-      <div style={{ background: `${mainColor}09`, border: `1px solid ${mainColor}30`, borderLeft: `3px solid ${mainColor}`, borderRadius: 7, padding: "8px 12px", marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: mainColor, marginBottom: 3 }}>
-          {isBull ? "↗ SEÑAL DE COMPRA — Punto 5 alcanzado" : "↘ SEÑAL DE VENTA — Punto 5 alcanzado"}
-        </div>
-        <div style={{ fontSize: 11, color: T.textSec, lineHeight: 1.5 }}>
-          {isBull ? `El precio ha roto brevemente bajo la línea 1-3 (punto 5). Target: EPA ${usd(pattern.epa.y)}.`
-                  : `El precio ha superado la línea 1-3 (punto 5). Target: EPA ${usd(pattern.epa.y)}.`}
-        </div>
-      </div>
-      <div ref={ref} style={{ width: "100%" }}>
-        <svg width="100%" height={H}>
-          {yTickVals.map((v, i) => (
-            <g key={i}>
-              <line x1={pad.l} y1={toY(v)} x2={w - pad.r} y2={toY(v)} stroke={T.border} strokeWidth="0.5" />
-              <text x={pad.l - 5} y={toY(v) + 3} textAnchor="end" fontSize="9" fill={T.muted} fontFamily="monospace">${v.toFixed(1)}</text>
-            </g>
-          ))}
-          <polygon points={`${svgPts[0].sx},${svgPts[0].sy} ${svgPts[1].sx},${svgPts[1].sy} ${apexSx},${apexSy}`} fill={`${mainColor}06`} />
-          <line x1={svgPts[0].sx} y1={svgPts[0].sy} x2={apexSx} y2={apexSy} stroke={mainColor} strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-          <line x1={svgPts[1].sx} y1={svgPts[1].sy} x2={apexSx} y2={apexSy} stroke={T.warn}    strokeWidth="1.5" strokeDasharray="6,3" opacity="0.7" />
-          <line x1={svgPts[0].sx} y1={svgPts[0].sy} x2={epa.sx}  y2={epa.sy}  stroke={T.purple}  strokeWidth="1.5" strokeDasharray="4,3" />
-          <circle cx={apexSx} cy={apexSy} r="4" fill={T.muted} opacity="0.6" />
-          <text x={apexSx + 5} y={apexSy - 4} fontSize="9" fill={T.muted}>Ápex</text>
-          <circle cx={epa.sx} cy={epa.sy} r="7" fill={`${T.purple}25`} stroke={T.purple} strokeWidth="1.5" />
-          <text x={epa.sx + 10} y={epa.sy + 3}  fontSize="10" fill={T.purple} fontWeight="800">EPA</text>
-          <text x={epa.sx + 10} y={epa.sy + 14} fontSize="9"  fill={T.purple} fontFamily="monospace">{usd(pattern.epa.y)}</text>
-          <path d={priceLine} fill="none" stroke={T.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-          <line x1={svgPts[4].sx} y1={svgPts[4].sy} x2={epa.sx} y2={epa.sy} stroke={T.purple} strokeWidth="1" strokeDasharray="3,2" opacity="0.5" />
-          {svgPts.map((p, i) => {
-            const isEntry = i === 4;
-            const ptColor = isEntry ? mainColor : T.accent;
-            const ptR = isEntry ? 8 : 6;
-            const lblOff = i % 2 === 0 ? 16 : -12;
-            return (
-              <g key={p.n}>
-                <circle cx={p.sx} cy={p.sy} r={ptR} fill={ptColor} stroke={T.card} strokeWidth="2" />
-                <text x={p.sx} y={p.sy + 3.5} textAnchor="middle" fontSize="9" fill="#fff" fontWeight="800">{p.n}</text>
-                <text x={p.sx} y={p.sy + lblOff} textAnchor="middle" fontSize="9" fill={ptColor} fontFamily="monospace" fontWeight="700">${p.y.toFixed(1)}</text>
-                {isEntry && <text x={p.sx} y={p.sy + lblOff + 11} textAnchor="middle" fontSize="9" fill={mainColor} fontWeight="800">ENTRADA</text>}
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      {/* ── EXTENSIONES EPA — Onda de Wolfe ───────────────────────────────── */}
-      {(d?.wolfe_waves?.detected || isDemo) && (d.wolfe_waves?.extensions || pattern.extensions) && (
-        <div style={{ marginTop: 14, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
-          <SectionTitle icon="📐" badge={pill(T.purple, "3 Métodos")}>Extensiones EPA — Onda de Wolfe</SectionTitle>
-          
-          {/* Datos del patrón actual */}
-          <div style={{ background: `${T.accent}08`, border: `1px solid ${T.accent}20`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>📍 Datos del patrón actual</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 6 }}>
-              {["P1", "P2", "P3", "P4", "P5", "EPA"].map((lbl, i) => {
-                const realPts = d.wolfe_waves?.points || {};
-                const demoPts = pattern.wavePoints || {};
-                const val = lbl === "EPA" ? (realPts.epa || pattern.epa?.y || demoPts.epa) : (realPts[lbl.toLowerCase()] || demoPts[lbl.toLowerCase()]);
-                const roles = { P1: "Base", P2: "Techo", P3: "Suelo", P4: "Techo bajo", P5: "Entrada", EPA: "Objetivo" };
-                return (
-                  <div key={lbl} style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 9, color: T.muted, marginBottom: 2 }}>{lbl} — {roles[lbl]}</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: lbl === "EPA" ? T.purple : T.text, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Método 1: Fibonacci */}
-          <div style={{ background: T.card2, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.warn, textTransform: "uppercase", marginBottom: 6 }}>📐 Método 1: Extensiones Fibonacci desde P5</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-              {[
-                { lbl: "100% (EPA)", fib: 1.0, color: T.purple },
-                { lbl: "127.2%", fib: 1.272, color: T.bull },
-                { lbl: "161.8%", fib: 1.618, color: T.warn },
-                { lbl: "200%", fib: 2.0, color: T.bear },
-              ].map(({ lbl, fib, color }) => {
-                const exts = d.wolfe_waves?.extensions || pattern.extensions || {};
-                const key = fib === 1.0 ? "fib_100" : fib === 1.272 ? "fib_127" : fib === 1.618 ? "fib_161" : "fib_200";
-                const val = exts[key];
-                return (
-                  <div key={lbl} style={{ background: `${color}08`, border: `1px solid ${color}30`, borderRadius: 6, padding: 8, textAlign: "center" }}>
-                    <div style={{ fontSize: 9, color: color, fontWeight: 700, marginBottom: 3 }}>{lbl}</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: color, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
-                    {fib === 1.618 && <div style={{ fontSize: 8, color: T.muted, marginTop: 2 }}>⭐ Más respetado</div>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Método 2: Simetría */}
-          <div style={{ background: T.card2, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.cyan, textTransform: "uppercase", marginBottom: 6 }}>📐 Método 2: Simetría de Onda</div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 9, color: T.muted, marginBottom: 3 }}>Amplitud P2→P3: <span style={{ fontWeight: 700, color: T.text }}>${((d.wolfe_waves?.amplitudes?.p2_p3 || pattern.amplitudes?.p2_p3) || 0).toFixed(2)}</span></div>
-                <div style={{ fontSize: 9, color: T.muted }}>Amplitud P4→P5: <span style={{ fontWeight: 700, color: T.text }}>${((d.wolfe_waves?.amplitudes?.p4_p5 || pattern.amplitudes?.p4_p5) || 0).toFixed(2)}</span></div>
-              </div>
-              <div style={{ background: `${T.cyan}08`, border: `1px solid ${T.cyan}30`, borderRadius: 6, padding: "8px 14px", textAlign: "center" }}>
-                <div style={{ fontSize: 9, color: T.cyan, fontWeight: 700, marginBottom: 2 }}>Ext. Simétrica</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: T.cyan, fontFamily: "monospace" }}>${((d.wolfe_waves?.extensions?.symmetry || pattern.extensions?.symmetry) || 0).toFixed(2)}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Mapa de precios */}
-          <div style={{ background: `${T.accent}08`, border: `1px solid ${T.accent}20`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.accent, textTransform: "uppercase", marginBottom: 6 }}>🗺️ Mapa de precios completo</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {[
-                { lbl: "P5 ENTRADA", val: d.wolfe_waves?.points?.p5 || pattern.wavePoints?.p5, color: T.bear, icon: "←" },
-                { lbl: "EPA (objetivo primario Wolfe)", val: d.wolfe_waves?.points?.epa || pattern.epa?.y || pattern.wavePoints?.epa, color: T.purple, icon: "⇒" },
-                { lbl: "Fib 127.2% (primera resistencia)", val: d.wolfe_waves?.extensions?.fib_127 || pattern.extensions?.fib_127, color: T.bull, icon: "↑" },
-                { lbl: "Fib 161.8% (objetivo medio)", val: d.wolfe_waves?.extensions?.fib_161 || pattern.extensions?.fib_161, color: T.warn, icon: "↑" },
-                { lbl: "Simetría de onda", val: d.wolfe_waves?.extensions?.symmetry || pattern.extensions?.symmetry, color: T.cyan, icon: "↑" },
-                { lbl: "Fib 200% (techo máximo)", val: d.wolfe_waves?.extensions?.fib_200 || pattern.extensions?.fib_200, color: T.bear, icon: "⊤" },
-              ].map(({ lbl, val, color, icon }) => (
-                <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: `${color}05`, borderRadius: 4 }}>
-                  <div style={{ fontSize: 11, color: color, fontWeight: 700, width: 16 }}>{icon}</div>
-                  <div style={{ flex: 1, fontSize: 10, color: T.textSec }}>{lbl}</div>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: color, fontFamily: "monospace" }}>${val?.toFixed(2) || "—"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Consideraciones */}
-          <div style={{ background: `${T.warn}08`, border: `1px solid ${T.warn}30`, borderRadius: 8, padding: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.warn, textTransform: "uppercase", marginBottom: 6 }}>⚠️ Consideraciones importantes</div>
-            <div style={{ fontSize: 10, color: T.textSec, lineHeight: 1.6 }}>
-              <div style={{ marginBottom: 4 }}>
-                <span style={{ fontWeight: 700, color: T.text }}>1. Calidad {(d.wolfe_waves?.quality || pattern.quality || 75)}%:</span> Hay un {100 - (d.wolfe_waves.quality || 75)}% de probabilidad de fallo del patrón.
-              </div>
-              <div style={{ marginBottom: 4 }}>
-                <span style={{ fontWeight: 700, color: T.text }}>2. Después del EPA:</span> {(d.wolfe_waves?.direction || pattern.direction) === "bull" ? "El precio puede continuar hacia las extensiones si rompe con fuerza." : "El precio puede caer hacia las extensiones si rompe el EPA."}
-              </div>
-              <div>
-                <span style={{ fontWeight: 700, color: T.text }}>3. El EPA no es el techo absoluto:</span> Es el primer punto de decisión. Las extensiones Fibonacci dan un mapa de hasta dónde puede llegar.
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 
-function AdaptiveEntryScorer({ d }) {
-  const regime = d?.market_regime || "ranging";
-  const score = sf(d?.score, 50);
-  const mom = sf(d?.momentum_12_1, 0);
-  const ofi = sf(d?.ofi, 0);
-  const fgi = sf(d?.fear_greed, 50);
-  const zscore = sf(d?.zscore_mean_rev, 0);
-  const vwapPos = (d?.vwap?.price_vs_vwap === "above") ? 1 : -1;
-  const weights = {
-    trending: { momentum: 0.35, ofi: 0.25, score: 0.20, fgi: 0.10, zscore: 0.05, vwap: 0.05 },
-    ranging: { momentum: 0.10, ofi: 0.15, score: 0.15, fgi: 0.15, zscore: 0.30, vwap: 0.15 },
-    volatile: { momentum: 0.15, ofi: 0.30, score: 0.15, fgi: 0.10, zscore: 0.15, vwap: 0.15 },
-    breakout: { momentum: 0.30, ofi: 0.30, score: 0.15, fgi: 0.05, zscore: 0.10, vwap: 0.10 },
-  };
-  const w2 = weights[regime] || weights.ranging;
-  const normMom = clamp((mom + 30) / 60, 0, 1);
-  const normOfi = clamp((ofi + 0.5) / 1, 0, 1);
-  const normScore = score / 160;
-  const normFgi = fgi / 100;
-  const normZscore = clamp(1 - Math.abs(zscore) / 3, 0, 1);
-  const normVwap = vwapPos > 0 ? 0.7 : 0.3;
-  const adaptiveScore = Math.round(
-    (normMom * w2.momentum + normOfi * w2.ofi + normScore * w2.score + normFgi * w2.fgi + normZscore * w2.zscore + normVwap * w2.vwap) * 100
-  );
-  const factors = [
-    { label: "Momentum", value: normMom, weight: w2.momentum, color: T.bull, display: `${mom >= 0 ? "+" : ""}${mom.toFixed(1)}%` },
-    { label: "OFI Flow", value: normOfi, weight: w2.ofi, color: T.cyan, display: ofi.toFixed(3) },
-    { label: "Score", value: normScore, weight: w2.score, color: T.accent, display: score.toFixed(0) },
-    { label: "Fear/Greed", value: normFgi, weight: w2.fgi, color: T.purple, display: fgi.toFixed(0) },
-    { label: "Z-Mean Rev", value: normZscore, weight: w2.zscore, color: T.warn, display: zscore.toFixed(2) },
-    { label: "vs VWAP", value: normVwap, weight: w2.vwap, color: T.gold, display: vwapPos > 0 ? "↑" : "↓" },
-  ];
-  const aColor = adaptiveScore > 65 ? T.bull : adaptiveScore < 35 ? T.bear : T.warn;
-  const aLabel = adaptiveScore > 70 ? "ENTRADA FUERTE" : adaptiveScore > 55 ? "ENTRADA DÉBIL" : adaptiveScore < 30 ? "EVITAR" : adaptiveScore < 45 ? "ESPERAR" : "NEUTRAL";
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px", borderTop: `3px solid ${aColor}` }}>
-      <SectionTitle icon="🎯" badge={pill(aColor, aLabel)}>Adaptive Entry Score — Régimen: {regime.toUpperCase()}</SectionTitle>
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
-        <div style={{ position: "relative", width: 64, height: 64 }}>
-          <svg width="64" height="64" viewBox="0 0 64 64">
-            <circle cx="32" cy="32" r="26" fill="none" stroke={T.border} strokeWidth="6" />
-            <circle cx="32" cy="32" r="26" fill="none" stroke={aColor} strokeWidth="6" strokeDasharray={`${adaptiveScore * 1.634} 163.4`} strokeLinecap="round" strokeDashoffset="40.85" transform="rotate(-90 32 32)" />
-            <text x="32" y="36" textAnchor="middle" fontSize="14" fontWeight="800" fill={aColor}>{adaptiveScore}</text>
-          </svg>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: aColor, marginBottom: 3 }}>{aLabel}</div>
-          <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>Score ponderado según régimen <strong style={{ color: T.textSec }}>{regime}</strong>.</div>
-        </div>
-      </div>
-      {factors.map(({ label, value, weight, color, display }) => (
-        <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
-          <div style={{ width: 68, fontSize: 9, color: T.muted, flexShrink: 0 }}>{label}</div>
-          <div style={{ flex: 1, height: 5, background: T.border, borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ width: `${value * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 1s" }} />
-          </div>
-          <div style={{ width: 32, fontSize: 9, color: T.muted, textAlign: "right" }}>{Math.round(weight * 100)}%</div>
-          <div style={{ width: 38, fontSize: 10, fontWeight: 700, color, textAlign: "right", fontFamily: "monospace" }}>{display}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
+/* AdaptiveEntryScorer eliminado: sustituido por WyckoffTab, con cálculo real. */
 
 function FactorCard({ label, value, signal, detail }) {
   const sigColor = signal === "bull" || signal === "positivo" ? T.bull : signal === "bear" || signal === "negativo" ? T.bear : T.warn;
@@ -4161,11 +2717,11 @@ function PriceLevel({ label, price, sub, color, rr }) {
 
 function OvertonWindow({ zone }) {
   const zones = [
-    { id: "impensable", label: "Impensable", sub: "Vender", color: "#c0392b" },
-    { id: "radical", label: "Radical", sub: "Bajista", color: "#e67e22" },
-    { id: "sensible", label: "Sensible", sub: "Esperar", color: "#64748b" },
-    { id: "popular", label: "Popular", sub: "Comprar", color: "#27ae60" },
-    { id: "politica", label: "Política", sub: "Sobrecompra", color: "#0891b2" },
+    { id: "impensable", label: "Impensable", sub: "Vender", color: T.bear },
+    { id: "radical", label: "Radical", sub: "Bajista", color: T.warn },
+    { id: "sensible", label: "Sensible", sub: "Esperar", color: T.muted },
+    { id: "popular", label: "Popular", sub: "Comprar", color: T.bull },
+    { id: "politica", label: "Política", sub: "Sobrecompra", color: T.cyan },
   ];
   const zoneMap = { impensable: 0, radical: 1, sensible: 2, popular: 3, politica: 4, watch: 2, sell: 1, buy: 3, hold: 2 };
   const activeIdx = zoneMap[zone?.toLowerCase()?.split(/[\s—]/)[0]?.trim()] ?? 2;
@@ -4176,8 +2732,8 @@ function OvertonWindow({ zone }) {
           {i === activeIdx && (
             <div style={{ position: "absolute", top: -16, left: "50%", transform: "translateX(-50%)", background: T.card, border: `1px solid ${z.color}`, borderRadius: 4, padding: "1px 8px", fontSize: 10, color: z.color, whiteSpace: "nowrap" }}>{zone}</div>
           )}
-          <div style={{ fontSize: 11, fontWeight: 700, color: i === activeIdx ? "#fff" : z.color }}>{z.label}</div>
-          <div style={{ fontSize: 10, color: i === activeIdx ? "rgba(255,255,255,0.75)" : `${z.color}90` }}>{z.sub}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: i === activeIdx ? T.onAccent : z.color }}>{z.label}</div>
+          <div style={{ fontSize: 10, color: i === activeIdx ? T.onAccent : `${z.color}90`, opacity: i === activeIdx ? 0.75 : 1 }}>{z.sub}</div>
         </div>
       ))}
     </div>
@@ -4234,9 +2790,9 @@ function CoppockChart({ coppock }) {
   const chartRef = useRef(null);
   const [svgW, setSvgW] = useState(500);
 
-  const GREEN_LINE = "#1D9E75";
+  const GREEN_LINE = T.bull;
   const GREEN_FILL = "rgba(29,158,117,0.15)";
-  const RED_LINE   = "#E24B4A";
+  const RED_LINE   = T.bear;
   const RED_FILL   = "rgba(226,75,74,0.15)";
   const ZERO_COLOR = "rgba(136,135,128,0.4)";
 
@@ -4431,6 +2987,21 @@ function CoppockChart({ coppock }) {
 export default function OvertonSignalMatrixV4({ ticker: propTicker }) {
   const { isDark } = useTheme();
   const T = isDark ? THEMES.dark : THEMES.light;
+
+  /* Los paneles hijos son funciones de módulo y leen el `T` de módulo, no
+     este. Hay que sincronizarlo, pero NO durante el render: la exportación
+     estática de Expo prerrenderiza en el servidor con el tema claro, y si el
+     cliente monta con el tema oscuro el árbol no coincide y React aborta la
+     hidratación — es el error #418.
+
+     Por eso la sincronización va en un efecto, que solo corre en el cliente y
+     después del primer pintado, y un contador fuerza el redibujado. El primer
+     render coincide siempre con el del servidor. */
+  const [, redibujar] = useState(0);
+  useEffect(() => {
+    Object.assign(TEMA_PANELES, isDark ? THEMES.dark : THEMES.light);
+    redibujar((n) => n + 1);
+  }, [isDark]);
   const { openChat } = useChat();
   const [ticker, setTicker] = useState(propTicker || "SPY");
   const [inputVal, setInputVal] = useState(propTicker || "SPY");
@@ -4530,11 +3101,15 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
   const card = { background: T.card, border: `1px solid ${T.border}`, borderRadius: 10, padding: "13px 15px", marginBottom: 10 };
 
   const tabs = [
-    { id: "overview", label: "📊 Overview" },
-    { id: "predictive", label: "🔮 Predictivo" },
+    { id: "overview", label: "Resumen" },
+    { id: "predictive", label: "CLV — Cierre del valor" },
     { id: "smc", label: "💠 SMC" },
-    { id: "sessions", label: "🕐 Sesiones" },
+    { id: "sessions", label: "Fase de Wyckoff" },
     { id: "candles", label: "🕯 Velas" },
+    { id: "wolfe", label: "Wolfe" },
+    { id: "elliott", label: "Elliott" },
+    { id: "weis", label: "Weis" },
+    { id: "ichimoku", label: "Ichimoku" },
   ];
 
   return (
@@ -4556,7 +3131,7 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
                 placeholder="AAPL"
                 style={{ background: "none", border: "none", outline: "none", color: T.text, padding: "6px 12px", fontSize: 14, fontWeight: 700, width: 80, fontFamily: "inherit" }} />
               <button onClick={handleAnalyze}
-                style={{ background: T.accent, border: "none", color: "#fff", padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                style={{ background: T.accent, border: "none", color: T.onAccent, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
                 {loading ? "…" : "↗ Analizar"}
               </button>
             </div>
@@ -4591,7 +3166,7 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
               { label: "Precio", value: usd(d.current_price), sub: pct(d.pct_change), color: priceClr },
               { label: "WMA-20", value: usd(d.wma20), sub: isAbove ? "↑ sobre WMA-20" : "↓ bajo WMA-20", color: isAbove ? T.bull : T.bear },
               { label: "WMA-30", value: usd(d.wma30), sub: isAbove ? "↑ sobre WMA-30" : "↓ bajo WMA-30", color: isAbove ? T.bull : T.bear },
-              { label: "Adaptive", value: `${sf(d.score, 50).toFixed(0)}/100`, sub: "Score ponderado", color: T.accent },
+              { label: "Score", value: `${sf(d.score_100, (sf(d.score, 0) / (d.score_max || 165)) * 100).toFixed(0)}/100`, sub: `${sf(d.score, 0).toFixed(0)} de ${d.score_max || 165} puntos`, color: T.accent },
               { label: "Régimen", value: (d.market_regime || "—").toUpperCase(), sub: `ADX ${sf(d.adx, 0).toFixed(0)}`, color: T.regime[d.market_regime] || T.muted },
               { label: "POC", value: d.poc_price ? `$${d.poc_price.toFixed(2)}` : "—", sub: d.current_price > (d.poc_price || 0) ? "▲ Sobre POC" : "▼ Bajo POC", color: d.current_price > (d.poc_price || 0) ? T.bull : T.bear },
               { label: "VIX", value: sf(d.vix, 0).toFixed(1), sub: sf(d.vix) < 18 ? "Calma" : sf(d.vix) < 25 ? "Moderado" : "Miedo", color: sf(d.vix) < 18 ? T.bull : sf(d.vix) < 25 ? T.warn : T.bear },
@@ -4606,7 +3181,27 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
           </div>
 
           {/* ══════════ TAB: OVERVIEW ══════════ */}
+          {activeTab === "wolfe" && (
+            <WolfeTab T={T} ticker={ticker} />
+          )}
+
+          {activeTab === "elliott" && (
+            <ElliottTab T={T} ticker={ticker} />
+          )}
+
+          {activeTab === "weis" && (
+            <WeisTab T={T} ticker={ticker} />
+          )}
+
+          {activeTab === "ichimoku" && (
+            <IchimokuTab T={T} ticker={ticker} />
+          )}
+
           {activeTab === "overview" && ( <>
+              {/* Composición de la maqueta. Va primero, antes de los paneles
+                  heredados, porque es la lectura de cabecera. */}
+              <ResumenTab T={T} d={d} />
+              <div style={{ height: 10 }} />
               {/* Score expandido */}
               <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...card, flex: 1.4, minWidth: 280, marginBottom: 0 }}>
@@ -4623,7 +3218,11 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
                 </div>
                 </div>
                   </div>
-                  <ScoreBreakdownExpandedV4 d={d} tickerSeed={tickerSeed} />
+                  {/* ScoreBreakdownExpandedV4 retirado: generaba el desglose
+                      con un pseudoaleatorio sembrado por ticker, y ResumenTab ya
+                      muestra el mismo desglose con el `score_breakdown` real del
+                      backend. Mantener los dos era enseñar la cifra buena y la
+                      inventada en la misma pantalla. */}
                 </div>
                 <div style={{ ...card, flex: 1, minWidth: 200, marginBottom: 0 }}>
                   <SectionTitle icon="🪟">Ventana de Overton</SectionTitle>
@@ -4637,7 +3236,7 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
                     background: `linear-gradient(135deg, ${T.accent}, ${T.purple})`,
                     border: "none",
                     borderRadius: 8,
-                    color: "#fff",
+                    color: T.onAccent,
                     fontSize: 11,
                     fontWeight: 700,
                     cursor: "pointer",
@@ -4693,8 +3292,11 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
                 </div>
               </div>
 
-              {/* Microestructura Avanzada */}
-              <MicrostructureAdvancedPanel d={d} tickerSeed={tickerSeed} />
+              {/* MicrostructureAdvancedPanel retirado del Resumen: sus cifras
+                  (profundidad, agresores, imbalance) exigen libro de órdenes y
+                  yfinance no lo sirve, así que no es cuestión de arreglarlo.
+                  Un panel que no puede tener datos reales no debe ocupar sitio
+                  en la pantalla de resumen. */}
 
               {/* Gráfico de precio con leyendas */}
               <div style={card}>
@@ -4774,45 +3376,26 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
           )}
 
           {/* ══════════ TAB: PREDICTIVO ══════════ */}
+          {/* ══════════ TAB: CLV ══════════ */}
           {activeTab === "predictive" && (
             <>
-              <MarketRegimePanel d={d} tickerSeed={tickerSeed} />
-              <div style={{ height: 10 }} />
-              <MarketPhaseChart d={d} tickerSeed={tickerSeed} />
-              <div style={{ height: 10 }} />
-              <AdaptiveEntryScorer d={d} />
-              <div style={{ height: 10 }} />
-              <div style={{ height: 10 }} />
-              <ElliottWavePanel d={d} />
-              <div style={{ height: 10 }} />
-              <WeisWavePanel d={d} />
-              <div style={{ height: 10 }} />
-              <WolfeWavesPanel d={d} />
-              <div style={{ height: 10 }} />
-              {d?.volume_delta_mtf && (
-                <div>
-                  <VolumeDeltaTable data={d.volume_delta_mtf} />
-                  <div style={{ height: 10 }} />
-                  <VolumeDeltaAnalysis data={d.volume_delta_mtf} />
-                </div>
-              )}
-              <div style={{ height: 10 }} />
-              <VolatilitySurface d={d} tickerSeed={tickerSeed} />
-              <div style={{ height: 10 }} />
-              <div style={{ height: 400, marginTop: 12 }}>
-                <IchimokuCloudChart ticker={ticker} />
-              </div>
+              {/* Elliott y Wolfe salieron de aquí: tienen pestaña propia.
+                  La superficie de volatilidad también, porque seguía siendo
+                  simulada y necesita cadena de opciones que esta fuente no da.
+                  Con una sola idea en pantalla, la vista se puede compactar. */}
+              <CLVTab T={T} d={d} />
             </>
           )}
 
           {/* ══════════ TAB: SMC ══════════ */}
           {activeTab === "smc" && (
             <>
-              <MTFPanel d={d} tickerSeed={tickerSeed} />
-              <div style={{ height: 10 }} />
-              <SMCPanelLive ticker={ticker} backendData={d} />
-              <div style={{ height: 10 }} />
-              <LiquidityHeatmap d={d} tickerSeed={tickerSeed} />
+              {/* SMCPanelLive y LiquidityHeatmap retirados: sus niveles
+                  (bloques de orden, huecos de valor justo, zonas de liquidez)
+                  salían de un pseudoaleatorio sembrado con el ticker. SMCTab
+                  los sustituye con POC, ATR, ADX, objetivos y el consenso
+                  multi-marco, todos reales. */}
+              <SMCTab T={T} d={d} ticker={ticker} />
               <div style={{ ...card, marginTop: 10 }}>
                 <SectionTitle icon="📖">Glosario SMC — Smart Money Concepts</SectionTitle>
                 {[
@@ -4832,48 +3415,20 @@ Dame tu análisis profesional: ¿Es buen momento para entrar? ¿Qué riesgos ves
             </>
           )}
 
-          {/* ══════════ TAB: SESIONES ══════════ */}
+          {/* ══════════ TAB: FASE DE WYCKOFF ══════════ */}
           {activeTab === "sessions" && (
-            <>
-              <SessionMapLive d={d} />
-              <div style={{ height: 10 }} />
-              {/* Calendario económico real */}
-              <EconomicCalendar />
-              <div style={{ height: 10 }} />
-              <div style={card}>
-                <SectionTitle icon="📋">Guías por Estilo de Trading</SectionTitle>
-                {[
-                  {
-                    style: "Scalping (1–5 min)", color: T.bear,
-                    rules: ["Book Imbalance > 60% + CVD alineado — filtro obligatorio", "Bid-Ask Spread < 0.5% — verificar Depth antes de ejecutar", "Stop 0.3 ATR · Target 0.6 ATR (R/R 2:1 mínimo)", "Si hay Iceberg en el lado contrario al trade, reducir size 50%"],
-                  },
-                  {
-                    style: "Day Trading (15–60 min)", color: T.accent,
-                    rules: ["Book Imbalance + VWAP deben coincidir (anti-falsa-ruptura)", "Tape Sweep detectado → señal de aceleración institucional", "MTF alignment en 3 de 4 timeframes obligatorio", "Stop bajo OB más cercano · Target en FVG o swing previo"],
-                  },
-                  {
-                    style: "Swing Trading (4H–Daily)", color: T.bull,
-                    rules: ["Confluencia Ichimoku: precio sobre nube + T/K cross alcista", "Elliott Wave: entrada en ondas 2 o 4 con Fibonacci 0.618", "Fase Wyckoff: no entrar en Distribución ni Markdown", "Hold 3–15 días · Stop 2.2 ATR · Target 3–5 ATR"],
-                  },
-                ].map(({ style, color, rules }) => (
-                  <div key={style} style={{ background: `${color}07`, border: `1px solid ${color}25`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: "10px 13px", marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color, marginBottom: 7 }}>{style}</div>
-                    {rules.map((r2, i) => (
-                      <div key={i} style={{ display: "flex", gap: 8, fontSize: 11, color: T.textSec, marginBottom: 4, lineHeight: 1.4 }}>
-                        <span style={{ color, flexShrink: 0, fontSize: 10 }}>▸</span>
-                        <span>{r2}</span>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </>
+            <WyckoffTab T={T} d={d} />
           )}
 
           {/* ══════════ TAB: VELAS ══════════ */}
           {activeTab === "candles" && (
             <>
-              <WeeklyCandleChart d={d} tickerSeed={tickerSeed} />
+              {/* WeeklyCandleChart retirado: generaba las velas con un
+                  pseudoaleatorio y agrupaba las semanas por posición en el
+                  array, en bloques fijos de cinco — con un festivo, cada
+                  «vela semanal» mezclaba días de dos semanas. CandlesTab
+                  reagrupa por calendario y mide la vela real. */}
+              <CandlesTab T={T} ticker={ticker} />
               <div style={{ height: 10 }} />
               {/* Glosario de patrones */}
               <div style={card}>

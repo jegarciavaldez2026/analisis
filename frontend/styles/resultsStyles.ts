@@ -13,8 +13,8 @@
 
 import { StyleSheet } from 'react-native';
 
-import type { ThemeColors } from '../../contexts/ThemeContext';
-import { numeric, radius, space, type } from '../../theme/tokens';
+import type { ThemeColors } from '../contexts/ThemeContext';
+import { numeric, radius, space, type } from '../theme/tokens';
 
 const HAIR = StyleSheet.hairlineWidth;
 
@@ -43,11 +43,16 @@ export function makeResultsStyles(c: ThemeColors) {
     backButton: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
     backButtonText: { ...type.label, color: c.accent, fontWeight: '600' },
 
+    /* El sujeto del análisis es una placa más, no una banda a sangre: comparte
+       margen, radio y regla con todo lo que viene debajo, de modo que la
+       columna de tarjetas arranca alineada desde el primer elemento. */
     companySection: {
+      margin: space.lg,
       padding: space.xl,
       backgroundColor: c.surface,
-      borderBottomWidth: HAIR,
-      borderBottomColor: c.rule,
+      borderRadius: radius.md,
+      borderWidth: HAIR,
+      borderColor: c.rule,
     },
     companyTicker: { ...type.title1, ...numeric, color: c.ink },
     companyName: { ...type.body, color: c.inkMuted, marginBottom: space.sm },

@@ -37,26 +37,56 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
       return "neutral";
     };
 
-    const totalVol = data.reduce((sum, d) => sum + (d.vol || 0), 0);
-    const getWeight = (vol: number) => totalVol > 0 ? ((vol / totalVol) * 100).toFixed(0) : "0";
+    /* Peso de cada capa.
+     *
+     * Antes se repartía el 100 % en proporción al volumen de cada marco. Eso
+     * era aritméticamente vacío: los volúmenes están anidados —la vela
+     * semanal contiene a la diaria, que contiene a la de 4H— así que se
+     * contaba la misma acción negociada siete veces y la capa macro salía
+     * siempre alrededor del 90 %. No medía participación del mercado, medía
+     * la duración de la vela.
+     *
+     * Ahora los pesos son una decisión declarada del modelo: la estructura
+     * de fondo manda sobre el ruido intradía. Y se modulan por lo anómalo
+     * que sea el volumen de cada marco frente a SU PROPIA media (vol_z), que
+     * es la única comparación entre marcos que no está viciada.
+     */
+    const PESO_BASE = { macro: 50, mid: 30, short: 20 };
+
+    const ajustePorVolumen = (filas: (VolumeDeltaRow | undefined)[]) => {
+      const zs = filas
+        .map(f => (f as any)?.vol_z)
+        .filter(z => typeof z === "number" && Number.isFinite(z)) as number[];
+      if (zs.length === 0) return 1;
+      const zMedio = zs.reduce((a, b) => a + b, 0) / zs.length;
+      // Un marco con volumen muy por encima de su media pesa algo más, pero
+      // el ajuste va acotado: no puede dar la vuelta a los pesos base.
+      return Math.max(0.75, Math.min(1.35, 1 + zMedio * 0.12));
+    };
 
     const macroBull = [tf1d, tf1w].filter(d => getSignal(d) === "bull").length;
     const macroBear = [tf1d, tf1w].filter(d => getSignal(d) === "bear").length;
     const macroSignal = macroBull > macroBear ? "bull" : macroBear > macroBull ? "bear" : "neutral";
     const macroVol = (tf1d?.vol || 0) + (tf1w?.vol || 0);
-    const macroWeight = getWeight(macroVol);
+    const macroCrudo = PESO_BASE.macro * ajustePorVolumen([tf1d, tf1w]);
 
     const midBull = [tf1h, tf4h].filter(d => getSignal(d) === "bull").length;
     const midBear = [tf1h, tf4h].filter(d => getSignal(d) === "bear").length;
     const midSignal = midBull > midBear ? "bull" : midBear > midBull ? "bear" : "neutral";
     const midVol = (tf1h?.vol || 0) + (tf4h?.vol || 0);
-    const midWeight = getWeight(midVol);
+    const midCrudo = PESO_BASE.mid * ajustePorVolumen([tf1h, tf4h]);
 
     const shortBull = [tf1m, tf5m, tf15m].filter(d => getSignal(d) === "bull").length;
     const shortBear = [tf1m, tf5m, tf15m].filter(d => getSignal(d) === "bear").length;
     const shortSignal = shortBull > shortBear ? "bull" : shortBear > shortBull ? "bear" : "neutral";
     const shortVol = (tf1m?.vol || 0) + (tf5m?.vol || 0) + (tf15m?.vol || 0);
-    const shortWeight = getWeight(shortVol);
+    const shortCrudo = PESO_BASE.short * ajustePorVolumen([tf1m, tf5m, tf15m]);
+
+    // Renormalizar para que las tres capas sumen 100 tras el ajuste.
+    const sumaCruda = macroCrudo + midCrudo + shortCrudo || 1;
+    const macroWeight = ((macroCrudo / sumaCruda) * 100).toFixed(0);
+    const midWeight = ((midCrudo / sumaCruda) * 100).toFixed(0);
+    const shortWeight = ((shortCrudo / sumaCruda) * 100).toFixed(0);
 
     const mainTrend = macroSignal === "bull" ? "ALCISTA" : macroSignal === "bear" ? "BAJISTA" : "LATERAL";
     const momentum = midSignal === "bull" ? "IMPULSO COMPRADOR" : midSignal === "bear" ? "CORRECCIÓN" : "INDECISO";
@@ -90,9 +120,13 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
     <View style={styles.container}>
       {/* Principio clave */}
       <View style={[styles.principleCard, { backgroundColor: `${colors.accent}08`, borderLeftColor: colors.accent, borderLeftWidth: 4 }]}>
-        <Text style={[styles.principleTitle, { color: colors.accent }]}>🧠 Principio clave</Text>
-        <Text style={[styles.principleText, { color: colors.text }]}>Mayor volumen = Mayor peso</Text>
-        <Text style={[styles.principleDesc, { color: colors.textSecondary }]}>La 1W puede tener 100x más volumen que 1m — es mucho más relevante</Text>
+        <Text style={[styles.principleTitle, { color: colors.accent }]}>Cómo se ponderan las capas</Text>
+        <Text style={[styles.principleText, { color: colors.text }]}>50 % estructura · 30 % medio · 20 % corto</Text>
+        <Text style={[styles.principleDesc, { color: colors.textSecondary }]}>
+          Pesos fijos del modelo, ajustados según lo anómalo que sea el volumen de cada marco
+          frente a su propia media. No se comparan volúmenes entre marcos: la vela semanal
+          contiene a la diaria, así que compararlos sería contar dos veces lo mismo.
+        </Text>
       </View>
 
       {/* Análisis por capas */}
@@ -114,7 +148,9 @@ export default function VolumeDeltaAnalysis({ data }: Props) {
             <Text style={[styles.statLabel, { color: colors.textSecondary, textAlign: "center" }]}>{(analysis.macro.vol / 1000).toFixed(0)}k total</Text>
           </View>
           <Text style={[styles.cardInsight, { color: analysis.macro.signal === "bull" ? colors.bull : analysis.macro.signal === "bear" ? colors.bear : colors.muted, textAlign: "center" }]}>
-            {analysis.macro.signal === "bull" ? "✅ Institucional comprando" : analysis.macro.signal === "bear" ? "⚠️ Institucional vendiendo" : "⚪ Sin dirección clara"}
+            {/* No se puede afirmar quién compra: el indicador solo sabe dónde
+                cerró el precio dentro del rango de la vela. */}
+            {analysis.macro.signal === "bull" ? "Cierres en la parte alta del rango" : analysis.macro.signal === "bear" ? "Cierres en la parte baja del rango" : "Sin dirección clara"}
           </Text>
         </View>
 

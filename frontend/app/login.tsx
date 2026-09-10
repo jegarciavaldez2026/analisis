@@ -238,7 +238,7 @@ export default function LoginScreen() {
                 </View>
                 <View>
                   <Text style={[type.title2, { color: colors.ink }]}>FinAnalysis</Text>
-                  <Legend>Lectura de fundamentales</Legend>
+                  <Legend>Fundamentales</Legend>
                 </View>
               </View>
             </View>

@@ -13,13 +13,16 @@ import {
   Switch,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { PieChart, LineChart } from 'react-native-gifted-charts';
 import { useTheme } from '../contexts/ThemeContext';
-import { makeAccountStyles } from '../app/screens/accountStyles';
+import { makeAccountStyles } from '../styles/accountStyles';
+import PositionsTable from './portfolio/PositionsTable';
+import WatchlistTable from './portfolio/WatchlistTable';
 import type { ThemeColors } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -185,6 +188,8 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
   const { logout } = useAuth();
   const { token, user } = useAuth();
   const activeTab = seccion;
+  const [vistaPosiciones, setVistaPosiciones] = useState<'tarjetas' | 'tabla'>('tarjetas');
+  const [vistaFavoritos, setVistaFavoritos] = useState<'tarjetas' | 'tabla'>('tarjetas');
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [allTransactions, setAllTransactions] = useState<PortfolioTransaction[]>([]);
@@ -1546,7 +1551,44 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
                   </Text>
                 </View>
               ) : (
-                watchlist.map(renderWatchlistItem)
+                <>
+                  {/* Mismo conmutador que en posiciones: las tarjetas sirven
+                      para mirar un valor, la tabla para compararlos. */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                    <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 0 }]}>Seguimiento</Text>
+                    <View style={{ flexDirection: 'row', gap: 2 }}>
+                      {([['tarjetas', 'Tarjetas'], ['tabla', 'Detalle']] as const).map(([clave, etiqueta]) => {
+                        const activa = vistaFavoritos === clave;
+                        return (
+                          <Pressable
+                            key={clave}
+                            onPress={() => setVistaFavoritos(clave)}
+                            accessibilityRole="tab"
+                            accessibilityState={{ selected: activa }}
+                            style={({ pressed }) => [{
+                              paddingHorizontal: 10, paddingVertical: 6, minHeight: 32,
+                              justifyContent: 'center', borderRadius: 5, borderWidth: 1,
+                              borderColor: activa ? colors.primary : colors.border,
+                              backgroundColor: activa ? `${colors.primary}18` : 'transparent',
+                              opacity: pressed ? 0.7 : 1,
+                            }]}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: activa ? '700' : '500',
+                                           color: activa ? colors.primary : colors.textSecondary }}>
+                              {etiqueta}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {vistaFavoritos === 'tabla' ? (
+                    <WatchlistTable items={watchlist as any} />
+                  ) : (
+                    watchlist.map(renderWatchlistItem)
+                  )}
+                </>
               )}
             </>
           ) : (
@@ -1614,8 +1656,49 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
                   {/* Portfolio Metrics */}
                   {renderMetricsCard()}
                   
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>Posiciones</Text>
-                  {portfolio.holdings.map(renderPortfolioHolding)}
+                  {/* Dos lecturas de lo mismo: las tarjetas sirven para mirar
+                      una posición; la tabla, para compararlas entre sí. */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8 }}>
+                    <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 0 }]}>Posiciones</Text>
+                    <View style={{ flexDirection: 'row', gap: 2 }}>
+                      {([['tarjetas', 'Tarjetas'], ['tabla', 'Detalle']] as const).map(([clave, etiqueta]) => {
+                        const activa = vistaPosiciones === clave;
+                        return (
+                          <Pressable
+                            key={clave}
+                            onPress={() => setVistaPosiciones(clave)}
+                            accessibilityRole="tab"
+                            accessibilityState={{ selected: activa }}
+                            style={({ pressed }) => [{
+                              paddingHorizontal: 10,
+                              paddingVertical: 6,
+                              minHeight: 32,
+                              justifyContent: 'center',
+                              borderRadius: 5,
+                              borderWidth: 1,
+                              borderColor: activa ? colors.primary : colors.border,
+                              backgroundColor: activa ? `${colors.primary}18` : 'transparent',
+                              opacity: pressed ? 0.7 : 1,
+                            }]}
+                          >
+                            <Text style={{
+                              fontSize: 12,
+                              fontWeight: activa ? '700' : '500',
+                              color: activa ? colors.primary : colors.textSecondary,
+                            }}>
+                              {etiqueta}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {vistaPosiciones === 'tabla' ? (
+                    <PositionsTable holdings={portfolio.holdings as any} />
+                  ) : (
+                    portfolio.holdings.map(renderPortfolioHolding)
+                  )}
                 </>
               ) : (
                 <>

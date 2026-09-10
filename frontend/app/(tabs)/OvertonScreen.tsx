@@ -10,6 +10,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  TextInput,
   TouchableOpacity,
   ActivityIndicator,
   Platform,
@@ -18,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import OvertonSignalMatrix_v4 from '../../components/OvertonSignalMatrix_v4';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useSimbolo } from '../../contexts/SimboloContext';
 import type { ThemeColors } from '../../contexts/ThemeContext';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
@@ -40,14 +42,34 @@ const recColor = (c: ThemeColors): Record<string, string> => ({
 export default function OvertonScreen() {
   const { colors, isDark } = useTheme();
   const REC_COLOR = React.useMemo(() => recColor(colors), [colors]);
+  // El símbolo activo de la aplicación: el mismo que lleva el robot en
+  // Estrategia. Cambiarlo aquí lo cambia allí, y al revés.
+  const { simbolo, setSimbolo } = useSimbolo();
   const [history,        setHistory]        = useState<HistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
-  const [selectedTicker, setSelectedTicker] = useState('');
+  const [selectedTicker, setSelectedTicker] = useState(simbolo);
   const [selectedName,   setSelectedName]   = useState('');
   const [showMatrix,     setShowMatrix]     = useState(false);
   const [showDropdown,   setShowDropdown]   = useState(false);
+  const [entradaLibre,   setEntradaLibre]   = useState('');
 
   useEffect(() => { fetchHistory(); }, []);
+
+  /**
+   * Seguir al símbolo de la aplicación.
+   *
+   * Si vuelves de Estrategia con otro valor, esta pantalla se pone en él en
+   * vez de quedarse en el anterior. Se cierra la matriz para no dejar en
+   * pantalla el análisis del valor viejo bajo el nombre del nuevo, que es
+   * justo la confusión que este cambio viene a quitar.
+   */
+  useEffect(() => {
+    if (!simbolo || simbolo === selectedTicker) return;
+    setSelectedTicker(simbolo);
+    const enHistorial = history.find((h) => h.ticker === simbolo);
+    setSelectedName(enHistorial?.company_name ?? '');
+    setShowMatrix(false);
+  }, [simbolo]);
 
   const fetchHistory = async () => {
     setLoadingHistory(true);
@@ -60,7 +82,13 @@ export default function OvertonScreen() {
         return true;
       });
       setHistory(unique);
-      if (unique.length > 0 && !selectedTicker) {
+      // El símbolo activo manda sobre el primero del historial: si el robot
+      // está en PBF, esta pantalla abre en PBF aunque no se haya analizado
+      // nunca desde Búsqueda. `/overton/{ticker}` funciona con cualquiera.
+      const activo = unique.find((h: HistoryItem) => h.ticker === selectedTicker);
+      if (activo) {
+        setSelectedName(activo.company_name);
+      } else if (!selectedTicker && unique.length > 0) {
         setSelectedTicker(unique[0].ticker);
         setSelectedName(unique[0].company_name);
       }
@@ -80,8 +108,28 @@ export default function OvertonScreen() {
   const handleSelect = (item: HistoryItem) => {
     setSelectedTicker(item.ticker);
     setSelectedName(item.company_name);
+    setSimbolo(item.ticker); // el resto de la aplicación sigue a este valor
     setShowDropdown(false);
     setShowMatrix(false);
+  };
+
+  /**
+   * Analizar un ticker que no está en el historial.
+   *
+   * El selector sólo ofrecía valores ya analizados desde Búsqueda, así que un
+   * símbolo que llevara el robot y no estuviera en esa lista no había forma de
+   * mirarlo aquí. `/overton/{ticker}` no necesita historial: acepta cualquier
+   * símbolo, y esta entrada es la que lo aprovecha.
+   */
+  const analizarLibre = () => {
+    const limpio = entradaLibre.trim().toUpperCase();
+    if (!limpio) return;
+    setSelectedTicker(limpio);
+    setSelectedName(history.find((h) => h.ticker === limpio)?.company_name ?? '');
+    setSimbolo(limpio);
+    setEntradaLibre('');
+    setShowMatrix(false);
+    setTimeout(() => setShowMatrix(true), 80);
   };
 
   return (
@@ -98,7 +146,7 @@ export default function OvertonScreen() {
         <View>
           <Text style={[s.headerTitle, { color: colors.text }]}>Ventana de Overton</Text>
           <Text style={[s.headerSub, { color: colors.textSecondary }]}>
-            Análisis técnico compuesto sobre acciones analizadas
+            Modelo Overton · análisis cuantitativo de acciones
           </Text>
         </View>
       </View>
@@ -106,8 +154,48 @@ export default function OvertonScreen() {
       {/* ── Selector ── */}
       <View style={[s.selectorCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <Text style={[s.selectorLabel, { color: colors.textSecondary }]}>
-          Selecciona una acción analizada
+          Acción analizada · sigue al símbolo del robot
         </Text>
+
+        {/* Entrada libre. Va ANTES del selector porque es la que no depende de
+            haber analizado nada antes: `/overton/{ticker}` acepta cualquier
+            símbolo, y el desplegable sólo conoce el historial. */}
+        <View style={s.libreRow}>
+          <TextInput
+            value={entradaLibre}
+            onChangeText={setEntradaLibre}
+            onSubmitEditing={analizarLibre}
+            placeholder={`Cualquier símbolo (activo: ${selectedTicker || '—'})`}
+            placeholderTextColor={colors.inkFaint}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            accessibilityLabel="Analizar cualquier símbolo en Overton"
+            style={[
+              s.libreInput,
+              {
+                borderColor: colors.ruleStrong,
+                backgroundColor: colors.inputBackground,
+                color: colors.text,
+              },
+              Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null,
+            ]}
+          />
+          <TouchableOpacity
+            onPress={analizarLibre}
+            disabled={!entradaLibre.trim()}
+            accessibilityRole="button"
+            accessibilityLabel="Analizar el símbolo escrito"
+            style={[
+              s.libreBtn,
+              {
+                backgroundColor: entradaLibre.trim() ? colors.accent : colors.border,
+                opacity: entradaLibre.trim() ? 1 : 0.6,
+              },
+            ]}
+          >
+            <Ionicons name="arrow-forward" size={16} color={colors.inkOnAccent} />
+          </TouchableOpacity>
+        </View>
 
         {loadingHistory ? (
           <View style={s.loadRow}>
@@ -118,7 +206,8 @@ export default function OvertonScreen() {
           <View style={s.emptyState}>
             <Ionicons name="analytics-outline" size={28} color={colors.textSecondary} />
             <Text style={[s.emptyTxt, { color: colors.textSecondary }]}>
-              Analiza acciones primero en la pantalla de Búsqueda.
+              No hay historial todavía. Escribe un símbolo arriba, o analiza acciones en Búsqueda
+              para tenerlas aquí a mano.
             </Text>
           </View>
         ) : Platform.OS === 'web' ? (
@@ -143,6 +232,12 @@ export default function OvertonScreen() {
                 fontFamily: 'system-ui, sans-serif',
               }}
             >
+              {/* Si el símbolo activo no está en el historial, se añade igual:
+                  un desplegable cuyo valor seleccionado no figura entre sus
+                  opciones se queda en blanco y parece que no hay nada elegido. */}
+              {selectedTicker && !history.some(h => h.ticker === selectedTicker) && (
+                <option value={selectedTicker}>{selectedTicker} — símbolo activo</option>
+              )}
               {history.map(item => (
                 <option key={item.id} value={item.ticker}>
                   {item.ticker} — {item.company_name}
@@ -276,6 +371,25 @@ const s = StyleSheet.create({
 
   selectorCard: { borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1 },
   selectorLabel:{ fontSize: 12, fontWeight: '600', marginBottom: 10 },
+
+  libreRow:   { flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 10 },
+  // 44 de alto: el mínimo táctil, también en el botón cuadrado de al lado.
+  libreInput: {
+    flex: 1,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  libreBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   loadRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   loadTxt: { fontSize: 13 },

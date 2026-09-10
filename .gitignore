@@ -100,3 +100,12 @@ backend/server.py.backup
 
 # Python wheels
 *.whl
+
+# Pesos de modelos: el Qwen3 son 1,1 GB y vive en la imagen Docker, no aquí.
+# Un .gguf en el historial no se puede quitar sin reescribirlo entero.
+*.gguf
+backend/models/
+
+# Salida de compilar.bat / iniciar.bat
+.compilar_log.txt
+.iniciar_log.txt
