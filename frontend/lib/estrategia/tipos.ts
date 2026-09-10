@@ -41,6 +41,35 @@ export interface Bloque<T> {
  * Mercado
  * ======================================================================== */
 
+/**
+ * Horquilla bid/ask de `info` de Yahoo, con su veredicto de sanidad.
+ *
+ * `Ticker.info` SÍ trae bid y ask — corrige la creencia de que yfinance no da
+ * horquilla, que sólo es cierta para `history()`. Lo que no da es una
+ * horquilla FIABLE: llega con ~15 min de retraso y a menudo viene rota incluso
+ * en mercado abierto. Por eso el backend la valida y manda `fiable` y
+ * `motivo`, y la tarjeta dibuja el hueco cuando el dato no se sostiene.
+ *
+ * NO sirve para bloquear una orden. Para eso sólo vale la cotización del
+ * bróker en el instante de mandarla.
+ */
+export interface HorquillaMercado {
+  bid: number | null;
+  ask: number | null;
+  bidSize: number | null;
+  askSize: number | null;
+  spread: number | null;
+  spreadPct: number | null;
+  /** Si es `false`, `motivo` dice por qué y NO debe enseñarse la cifra. */
+  fiable: boolean;
+  motivo: string | null;
+  /** El nivel va rancio, pero la anchura puede seguir siendo buena. */
+  desfasada: boolean;
+  estadoMercado: string;
+  /** Rango diario medio, contra el que se contrasta la horquilla. */
+  rangoDiarioPct: number | null;
+}
+
 export interface DatosMercado {
   simbolo: string;
   nombre: string;
@@ -59,6 +88,8 @@ export interface DatosMercado {
   min52: number | null;
   max52: number | null;
   capitalizacion: number | null;
+  /** Horquilla real de `info`. `null` si el backend no la mandó. */
+  horquilla: HorquillaMercado | null;
 }
 
 /** Una punta del libro. `tamano` en acciones. */

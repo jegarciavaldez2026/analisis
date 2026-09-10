@@ -7084,6 +7084,123 @@ def _calc_ofi_proxy(daily_hist) -> float:
         return 0.0
 
 
+def _horquilla_declarada(info: dict, rango_diario_pct: float | None,
+                         precio: float | None) -> dict:
+    """
+    Horquilla bid/ask de `info`, con sus comprobaciones de sanidad.
+
+    `Ticker.info` SÍ trae `bid`, `ask`, `bidSize` y `askSize`. Lo que no trae es
+    una horquilla en la que se pueda confiar: llega con ~15 minutos de retraso,
+    fuera de horario viene a cero, y **dentro de horario también puede venir
+    rota**. Medido el 10 de septiembre de 2026, en mercado abierto:
+
+        F     bid 13,86  ask 13,86   -> horquilla 0,00 %  (bloqueada)
+        AAPL  bid 314,02 ask 330,00  -> horquilla 4,96 %  (imposible)
+
+    Los dos son cotizaciones basura, y los dos se dibujarían como una cifra
+    perfectamente creíble si no se comprueban. Por eso esto devuelve `fiable` y
+    un `motivo`, y la interfaz enseña el hueco en vez del número cuando el dato
+    no se sostiene. Es la misma regla del proyecto de siempre: un hueco honesto
+    vale más que un número inventado.
+
+    El contraste con el **rango diario medio** es la comprobación que más
+    aporta, y no usa ninguna constante inventada: una horquilla real es dos
+    órdenes de magnitud menor que el recorrido de una sesión. Si la horquilla
+    cotizada es más ancha que el rango diario medio, no es una horquilla — es
+    ruido de una cotización rancia.
+
+    NO sirve para bloquear una orden. Para eso sólo vale la cotización del
+    bróker en el instante de mandarla.
+    """
+    def _num(clave):
+        v = info.get(clave)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
+    bid = _num("bid")
+    ask = _num("ask")
+    bid_size = _num("bidSize")
+    ask_size = _num("askSize")
+    estado = str(info.get("marketState") or "")
+
+    base = {
+        "bid": None, "ask": None, "bid_size": None, "ask_size": None,
+        "spread": None, "spread_pct": None,
+        "fiable": False, "motivo": None,
+        # El nivel va rancio pero la anchura puede seguir siendo buena.
+        "desfasada": False,
+        "estado_mercado": estado,
+        "retraso": "~15 min",
+        "rango_diario_pct": sanitize_float(rango_diario_pct) if rango_diario_pct else None,
+    }
+
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        base["motivo"] = (
+            "Yahoo no está devolviendo horquilla. Fuera de horario viene a cero casi siempre."
+            if estado and estado != "REGULAR"
+            else "Yahoo no está devolviendo horquilla para este valor."
+        )
+        return base
+
+    # A partir de aquí hay dos números; la pregunta es si significan algo.
+    base.update({
+        "bid": sanitize_float(bid), "ask": sanitize_float(ask),
+        "bid_size": int(bid_size) if bid_size else None,
+        "ask_size": int(ask_size) if ask_size else None,
+    })
+
+    if ask < bid:
+        base["motivo"] = "Mercado cruzado (ask < bid): la cotización es inválida."
+        return base
+
+    spread = ask - bid
+    medio = (ask + bid) / 2.0
+    spread_pct = (spread / medio * 100.0) if medio > 0 else None
+    base["spread"] = sanitize_float(spread)
+    base["spread_pct"] = sanitize_float(spread_pct)
+
+    if spread == 0:
+        base["motivo"] = "Horquilla bloqueada (bid = ask): cotización rancia, no una horquilla real."
+        return base
+
+    # El precio fuera de la horquilla NO la invalida, y creerlo fue un error:
+    # con ~15 minutos de retraso el último precio se sale de una cotización
+    # rancia continuamente. Eso dice que el NIVEL está desfasado, no que la
+    # ANCHURA esté mal — y la anchura es lo único que se está midiendo aquí.
+    # Rechazarlo tumbaba justo los datos buenos (SPY con 0,004 %, que es una
+    # horquilla perfectamente real).
+    if precio and (precio < bid or precio > ask):
+        base["desfasada"] = True
+
+    # El contraste de sanidad. Una horquilla real es DOS ÓRDENES DE MAGNITUD
+    # menor que el recorrido de una sesión —un valor líquido tiene rango
+    # diario del ~2 % y horquilla del ~0,02 %—, así que se exige que no pase
+    # de la décima parte del rango diario medio. El criterio se declara en el
+    # propio mensaje: no es un número escondido, es el que separa una
+    # horquilla de una cotización rota.
+    #
+    # Medido el 10 de septiembre de 2026, en mercado abierto:
+    #   SPY  0,004 % frente a 0,057 % (rango/10)  -> pasa
+    #   F    0,072 % frente a 0,290 %             -> pasa
+    #   MSFT 1,003 % frente a 0,182 %             -> ROTA
+    #   AAPL 4,963 % frente a 0,219 %             -> ROTA
+    if rango_diario_pct and spread_pct:
+        techo = rango_diario_pct / 10.0
+        if spread_pct > techo:
+            base["motivo"] = (
+                f"Horquilla implausible: {spread_pct:.3f} % cuando el rango diario medio es "
+                f"{rango_diario_pct:.2f} %. Una horquilla real no pasa de la décima parte del "
+                f"recorrido de una sesión ({techo:.3f} %). La cotización de Yahoo está rota."
+            )
+            return base
+
+    base["fiable"] = True
+    return base
+
+
 def _calc_bid_ask_spread_proxy(daily_hist) -> float:
     """
     Rango diario medio: (High-Low)/Close en 20 sesiones, en %.
@@ -10054,6 +10171,11 @@ async def get_overton_signal(ticker: str):
             # `liquidez.spread_estimado_pct`, con su método declarado.
             "bid_ask_spread":  sanitize_float(bas_pct),
             "rango_diario_pct": sanitize_float(bas_pct),
+            # Horquilla REAL de `info` (bid/ask), con sus comprobaciones. No
+            # confundir con `bid_ask_spread`, que es el rango diario y sigue
+            # alimentando el score. Sale del mismo `info` ya descargado, así
+            # que no cuesta ninguna petición extra.
+            "horquilla":       _horquilla_declarada(info, bas_pct, current_price),
             "gamma_exposure":  sanitize_float(gex_proxy),
             "market_impact":   sanitize_float(mi_proxy),
             "forward_guidance": fg_proxy,

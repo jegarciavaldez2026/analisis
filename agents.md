@@ -47,9 +47,16 @@ Medido, no supuesto. Deja de discutirse cada vez que se mire.
 | 1h | 60 días | 420 |
 | 1d / 1wk | años | — |
 
-**No, y no hay atajo:** bid/ask, profundidad de mercado, tape, reparto por
-nivel de precio, clasificación de agresores, cadena de opciones.
+**No, y no hay atajo:** profundidad de mercado, tape, reparto por nivel de
+precio, clasificación de agresores, cadena de opciones.
 `history()` devuelve `[Open, High, Low, Close, Volume]` y nada más.
+
+**Matizado el 10 sep 2026:** aquí ponía también «bid/ask», y era demasiado
+tajante. `history()` no los da, cierto — pero **`Ticker.info` sí trae `bid`,
+`ask`, `bidSize` y `askSize`**. Lo que no trae es una horquilla FIABLE: viene
+con ~15 min de retraso y a menudo rota incluso en mercado abierto (AAPL
+cotizando 314,02 / 330,00). Se muestra validada y marcada; ver la sección de
+esta sesión.
 
 Corolario que ha costado dos conversaciones: **no se puede hacer un footprint.**
 Ni con esta biblioteca ni con ninguna. El propio autor de

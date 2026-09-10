@@ -320,6 +320,43 @@ Sirven como referencia indicativa, no como filtro duro de ejecución.
 | Puntuar la señal / mostrar en pantalla | `info` de Yahoo, con retraso y marcado |
 | **Bloquear una orden antes de mandarla** | Solo la cotización del bróker en ese instante |
 
+### Horquilla bid/ask en pantalla — HECHO (10 sep 2026)
+
+`_horquilla_declarada()` en `server.py`, colgada de `/overton` como
+`horquilla`, y dibujada en `PanelActivo` (bid, ask, **horquilla debajo** y
+tamaños).
+
+**No sustituye a `bid_ask_spread`**, que sigue siendo el rango diario y sigue
+alimentando el score con su calibración. Son campos distintos y el comentario
+del código lo dice.
+
+**El hallazgo:** `info` sí trae bid/ask, pero el dato viene roto a menudo
+**incluso en mercado abierto**. Medido el 10 de septiembre de 2026:
+
+| Valor | Bid / Ask | Horquilla | Rango diario | Veredicto |
+|---|---|---|---|---|
+| SPY | 758,07 / 758,10 | 0,004 % | 0,57 % | válida |
+| F | 13,85 / 13,86 | 0,072 % | 2,90 % | válida |
+| MSFT | 491,03 / 495,98 | **1,003 %** | 1,82 % | rota |
+| AAPL | 314,02 / 330,00 | **4,963 %** | 2,19 % | rota |
+
+Un 4,96 % en AAPL se dibujaría como una cifra perfectamente creíble. Por eso
+hay validación y la tarjeta enseña el hueco con su motivo.
+
+**El criterio, y por qué no es un número inventado:** una horquilla real es dos
+órdenes de magnitud menor que el recorrido de una sesión. Se exige que no pase
+de **la décima parte del rango diario medio**, y el mensaje lo dice con las
+tres cifras delante. Rechaza MSFT y AAPL, deja pasar SPY y F.
+
+**Error que cometí y corregí:** primero invalidaba la horquilla cuando el
+último precio quedaba fuera de ella. Con ~15 min de retraso eso pasa
+continuamente, y tumbaba justo los datos buenos (SPY con 0,004 %). El desfase
+afecta al NIVEL, no a la ANCHURA, que es lo único que se mide. Ahora sólo se
+anota (`desfasada`).
+
+Sigue siendo referencia marcada, **nunca filtro de ejecución**: para eso sólo
+vale la cotización del bróker en el instante de mandar la orden.
+
 ### Order book nivel II: por qué NO comprarlo (de momento)
 
 Con `bid`, `ask` y sus tamaños queda cubierto el filtro de spread y el

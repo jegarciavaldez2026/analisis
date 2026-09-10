@@ -28,6 +28,7 @@ import {
   Fibonacci,
   FilaAnalisis,
   FilaVolumeDelta,
+  HorquillaMercado,
   Ichimoku,
   LadoGateNQE,
   LibroOrdenes,
@@ -194,7 +195,33 @@ export function aMercado(o: RespuestaOverton): Bloque<DatosMercado> {
     min52: num(o.week52_low),
     max52: num(o.week52_high),
     capitalizacion: num(o.market_cap),
+    horquilla: aHorquilla(o.horquilla),
   });
+}
+
+/**
+ * Horquilla bid/ask.
+ *
+ * Se copia el veredicto del backend tal cual, sin recalcular nada: la
+ * comprobación de sanidad vive en un sitio, con sus cifras medidas al lado. Si
+ * el frontend decidiera por su cuenta cuándo un dato es fiable, habría dos
+ * verdades y ninguna auditable.
+ */
+function aHorquilla(h: any): HorquillaMercado | null {
+  if (!h || typeof h !== 'object') return null;
+  return {
+    bid: num(h.bid),
+    ask: num(h.ask),
+    bidSize: num(h.bid_size),
+    askSize: num(h.ask_size),
+    spread: num(h.spread),
+    spreadPct: num(h.spread_pct),
+    fiable: Boolean(h.fiable),
+    motivo: h.motivo ? String(h.motivo) : null,
+    desfasada: Boolean(h.desfasada),
+    estadoMercado: String(h.estado_mercado ?? ''),
+    rangoDiarioPct: num(h.rango_diario_pct),
+  };
 }
 
 /**
