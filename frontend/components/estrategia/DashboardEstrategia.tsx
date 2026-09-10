@@ -42,6 +42,8 @@ import { BotonTerminal, Chip, D, Placa, Rotulo, T } from './Terminal';
 import PanelActivo from './mercado/PanelActivo';
 import PanelLiquidez from './mercado/PanelLiquidez';
 import PerfilVolumen from './mercado/PerfilVolumen';
+import PanelFibonacci from './mercado/PanelFibonacci';
+import PanelPivotes from './mercado/PanelPivotes';
 import ComparativaIndice from './mercado/ComparativaIndice';
 import ClustersVolumen from './mercado/ClustersVolumen';
 import GraficoMercado, { Rango } from './mercado/GraficoMercado';
@@ -51,6 +53,7 @@ import FaseMercado from './analisis/FaseMercado';
 import SenalRobot from './robot/SenalRobot';
 import ControlesRobot from './robot/ControlesRobot';
 import PlanPosicion from './robot/PlanPosicion';
+import PanelNQE from './robot/PanelNQE';
 import { PanelIchimoku, PanelVolatilidad } from './analisis/PanelesAnalisis';
 import PanelTecnicoAmpliado from './analisis/PanelTecnicoAmpliado';
 import {
@@ -344,8 +347,19 @@ export default function DashboardEstrategia({
           encima. Separarlos obligaría a recordar el número en vez de mirarlo. */}
       <PerfilVolumen bloque={estado.serie} cargando={cargando} />
       <PanelIchimoku bloque={estado.ichimoku} cargando={cargando} />
-      {/* Debajo de Ichimoku: las dos contestan a «en qué régimen estamos»,
-          una por la nube y otra por el ciclo, y se leen seguidas. */}
+      {/* NQE va DEBAJO DE ICHIMOKU porque es donde el usuario lo busca, y esa
+          razón manda sobre cualquier argumento de maqueta. Sigue en la columna
+          ancha —con 400 px cada vela mide 2 px y el cuerpo desaparece— y trae
+          su propio marco, porque el indicador está pensado para 1H-4H y no
+          para el marco del gráfico principal.
+
+          Historial, para no volver a moverlo: primero estuvo al final de la
+          columna del robot (no se encontraba, 1.402 px de scroll), luego entre
+          la confluencia y los mandos, y después pegado al gráfico principal.
+          Tres mudanzas que nadie pidió. Se queda aquí. */}
+      <PanelNQE simbolo={simbolo} compacto={compacto} />
+      {/* Y el ciclo de Wyckoff cierra: la nube, la señal y el ciclo contestan
+          los tres a «en qué régimen estamos», y se leen seguidos. */}
       <FaseMercado bloque={estado.wyckoff} cargando={cargando} />
     </View>
   );
@@ -374,6 +388,18 @@ export default function DashboardEstrategia({
           sí se puede medir. Sigue al marco del gráfico, así que en 5m se
           convierte en una rejilla intradía de verdad. */}
       <ClustersVolumen bloque={estado.serie} cargando={cargando} marco={marco} />
+      {/* Fibonacci va debajo de los clusters y cierra la columna: las dos
+          contestan «a qué precios importa esto» —una por volumen negociado, la
+          otra por estructura del impulso— y se leen seguidas. Trae sus propios
+          marcos (5m a 1S) porque un retroceso se mira en el marco de la
+          operación, no en el del gráfico principal. */}
+      <PanelFibonacci simbolo={simbolo} />
+      {/* Pivotes debajo de Fibonacci y cierra la columna: las tres últimas
+          placas contestan «a qué precios importa esto» —volumen negociado,
+          estructura del impulso y niveles del periodo anterior— y se leen
+          seguidas. Trae sus propios marcos porque un pivote se mira en el de
+          la operación, no en el del gráfico principal. */}
+      <PanelPivotes simbolo={simbolo} />
     </View>
   );
 

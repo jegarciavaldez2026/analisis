@@ -213,3 +213,270 @@ npx --no-install tsc prueba.ts --outDir out --module commonjs \
 - **No fabricar el desdoble bid/ask.** Es la tentación recurrente y produciría
   la versión más convincente posible de una mentira: un footprint parece
   autoritario y cada celda sería inventada.
+
+---
+
+# Sesión del 10 de septiembre de 2026 — tres indicadores portados desde Pine
+
+Se portaron tres indicadores de TradingView que entregó el usuario, cada uno
+con su motor en el backend, sus pruebas ejecutables y su tarjeta en Estrategia.
+Lo que sigue es **la lógica y los porqués**, no el inventario de archivos: eso
+está en `CLAUDE.md`.
+
+| Indicador | Motor | Pruebas | Tarjeta |
+|---|---|---|---|
+| NQE — Newtonian Quant Engine | `backend/nqe.py` | `test_nqe.py` (35) | `robot/PanelNQE.tsx` |
+| Fib Retracement | `backend/fibonacci.py` | `test_fibonacci.py` (18) | `mercado/PanelFibonacci.tsx` |
+| Pivotes de Woodie | `backend/pivots.py` | `test_pivots.py` (35) | `mercado/PanelPivotes.tsx` |
+
+---
+
+## La lección de ESTA sesión
+
+La anterior fue «números correctos que mentían». Ésta tiene otra, y aparece
+tres veces:
+
+> **Portar un indicador fielmente y que no dispare nunca es un resultado, no un
+> fallo. Pero hay que MEDIRLO y decirlo, no descubrirlo en pantalla.**
+
+Los tres indicadores traían la misma trampa de fondo: **condiciones descritas
+como una lista con «y» que en realidad son una SECUENCIA en el tiempo.** Un
+`and` de booleanos sobre estados que no coexisten da cero para siempre, y cero
+se lee como «mercado tranquilo», no como «lo he implementado mal».
+
+- **NQE**: el filtro de Fibonacci exige estar a mitad de un retroceso mientras
+  el disparo exige un estallido de momento. Medido sobre 5.082 barras horarias
+  de AAPL, TSLA y NVDA con el preset recomendado: **0 señales**. Sin Fibonacci,
+  137. No es un bug del port — es el indicador.
+- **Pivotes**: «ruptura de estructura **y** retroceso a la zona» son estados
+  opuestos. Se midió: coinciden en menos del 2 % de las rupturas. Hubo que
+  implementarlo como máquina de estados de cuatro fases.
+- **Fibonacci**: aquí la trampa era la contraria y más sutil, ver abajo.
+
+**Qué se hace con eso:** el embudo y la lista de condiciones se enseñan en la
+tarjeta, siempre, con las cifras. «221 → 154 → 1 → 0» y «3 de 6, falta el
+retroceso» explican el cero. Un panel vacío sin explicación se lee como avería.
+
+---
+
+## Los errores técnicos que traían los indicadores
+
+Cada uno tiene su prueba, para que la corrección sea demostrable y no una
+opinión.
+
+### 1. La fórmula de Woodie que circula por internet no es la de Woodie
+
+El texto del usuario —y media web— dice `PP = (H + L + 2C)/4`, «da más peso al
+cierre anterior». La real, y la de TradingView, es:
+
+```
+PP = (H_ant + L_ant + 2 × APERTURA_actual) / 4
+```
+
+El doble peso va a la **apertura del periodo en curso**. Ahí está su
+reactividad, y por eso es el único pivote clásico que incorpora el hueco de
+apertura. Eso invierte otra afirmación habitual: con la variante del cierre, un
+gap se ignora por completo y el mapa queda anclado a un precio que el mercado
+ya abandonó.
+
+`test_las_dos_variantes_difieren_cuando_hay_hueco` demuestra que coinciden
+EXACTAMENTE sin hueco y divergen con él. Ésa es la diferencia real.
+
+### 2. «PP + VWAP + SuperTrend» no son tres confirmaciones
+
+Los tres son medias de precio reciente. Exigir los tres no triplica la
+evidencia; la cuenta tres veces. Es el mismo hallazgo que ya estaba anotado
+para SuperTrend contra UT Bot a factor bajo.
+
+**No se discute: se mide.** `colinealidad` da el % de barras en que el lado del
+PP y el del VWAP coinciden, y por encima del 85 % la tarjeta avisa. Sobre AAPL
+sale 44-52 % según marco — o sea que en este caso **sí** aportan cosas
+distintas. La medida vale en las dos direcciones, que es lo que la hace útil.
+
+### 3. En modo lookback, el Fibonacci no puede detectar que el impulso se rompió
+
+El más bonito de los tres, y lo cazó una prueba escrita esperando lo contrario.
+
+Con el método del script —máximo y mínimo de las últimas N velas— las anclas
+son los extremos de la ventana y el cierre está DENTRO de esa ventana por
+definición. Así que el retroceso queda confinado a [0, 1] pase lo que pase:
+**ese método nunca puede avisar de que el impulso está roto.** Cuando el precio
+rompe, reancla en silencio y sigue dibujando como si nada.
+
+Por eso se añadió el modo por **pivotes confirmados**, donde las anclas son
+swings del pasado y el precio sí puede rebasarlas.
+
+### 4. «R1 como primer objetivo» sólo vale si aún no has llegado a R1
+
+Si el precio ya está por encima de R1, «objetivo R1» apunta hacia atrás. Lo
+cazó una prueba con una compra cuyo objetivo salía por debajo de la entrada —
+la misma familia de error que ya estaba documentada («un patrón bajista con
+objetivo por encima de la entrada»). El objetivo es ahora **el siguiente nivel
+en la dirección del viaje**, y si no queda ninguno se dice.
+
+### 5. El bug del `High != -1`
+
+En el «Fib Retracement», la rama del mínimo manual comprueba `High != -1`
+donde debería comprobar `Low != -1`. Como `High` tiene `minval = 0`, la
+condición es siempre cierta y el fallo queda tapado. No se portó ese modo, pero
+queda anotado.
+
+---
+
+## Decisiones de diseño que conviene no deshacer
+
+**Un módulo suelto no ordena una operación.** Los carteles «Buy»/«Sell» de UT
+Bot y los triángulos de la señal compuesta del NQE van en **listas separadas en
+el backend** (`serie.ut_marcas` frente a `serie.marcas`) y con **forma distinta
+en pantalla**. Fundirlos en una capa haría creer que un módulo manda, y la
+regla del producto dice lo contrario.
+
+**El verde y el rojo de una vela significan cierre contra apertura.** El script
+de UT Bot recolorea las velas según la posición (`barcolor`). Aquí no: eso
+pisaría la lectura en todas las pantallas del terminal. La misma información va
+en una cinta bajo el eje, que además deja ver cuánto dura cada tramo.
+
+**`show*` no es `use*`.** El Pine separa dibujar de filtrar, y aquí se habían
+atado por error dos veces: apagar el filtro de Fibonacci borraba los niveles de
+la pantalla. Son mandos independientes.
+
+**Una señal bloqueada por el gate se enseña, marcada.** Es fiel al original
+(círculos grises) y es lo único que distingue «no ve nada» de «ve algo sin
+demostrar». Con la configuración por defecto del NQE **todas** salen
+bloqueadas, así que la variante «hueca» es la que se ve el 99 % del tiempo:
+tuvo que dibujarse con relleno al 16 %, porque con contorno tenue era invisible.
+
+**El estado por defecto es el que hay que diseñar.** El caso «gráfico sin un
+solo triángulo» no es una excepción: es lo normal. Lleva un aviso dentro del
+gráfico que nombra **la causa concreta y el mando que la deshace**, y distingue
+«ninguna en todo el histórico» de «hay N pero ninguna en las 180 dibujadas».
+
+**El sesgo no es el veredicto.** Que el precio esté sobre el PP es sesgo de
+compra y así se rotula; LONG/SHORT sólo aparece con las seis condiciones
+cumplidas en orden. Confundirlos convertiría «precio sobre el PP» en una orden.
+
+**Cada ✓ lleva su cifra detrás.** «Precio > VWAP ✓ · 78,05 vs 77,58». Un check
+sin medida no se puede auditar: no sabes si es por tres céntimos o por tres
+dólares.
+
+---
+
+## Gráficos: lo que se aprendió dibujando
+
+**Las velas se ajustan al ancho, no al revés.** La columna del robot son
+~400 px; con 180 velas cada una mide 2 px y el cuerpo desaparece.
+`ANCHO_MIN_VELA = 4` fija cuántas caben y se recorta la cola. El gráfico se
+acorta antes que volverse ilegible.
+
+**La escala la fijan las velas y lo que está cerca de ellas.** Con un impulso
+roto, una extensión 2.618 queda a un 25 % de distancia y arrastra la escala
+entera: las velas se aplastan en el tercio inferior. Los niveles que no caben
+se cuentan y se dicen en el pie. Al revés también pasa: escalar sólo con las
+velas saca del panel un SuperTrend a tres ATR y desaparece sin avisar.
+
+**UT Bot y SuperTrend se dibujan en ESCALERA.** Son niveles que se mantienen y
+saltan, no curvas: unirlos con una diagonal dibuja una transición que nunca
+existió.
+
+**Las etiquetas se separan entre sí; la línea no se mueve nunca.** La línea
+marca un precio real. Cuando un rótulo se aparta, un guion corto los vuelve a
+unir — si no, un «0.5» a diez píxeles de su línea se lee como si marcara otro
+precio.
+
+**Los pivotes no piden un gráfico de velas, piden una escalera.** Lo que se
+viene a mirar es a qué altura estás dentro del mapa y cuánto queda al siguiente
+nivel. Siete horizontales sobre velas de 2 px no contestan eso.
+
+**Las fechas van en orden cronológico, no por precio.** En un tramo bajista el
+máximo es el más antiguo, y escribir «bajo → alto» hacía leer «26 ago a 30 jul».
+
+---
+
+## Estadística: cómo se sustituye una opinión por una medida
+
+**Las estrellas se cambian por tasas de toque.** El texto del usuario repartía
+⭐⭐⭐⭐⭐ a R1/S1 y ⭐⭐⭐ a R3/S3. Ahora cada nivel viaja con el porcentaje de
+los últimos 60 periodos en que el precio llegó de verdad. Sobre AAPL 1H:
+
+```
+PP 73 %  ·  R1 47 %  ·  R2 15 %  ·  R3  7 %
+            S1 38 %  ·  S2 13 %  ·  S3  5 %
+```
+
+Confirma la jerarquía y además la cuantifica: R3 es una apuesta al 7 %.
+
+**Sin look-ahead, y con prueba.** Los niveles de cada periodo se calculan con
+el ANTERIOR y se comprueban contra el máximo y mínimo del periodo en curso. Si
+se calcularan con el propio periodo, el PP caería siempre dentro del rango y la
+tasa sería del 100 %. El periodo en curso no cuenta: su máximo aún puede
+crecer.
+
+**El gate de Wilson no se abre casi nunca, y eso también se mide.** Con
+objetivo y stop simétricos a 1,5× ATR el acierto ronda el 50 % (AAPL: 79
+operaciones largas, 50,6 %), la cota de Wilson queda en 0,42 y el umbral pide
+0,65. Para abrirlo haría falta un acierto real por encima del 72 %.
+
+**Una equivalencia se demuestra, no se afirma.** Para sostener que el UT Bot
+del NQE es el script «UT Bot Alerts», se reimplementó el Pine **literalmente y
+por separado** —conservando incluso lo redundante, `ema(src,1)` incluido— y se
+comparó marca a marca. Si compartiera código con el motor, no demostraría nada.
+Lo mismo con el modo lookback del Fibonacci.
+
+---
+
+## Correcciones al propio proyecto
+
+**`W-MON` no es la semana ISO.** En pandas agrupa de **martes a lunes** y
+mezcla dos semanas de calendario en cada vela. La semana ISO es `W`
+(lunes-domingo), que es además lo que hace `reagrupar()` en el frontend. Era un
+fallo introducido en esta misma sesión en `/fibonacci`; corregido.
+
+**El bug de `generatePDF` ya estaba corregido.** `CLAUDE.md` lo listaba como
+pendiente; la firma lleva la paleta como sexto parámetro desde antes.
+
+**Matiz sobre bid/ask.** Este archivo decía «No, y no hay atajo: bid/ask…». Es
+cierto para `history()`, que devuelve OHLCV y nada más. Pero **`Ticker.info` sí
+trae `bid`, `ask`, `bidSize` y `askSize`** — con ~15 minutos de retraso, a
+menudo a cero y casi siempre a cero fuera de horario. Sirve como referencia
+marcada, nunca como filtro duro de ejecución. La distinción importa y estaba
+demasiado tajante.
+
+---
+
+## Método de verificación que funcionó
+
+**Navegador de verdad, no suposiciones.** Playwright con `channel: 'msedge'`
+usa el Edge ya instalado y no descarga 150 MB de Chromium. La ruta pide sesión:
+hay `POST /api/auth/register` para una cuenta desechable, y se borra después
+con `docker exec analisis_mongo mongosh analisis_db --eval
+'db.users.deleteMany({email:"..."})'`. La base es **`analisis_db`**.
+
+**Tres trampas que costaron tiempo:**
+
+1. **El dashboard NO scrollea con `window`.** El scroll vive en el `ScrollView`
+   interno: `document.body.scrollHeight` da la altura de la ventana y
+   `window.scrollTo` no hace nada. Hay que subir por los padres hasta el que
+   tiene `scrollHeight > clientHeight`.
+2. **Grepear el bundle por texto con acentos no sirve.** El minificador escapa
+   la eñe y las vocales acentuadas a secuencias `\x`. Buscar cadenas sin
+   acentos.
+3. **La cabecera de la app intercepta los clics** en la parte alta del
+   viewport. Al posicionar un elemento a 45 px del borde para pulsarlo, el clic
+   se lo come la barra superior. Dejar 200 px.
+
+**Y una advertencia que no es del código:** `iniciar.bat` imprime las
+direcciones de LAN («desde otro equipo de la red») pero **no responden**:
+Docker Desktop publica el puerto sólo por loopback. Sólo funciona
+`localhost:8080`.
+
+---
+
+## Lo que se hizo mal en el proceso
+
+**Se movió una tarjeta tres veces sin que nadie lo pidiera.** El NQE pasó del
+final de la columna del robot, a entre la confluencia y los mandos, a pegado al
+gráfico principal. Cada mudanza tenía su razón técnica y ninguna estaba pedida;
+el resultado fue que el usuario dejó de encontrarla dos veces seguidas y creyó
+que se había borrado. **Cambiar de sitio algo que ya funciona es un cambio, y
+hay que pedirlo o avisarlo.** Está ahora debajo de Ichimoku, que es donde él la
+tenía, y el código lleva el historial anotado para que no vuelva a pasar.

@@ -540,3 +540,451 @@ export interface EstadoDashboard {
   noticias: Bloque<Noticia[]>;
   alertas: Bloque<Alerta[]>;
 }
+
+/* ==========================================================================
+ * NQE — Newtonian Quant Engine
+ *
+ * Port del indicador de TradingView. El motor vive en `backend/nqe.py` y lo
+ * sirve `/nqe/{ticker}`; aquí sólo se le pone tipo. Los nombres de campo son
+ * LOS DEL BACKEND, comprobados contra el `return` de `calcular()`: escribir
+ * nombres plausibles en vez de los reales ya costó cuatro paneles vacíos en
+ * esta misma pantalla, y no da error — da guiones.
+ * ======================================================================== */
+
+/** Marco temporal del NQE. El indicador está pensado para 1H-4H. */
+export type MarcoNQE = '1h' | '4h' | '1d';
+
+/** Preset del Pine: fija sensibilidad, gate, muestra mínima y filtros. */
+export type PresetNQE = 'conservador' | 'equilibrado' | 'agresivo';
+
+/** Una señal del historial. `validada` es la que pasó el gate estadístico. */
+export interface SenalNQE {
+  indice: number;
+  fecha: string;
+  direccion: 'compra' | 'venta';
+  /**
+   * Pasó el gate. Una señal NO validada no es una orden: es lo que el Pine
+   * dibuja como círculo gris. Se enseña, pero marcada.
+   */
+  validada: boolean;
+  precio: number;
+  objetivo: number;
+  stop: number;
+  /** Cota de Wilson en el momento de la señal, no la de hoy. */
+  wilson: number | null;
+  muestra: number;
+  resultado: 'ganada' | 'perdida' | 'abierta';
+  cierreMotivo: string | null;
+  barrasAbierta: number | null;
+}
+
+/** Estado de un módulo de filtrado (UT Bot o SuperTrend). */
+export interface ModuloNQE {
+  activo: boolean;
+  senal: 'compra' | 'venta' | 'alcista' | 'bajista';
+  alcista: boolean;
+  nivel: number | null;
+  /**
+   * Velas desde el último giro. Entrar en un giro fresco no es lo mismo que
+   * entrar en una tendencia que lleva cuarenta velas corriendo.
+   */
+  velasDesdeGiro: number | null;
+  /** Sólo UT Bot: posición sostenida y mandos del script de alertas. */
+  posicion?: number;
+  compras?: number;
+  ventas?: number;
+  keyValue?: number;
+  atrPeriodo?: number;
+}
+
+/** Un lado del gate: cuántas operaciones lo respaldan y si está abierto. */
+export interface LadoGateNQE {
+  abierto: boolean;
+  muestra: number;
+  acierto: number | null;
+  wilson: number;
+  esperanza: number;
+}
+
+/** Una marca de señal sobre el gráfico. `i` es el índice DENTRO de la ventana
+ *  dibujada, ya trasladado por el backend: restar offsets en el cliente es
+ *  justo lo que desalinea un triángulo una vela a la derecha. */
+export interface MarcaNQE {
+  i: number;
+  direccion: 'compra' | 'venta';
+  validada: boolean;
+  precio: number;
+  objetivo: number;
+  stop: number;
+  resultado: 'ganada' | 'perdida' | 'abierta';
+  fecha: string;
+}
+
+/**
+ * Un cruce de «UT Bot Alerts»: el precio atraviesa su trailing stop.
+ *
+ * Es OTRA cosa que `MarcaNQE`. Aquella es la señal compuesta del motor —score
+ * fuera de umbral, flujo a favor, liquidez y los tres filtros—; ésta es un
+ * módulo suelto. Van en listas separadas a propósito: ningún indicador aislado
+ * puede ordenar una operación, y fundirlas en una sola lista haría exactamente
+ * eso sin decirlo.
+ */
+export interface MarcaUTBot {
+  i: number;
+  tipo: 'buy' | 'sell';
+  precio: number;
+  stop: number;
+  fecha: string;
+}
+
+/** La cola de la serie con las líneas que el Pine pinta sobre el precio. */
+export interface SerieNQE {
+  barras: Vela[];
+  /** Alineadas barra a barra con `barras`. `null` es calentamiento, no cero. */
+  utStop: (number | null)[];
+  superTrend: (number | null)[];
+  vwap: (number | null)[];
+  score: (number | null)[];
+  umbral: (number | null)[];
+  marcas: MarcaNQE[];
+  /** Cruces del módulo UT Bot, aparte de la señal compuesta. */
+  utMarcas: MarcaUTBot[];
+  /** +1 largo, −1 corto, 0 hasta el primer cruce. NO es `close > stop`. */
+  utPos: number[];
+  fib382: number | null;
+  fib500: number | null;
+  fib618: number | null;
+  poc: number | null;
+}
+
+export interface NQE {
+  simbolo: string;
+  marco: MarcoNQE;
+  preset: PresetNQE;
+  barras: number;
+  desde: string;
+  hasta: string;
+  /** Si la última vela sigue abierta, su señal aún puede cambiar. */
+  ultimaVelaCerrada: boolean;
+
+  senal: {
+    accion: string;
+    texto: string;
+    tono: Tono;
+    /** Hay disparo AHORA, no sólo sesgo sostenido. */
+    disparo: boolean;
+    sesgo: number;
+    precio: number | null;
+    objetivo: number | null;
+    stop: number | null;
+    riesgoATR: number;
+  };
+
+  motor: {
+    score: number | null;
+    umbral: number | null;
+    absScore: number | null;
+    posicionZ: number | null;
+    velocidad: number | null;
+    aceleracion: number | null;
+    /** PROXY: volumen firmado por CLV, no delta de agresores. */
+    ofi: number | null;
+    volumenRelativo: number | null;
+    atr: number | null;
+    vwap: number | null;
+    poc: number | null;
+  };
+
+  regimen: { estado: 'tendencia' | 'rango'; er: number | null; umbralER: number };
+
+  utBot: ModuloNQE;
+  superTrend: ModuloNQE;
+
+  estructura: {
+    activo: boolean;
+    zona: string;
+    retroceso: number | null;
+    impulso: 'alcista' | 'bajista' | null;
+    fib382: number | null;
+    fib500: number | null;
+    fib618: number | null;
+  };
+
+  pronostico: {
+    disponible: boolean;
+    muestra: number;
+    muestraMinima: number;
+    probSube: number | null;
+    wilson: number | null;
+    mediaATR: number | null;
+    desviacionATR: number | null;
+    velas: number;
+    estado: string;
+  };
+
+  gate: {
+    estricto: boolean;
+    umbralWilson: number;
+    muestraMinima: number;
+    largo: LadoGateNQE;
+    corto: LadoGateNQE;
+  };
+
+  /** Dónde muere cada señal. Contesta a «¿por qué no sale nada?». */
+  embudo: {
+    cruces: number;
+    conFlujoYLiquidez: number;
+    trasFiltros: number;
+    validadas: number;
+    bloqueadasPorGate: number;
+  };
+
+  historial: {
+    total: number;
+    validadas: number;
+    bloqueadas: number;
+    cerradas: number;
+    ganadas: number;
+    acierto: number | null;
+    senales: SenalNQE[];
+  };
+
+  /** Velas y líneas para el gráfico. */
+  serie: SerieNQE;
+
+  /** Se enseñan arriba. Cambian cómo se lee todo lo de debajo. */
+  avisos: string[];
+  notaOFI: string;
+}
+
+/** Mandos que la tarjeta puede cambiar y viajan al endpoint. */
+export interface ControlesNQE {
+  marco: MarcoNQE;
+  preset: PresetNQE;
+  usarUT: boolean;
+  usarST: boolean;
+  usarFib: boolean;
+  gateEstricto: boolean;
+  /** «Key Value» de UT Bot Alerts: su sensibilidad. Por defecto, 1. */
+  utKey?: number;
+  /** Periodo del ATR de UT Bot Alerts. Por defecto, 10. */
+  utLen?: number;
+}
+
+/* ==========================================================================
+ * Retrocesos de Fibonacci
+ *
+ * Port del «Fib Retracement» del usuario. El motor vive en
+ * `backend/fibonacci.py`, con pruebas ejecutables; aquí sólo se le pone tipo.
+ * Nombres copiados del `return` del endpoint, no inventados.
+ * ======================================================================== */
+
+/** Marcos de la tarjeta. Los intradía salen de `/intradia`, el semanal se
+ *  reagrupa desde el diario. */
+export type MarcoFib = '5m' | '15m' | '1h' | '4h' | '1d' | '1w';
+
+/**
+ * Cómo se ancla el tramo.
+ *
+ * `lookback` es el del script: máximo y mínimo de las últimas N velas, cada
+ * uno por su lado. `pivotes` usa swings confirmados y corrige el sesgo de que
+ * los dos extremos puedan no pertenecer al mismo impulso.
+ */
+export type ModoFib = 'lookback' | 'pivotes';
+
+export interface NivelFib {
+  ratio: number;
+  etiqueta: string;
+  precio: number;
+  tipo: 'retroceso' | 'extension';
+  /** Debajo del precio es soporte; encima, resistencia. Es el color del script. */
+  papel: 'soporte' | 'resistencia';
+}
+
+export interface Fibonacci {
+  simbolo: string;
+  marco: MarcoFib;
+  barras: number;
+  desde: string;
+  hasta: string;
+  /** El modo que se acabó usando, que puede no ser el pedido. */
+  modo: ModoFib;
+  modoPedido: ModoFib;
+  ventana: number;
+  pivote: number;
+  ultimaVelaCerrada: boolean;
+
+  impulso: {
+    alto: number;
+    bajo: number;
+    rango: number;
+    direccion: 'alcista' | 'bajista';
+    invertido: boolean;
+    /** Índices dentro de la ventana dibujada, o `null` si caen fuera. */
+    iAltoSerie: number | null;
+    iBajoSerie: number | null;
+    fechaAlto: string;
+    fechaBajo: string;
+    separacionVelas: number;
+  };
+
+  niveles: NivelFib[];
+  actual: { precio: number; ratio: number; zona: string };
+  velas: Vela[];
+  /** Sesgos detectados. Cambian cómo se lee el gráfico. */
+  avisos: string[];
+}
+
+/** Mandos de la tarjeta de Fibonacci. */
+export interface ControlesFib {
+  marco: MarcoFib;
+  modo: ModoFib;
+  ventana: number;
+  invertir: boolean;
+  extras: boolean;
+  extensiones: boolean;
+}
+
+/* ==========================================================================
+ * Puntos pivote de Woodie
+ *
+ * Motor en `backend/pivots.py`, con pruebas ejecutables. Nombres copiados del
+ * `return` del endpoint, no inventados.
+ * ======================================================================== */
+
+export type MarcoPivote = '5m' | '15m' | '1h' | '4h' | '1d' | '1w';
+
+/**
+ * Variante del PP de Woodie.
+ *
+ * `apertura` es la de verdad —`(H+L+2·O_actual)/4`— y la única que incorpora
+ * el hueco de apertura. `cierre` es la que circula por internet,
+ * `(H+L+2·C_anterior)/4`, y se calcula sólo para poder comparar las dos.
+ */
+export type VarianteWoodie = 'apertura' | 'cierre';
+
+export interface NivelPivote {
+  clave: string;
+  precio: number;
+  papel: 'soporte' | 'resistencia';
+  distanciaPct: number | null;
+  /** De los últimos N periodos, en cuántos llegó el precio hasta aquí. */
+  toquesPct: number | null;
+  toquesMuestra: number;
+  /** El mismo nivel según el pivote clásico, para poder comparar. */
+  clasico: number | null;
+}
+
+/**
+ * Una de las seis condiciones de la secuencia, con su medida.
+ *
+ * Las tres primeras se leen en la barra actual; las tres últimas son ESTADOS
+ * de la secuencia —«se rompió un máximo» pasó y quedó registrado— y salen de
+ * la fase alcanzada, no de comparar el cierre de hoy.
+ */
+export interface CondicionPivote {
+  texto: string;
+  cumplida: boolean;
+  /** La cifra que respalda el ✓. Un check sin medida no se puede auditar. */
+  detalle: string;
+}
+
+export interface UltimaSenalPivote {
+  direccion: 'compra' | 'venta';
+  veredicto: 'LONG' | 'SHORT';
+  precio: number;
+  stop: number | null;
+  barrasAtras: number;
+}
+
+export interface Pivotes {
+  simbolo: string;
+  marco: MarcoPivote;
+  /** De qué periodo salen los niveles: diario, semanal o mensual. */
+  periodo: string;
+  variante: VarianteWoodie;
+  barras: number;
+  ultimaVelaCerrada: boolean;
+
+  base: {
+    alto: number;
+    bajo: number;
+    cierre: number;
+    aperturaActual: number;
+    huecoPct: number | null;
+    fecha: string;
+  };
+
+  niveles: NivelPivote[];
+  nivelCercano: string;
+
+  confluencia: {
+    ppWoodie: number;
+    ppClasico: number;
+    /** El PP según la fórmula del texto, con el cierre doble. */
+    ppWoodieCierre: number;
+    distanciaPct: number | null;
+    umbralPct: number;
+    hayConfluencia: boolean;
+    desvioVariantesPct: number | null;
+  };
+
+  vwap: {
+    valor: number | null;
+    /** Al inicio de qué periodo está anclado. No es rodante. */
+    anclaje: string;
+    precioSobre: boolean;
+    distanciaPct: number | null;
+    nota: string;
+  };
+
+  superTrend: { alcista: boolean; nivel: number | null; factor: number };
+
+  /**
+   * Acuerdo entre el lado del PP y el lado del VWAP. Por encima del 85 % las
+   * dos condiciones son la misma lectura contada dos veces.
+   */
+  colinealidad: { acuerdoPct: number | null; muestra: number };
+
+  precio: { actual: number; sobrePP: boolean; sobreVWAP: boolean; atr: number | null };
+
+  senal: {
+    /**
+     * LONG o SHORT, y SÓLO con las seis condiciones cumplidas en orden.
+     * `null` el resto del tiempo. No confundir con `direccion`, que es el
+     * sesgo: tener el precio sobre el PP no es una orden de compra.
+     */
+    veredicto: 'LONG' | 'SHORT' | null;
+    condiciones: CondicionPivote[];
+    condicionesCumplidas: number;
+    /** De qué lado se está auditando la lista: el de la secuencia viva. */
+    ladoAuditado: 'long' | 'short';
+    ultimaSenal: UltimaSenalPivote | null;
+    direccion: 'compra' | 'venta' | 'ninguna';
+    disparo: boolean;
+    operable: boolean;
+    motivoNoOperable: string | null;
+    entrada: number | null;
+    stop: number | null;
+    objetivo1: number | null;
+    objetivo2: number | null;
+    riesgoBeneficio: number | null;
+    marcasTotales: number;
+  };
+
+  /** Fase de la secuencia: 0 sin sesgo, 1 sesgo, 2 ruptura, 3 retroceso. */
+  fase: {
+    numero: number;
+    nombre: string;
+    direccion: string;
+    barrasEnFase: number | null;
+    caducidad: number;
+  };
+
+  avisos: string[];
+}
+
+export interface ControlesPivote {
+  marco: MarcoPivote;
+  variante: VarianteWoodie;
+}

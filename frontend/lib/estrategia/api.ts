@@ -21,15 +21,38 @@ import {
   Comparativa,
   DatosMercado,
   EstadisticasOperaciones,
+  ControlesFib,
+  ControlesPivote,
   EventoValor,
   FactorSenal,
+  Fibonacci,
   FilaAnalisis,
   FilaVolumeDelta,
   Ichimoku,
+  LadoGateNQE,
   LibroOrdenes,
   Liquidez,
+  MarcoNQE,
+  ModuloNQE,
+  ControlesNQE,
+  MarcaNQE,
+  MarcaUTBot,
+  MarcoFib,
+  ModoFib,
+  CondicionPivote,
+  MarcoPivote,
   NivelClave,
+  NivelFib,
+  NivelPivote,
+  Pivotes,
   Noticia,
+  NQE,
+  PresetNQE,
+  SenalNQE,
+  SerieNQE,
+  UltimaSenalPivote,
+  VarianteWoodie,
+  Tono,
   OrdenEjecutada,
   PosicionAbierta,
   ResumenPanel,
@@ -1486,6 +1509,498 @@ export async function leerBacktest(
       procedencia: 'real',
       actualizado: new Date().toISOString(),
     };
+  } catch (e) {
+    return { datos: null, procedencia: 'sin-fuente', nota: mensajeError(e) };
+  }
+}
+
+
+/* ==========================================================================
+ * /nqe/{ticker} — Newtonian Quant Engine
+ *
+ * Port del indicador de TradingView. El motor está en `backend/nqe.py`, con
+ * pruebas ejecutables en `test_nqe.py` — entre ellas la de ausencia de
+ * look-ahead, que es la que hace que el gate estadístico signifique algo.
+ *
+ * Cada campo de aquí abajo está copiado del `return` de `nqe.calcular()`, no
+ * inventado. En esta misma pantalla ya se perdieron cuatro paneles por
+ * escribir nombres plausibles (`total_value`, `evolution`, `kumo`…) en vez de
+ * los reales: no da error, da guiones, y los guiones se leen como «no hay
+ * dato». Antes de tocar este traductor, mirar el `return` del endpoint.
+ * ======================================================================== */
+
+/** Cadena directa del backend; el hueco es null, nunca una cadena vacía. */
+function txt(v: unknown): string | null {
+  const s = v === null || v === undefined ? '' : String(v);
+  return s.length ? s : null;
+}
+
+function moduloNQE(o: any): ModuloNQE {
+  return {
+    activo: Boolean(o?.activo),
+    senal: (txt(o?.senal) ?? 'bajista') as ModuloNQE['senal'],
+    alcista: Boolean(o?.alcista),
+    nivel: num(o?.nivel),
+    velasDesdeGiro: num(o?.velas_desde_giro),
+    // Sólo los manda UT Bot; en SuperTrend quedan `undefined` y la tarjeta
+    // no dibuja fila. Ponerlos a cero los haría pasar por medidas.
+    posicion: num(o?.posicion) ?? undefined,
+    compras: num(o?.compras) ?? undefined,
+    ventas: num(o?.ventas) ?? undefined,
+    keyValue: num(o?.key_value) ?? undefined,
+    atrPeriodo: num(o?.atr_periodo) ?? undefined,
+  };
+}
+
+function ladoGateNQE(o: any): LadoGateNQE {
+  return {
+    abierto: Boolean(o?.abierto),
+    muestra: num(o?.muestra) ?? 0,
+    acierto: num(o?.acierto),
+    wilson: num(o?.wilson) ?? 0,
+    esperanza: num(o?.esperanza) ?? 0,
+  };
+}
+
+/** Lista de números alineada con las velas. `null` es calentamiento. */
+function lineaNQE(v: unknown, largo: number): (number | null)[] {
+  const arr = Array.isArray(v) ? v : [];
+  // Se rellena hasta `largo` en vez de confiar en que venga completa: una
+  // línea más corta que las velas desplazaría todo el trazo hacia la
+  // izquierda, y el SuperTrend quedaría dibujado sobre la vela de al lado.
+  return Array.from({ length: largo }, (_, i) => num(arr[i]));
+}
+
+function serieNQE(o: any): SerieNQE {
+  const barras: Vela[] = (Array.isArray(o?.barras) ? o.barras : [])
+    .map((b: any) => ({
+      t: num(b?.t) ?? 0,
+      o: num(b?.o) ?? 0,
+      h: num(b?.h) ?? 0,
+      l: num(b?.l) ?? 0,
+      c: num(b?.c) ?? 0,
+      v: num(b?.v) ?? 0,
+    }))
+    .filter((b: Vela) => Number.isFinite(b.c) && b.c > 0);
+
+  const marcas: MarcaNQE[] = (Array.isArray(o?.marcas) ? o.marcas : [])
+    .map((m: any) => ({
+      i: num(m?.i) ?? -1,
+      direccion: m?.direccion === 'compra' ? 'compra' : 'venta',
+      validada: Boolean(m?.validada),
+      precio: num(m?.precio) ?? 0,
+      objetivo: num(m?.objetivo) ?? 0,
+      stop: num(m?.stop) ?? 0,
+      resultado: (m?.resultado ?? 'abierta') as MarcaNQE['resultado'],
+      fecha: String(m?.fecha ?? ''),
+    }))
+    // Una marca fuera de la ventana se dibujaría pegada a un borde, como si
+    // la señal hubiera ocurrido ahí. Se descarta.
+    .filter((m: MarcaNQE) => m.i >= 0 && m.i < barras.length);
+
+  const utMarcas: MarcaUTBot[] = (Array.isArray(o?.ut_marcas) ? o.ut_marcas : [])
+    .map((m: any) => ({
+      i: num(m?.i) ?? -1,
+      tipo: m?.tipo === 'buy' ? 'buy' : 'sell',
+      precio: num(m?.precio) ?? 0,
+      stop: num(m?.stop) ?? 0,
+      fecha: String(m?.fecha ?? ''),
+    }))
+    .filter((m: MarcaUTBot) => m.i >= 0 && m.i < barras.length);
+
+  return {
+    barras,
+    utMarcas,
+    utPos: Array.from({ length: barras.length }, (_, i) => num((o?.ut_pos ?? [])[i]) ?? 0),
+    utStop: lineaNQE(o?.ut_stop, barras.length),
+    superTrend: lineaNQE(o?.supertrend, barras.length),
+    vwap: lineaNQE(o?.vwap, barras.length),
+    score: lineaNQE(o?.score, barras.length),
+    umbral: lineaNQE(o?.umbral, barras.length),
+    marcas,
+    fib382: num(o?.fib_382),
+    fib500: num(o?.fib_500),
+    fib618: num(o?.fib_618),
+    poc: num(o?.poc),
+  };
+}
+
+export async function leerNQE(
+  ticker: string,
+  controles: Partial<ControlesNQE> = {},
+): Promise<Bloque<NQE>> {
+  try {
+    const { data } = await cliente.get(`/nqe/${encodeURIComponent(ticker)}`, {
+      params: {
+        marco: controles.marco ?? '1h',
+        preset: controles.preset ?? 'equilibrado',
+        // Los interruptores sólo viajan si el usuario los ha tocado: sin
+        // ellos manda el preset, que es como se comporta el Pine original.
+        ...(controles.usarUT === undefined ? {} : { usar_ut: controles.usarUT }),
+        ...(controles.usarST === undefined ? {} : { usar_st: controles.usarST }),
+        ...(controles.usarFib === undefined ? {} : { usar_fib: controles.usarFib }),
+        gate_estricto: controles.gateEstricto ?? true,
+        // Sensibilidad y periodo de ATR de «UT Bot Alerts». Sólo viajan si se
+        // han tocado; sin ellos manda el valor del script (1 y 10).
+        ...(controles.utKey === undefined ? {} : { ut_key: controles.utKey }),
+        ...(controles.utLen === undefined ? {} : { ut_len: controles.utLen }),
+      },
+      // El motor recorre 5.000 barras y resuelve la triple barrera operación a
+      // operación. Medido: ~200 ms de cálculo, pero la descarga de yfinance
+      // puede irse a varias decenas de segundos en frío.
+      timeout: 90000,
+    });
+
+    const senales: SenalNQE[] = (Array.isArray(data?.historial?.senales) ? data.historial.senales : [])
+      .map((s: any) => ({
+        indice: num(s?.indice) ?? 0,
+        fecha: String(s?.fecha ?? ''),
+        direccion: s?.direccion === 'compra' ? 'compra' : 'venta',
+        validada: Boolean(s?.validada),
+        precio: num(s?.precio) ?? 0,
+        objetivo: num(s?.objetivo) ?? 0,
+        stop: num(s?.stop) ?? 0,
+        wilson: num(s?.wilson),
+        muestra: num(s?.muestra) ?? 0,
+        resultado: (s?.resultado ?? 'abierta') as SenalNQE['resultado'],
+        cierreMotivo: txt(s?.cierre_motivo),
+        barrasAbierta: num(s?.barras_abierta),
+      }));
+
+    const datos: NQE = {
+      simbolo: String(data?.ticker ?? ticker),
+      marco: (txt(data?.marco) ?? '1h') as MarcoNQE,
+      preset: (txt(data?.preset) ?? 'equilibrado') as PresetNQE,
+      barras: num(data?.barras) ?? 0,
+      desde: String(data?.desde ?? ''),
+      hasta: String(data?.hasta ?? ''),
+      ultimaVelaCerrada: data?.ultima_vela_cerrada !== false,
+
+      senal: {
+        accion: String(data?.senal?.accion ?? 'neutral'),
+        texto: String(data?.senal?.texto ?? 'NEUTRAL'),
+        tono: (txt(data?.senal?.tono) ?? 'neutral') as Tono,
+        disparo: Boolean(data?.senal?.disparo),
+        sesgo: num(data?.senal?.sesgo) ?? 0,
+        precio: num(data?.senal?.precio),
+        objetivo: num(data?.senal?.objetivo),
+        stop: num(data?.senal?.stop),
+        riesgoATR: num(data?.senal?.riesgo_atr) ?? 1.5,
+      },
+
+      motor: {
+        score: num(data?.motor?.score),
+        umbral: num(data?.motor?.umbral),
+        absScore: num(data?.motor?.abs_score),
+        posicionZ: num(data?.motor?.posicion_z),
+        velocidad: num(data?.motor?.velocidad),
+        aceleracion: num(data?.motor?.aceleracion),
+        ofi: num(data?.motor?.ofi),
+        volumenRelativo: num(data?.motor?.volumen_relativo),
+        atr: num(data?.motor?.atr),
+        vwap: num(data?.motor?.vwap),
+        poc: num(data?.motor?.poc),
+      },
+
+      regimen: {
+        estado: data?.regimen?.estado === 'tendencia' ? 'tendencia' : 'rango',
+        er: num(data?.regimen?.er),
+        umbralER: num(data?.regimen?.umbral_er) ?? 0.35,
+      },
+
+      utBot: moduloNQE(data?.ut_bot),
+      superTrend: moduloNQE(data?.supertrend),
+
+      estructura: {
+        activo: Boolean(data?.estructura?.activo),
+        zona: String(data?.estructura?.zona ?? 'sin impulso'),
+        retroceso: num(data?.estructura?.retroceso),
+        impulso: (txt(data?.estructura?.impulso) as 'alcista' | 'bajista' | null) ?? null,
+        fib382: num(data?.estructura?.fib_382),
+        fib500: num(data?.estructura?.fib_500),
+        fib618: num(data?.estructura?.fib_618),
+      },
+
+      pronostico: {
+        disponible: Boolean(data?.pronostico?.disponible),
+        muestra: num(data?.pronostico?.muestra) ?? 0,
+        muestraMinima: num(data?.pronostico?.muestra_minima) ?? 40,
+        probSube: num(data?.pronostico?.prob_sube),
+        wilson: num(data?.pronostico?.wilson),
+        mediaATR: num(data?.pronostico?.media_atr),
+        desviacionATR: num(data?.pronostico?.desviacion_atr),
+        velas: num(data?.pronostico?.velas) ?? 3,
+        estado: String(data?.pronostico?.estado ?? ''),
+      },
+
+      gate: {
+        estricto: data?.gate?.estricto !== false,
+        umbralWilson: num(data?.gate?.umbral_wilson) ?? 0.65,
+        muestraMinima: num(data?.gate?.muestra_minima) ?? 30,
+        largo: ladoGateNQE(data?.gate?.largo),
+        corto: ladoGateNQE(data?.gate?.corto),
+      },
+
+      embudo: {
+        cruces: num(data?.embudo?.cruces) ?? 0,
+        conFlujoYLiquidez: num(data?.embudo?.con_flujo_y_liquidez) ?? 0,
+        trasFiltros: num(data?.embudo?.tras_filtros) ?? 0,
+        validadas: num(data?.embudo?.validadas) ?? 0,
+        bloqueadasPorGate: num(data?.embudo?.bloqueadas_por_gate) ?? 0,
+      },
+
+      historial: {
+        total: num(data?.historial?.total) ?? 0,
+        validadas: num(data?.historial?.validadas) ?? 0,
+        bloqueadas: num(data?.historial?.bloqueadas) ?? 0,
+        cerradas: num(data?.historial?.cerradas) ?? 0,
+        ganadas: num(data?.historial?.ganadas) ?? 0,
+        acierto: num(data?.historial?.acierto),
+        senales,
+      },
+
+      serie: serieNQE(data?.serie),
+      avisos: Array.isArray(data?.avisos) ? data.avisos.map(String) : [],
+      notaOFI: String(data?.nota_ofi ?? ''),
+    };
+
+    // El flujo que alimenta la aceleración es un PROXY declarado (CLV), no
+    // delta de agresores: la tarjeta hereda esa marca en la cabecera.
+    return { datos, procedencia: 'proxy', nota: datos.notaOFI, actualizado: new Date().toISOString() };
+  } catch (e) {
+    return { datos: null, procedencia: 'sin-fuente', nota: mensajeError(e) };
+  }
+}
+
+/* ==========================================================================
+ * /fibonacci/{ticker} — retrocesos sobre el impulso vigente
+ *
+ * Port del script del usuario con sus sesgos corregidos. El motor está en
+ * `backend/fibonacci.py` y tiene pruebas ejecutables, entre ellas una que
+ * compara el modo `lookback` contra una reimplementación literal del Pine
+ * nivel a nivel.
+ *
+ * Los `avisos` NO son decorativos: dicen si el tramo lo está definiendo el
+ * tamaño de la ventana en vez del mercado, si la dirección se decidió por una
+ * o dos velas, o si el impulso ya está roto.
+ * ======================================================================== */
+
+export async function leerFibonacci(
+  ticker: string,
+  controles: Partial<ControlesFib> = {},
+): Promise<Bloque<Fibonacci>> {
+  try {
+    const { data } = await cliente.get(`/fibonacci/${encodeURIComponent(ticker)}`, {
+      params: {
+        marco: controles.marco ?? '1d',
+        modo: controles.modo ?? 'pivotes',
+        ventana: controles.ventana ?? 100,
+        invertir: controles.invertir ?? false,
+        extras: controles.extras ?? false,
+        extensiones: controles.extensiones ?? true,
+      },
+      timeout: 90000,
+    });
+
+    const velas: Vela[] = (Array.isArray(data?.serie?.barras) ? data.serie.barras : [])
+      .map((b: any) => ({
+        t: num(b?.t) ?? 0,
+        o: num(b?.o) ?? 0,
+        h: num(b?.h) ?? 0,
+        l: num(b?.l) ?? 0,
+        c: num(b?.c) ?? 0,
+        v: num(b?.v) ?? 0,
+      }))
+      .filter((b: Vela) => Number.isFinite(b.c) && b.c > 0);
+
+    const niveles: NivelFib[] = (Array.isArray(data?.niveles) ? data.niveles : [])
+      .map((x: any) => ({
+        ratio: num(x?.ratio) ?? 0,
+        etiqueta: String(x?.etiqueta ?? ''),
+        precio: num(x?.precio) ?? 0,
+        tipo: x?.tipo === 'extension' ? 'extension' : 'retroceso',
+        papel: x?.papel === 'resistencia' ? 'resistencia' : 'soporte',
+      }))
+      .filter((x: NivelFib) => Number.isFinite(x.precio) && x.precio > 0);
+
+    if (!velas.length) return sinFuente('El backend no devolvió velas para este marco.');
+
+    const datos: Fibonacci = {
+      simbolo: String(data?.ticker ?? ticker),
+      marco: (String(data?.marco ?? '1d') as MarcoFib),
+      barras: num(data?.barras) ?? 0,
+      desde: String(data?.desde ?? ''),
+      hasta: String(data?.hasta ?? ''),
+      modo: (data?.modo === 'lookback' ? 'lookback' : 'pivotes') as ModoFib,
+      modoPedido: (data?.modo_pedido === 'lookback' ? 'lookback' : 'pivotes') as ModoFib,
+      ventana: num(data?.ventana) ?? 100,
+      pivote: num(data?.pivote) ?? 8,
+      ultimaVelaCerrada: data?.ultima_vela_cerrada !== false,
+      impulso: {
+        alto: num(data?.impulso?.alto) ?? 0,
+        bajo: num(data?.impulso?.bajo) ?? 0,
+        rango: num(data?.impulso?.rango) ?? 0,
+        direccion: data?.impulso?.direccion === 'bajista' ? 'bajista' : 'alcista',
+        invertido: Boolean(data?.impulso?.invertido),
+        iAltoSerie: num(data?.impulso?.i_alto_serie),
+        iBajoSerie: num(data?.impulso?.i_bajo_serie),
+        fechaAlto: String(data?.impulso?.fecha_alto ?? ''),
+        fechaBajo: String(data?.impulso?.fecha_bajo ?? ''),
+        separacionVelas: num(data?.impulso?.separacion_velas) ?? 0,
+      },
+      niveles,
+      actual: {
+        precio: num(data?.actual?.precio) ?? 0,
+        ratio: num(data?.actual?.ratio) ?? 0,
+        zona: String(data?.actual?.zona ?? ''),
+      },
+      velas,
+      avisos: Array.isArray(data?.avisos) ? data.avisos.map(String) : [],
+    };
+
+    return { datos, procedencia: 'real', actualizado: new Date().toISOString() };
+  } catch (e) {
+    return { datos: null, procedencia: 'sin-fuente', nota: mensajeError(e) };
+  }
+}
+
+
+/* ==========================================================================
+ * /pivots/{ticker} — puntos pivote de Woodie
+ *
+ * Motor en `backend/pivots.py`, con pruebas ejecutables. Tres cosas del
+ * contrato que no son evidentes:
+ *
+ * - Los niveles NO cambian con el marco: salen del periodo anterior. 5m y 4h
+ *   con pivotes diarios enseñan el mismo mapa, y así debe ser.
+ * - `toques_pct` es una proporción MEDIDA sobre los últimos N periodos, no una
+ *   valoración ni una estimación.
+ * - `colinealidad` mide cuánto se solapan PP y VWAP. Por encima del 85 % no
+ *   son dos confirmaciones, son la misma contada dos veces.
+ * ======================================================================== */
+
+export async function leerPivotes(
+  ticker: string,
+  controles: Partial<ControlesPivote> = {},
+): Promise<Bloque<Pivotes>> {
+  try {
+    const { data } = await cliente.get(`/pivots/${encodeURIComponent(ticker)}`, {
+      params: {
+        marco: controles.marco ?? '1h',
+        variante: controles.variante ?? 'apertura',
+      },
+      timeout: 90000,
+    });
+
+    const niveles: NivelPivote[] = (Array.isArray(data?.niveles) ? data.niveles : [])
+      .map((x: any) => ({
+        clave: String(x?.clave ?? ''),
+        precio: num(x?.precio) ?? 0,
+        papel: x?.papel === 'resistencia' ? 'resistencia' : 'soporte',
+        distanciaPct: num(x?.distancia_pct),
+        toquesPct: num(x?.toques_pct),
+        toquesMuestra: num(x?.toques_muestra) ?? 0,
+        clasico: num(x?.clasico),
+      }))
+      .filter((x: NivelPivote) => Number.isFinite(x.precio) && x.precio > 0);
+
+    if (!niveles.length) return sinFuente('El backend no devolvió niveles para este valor.');
+
+    const datos: Pivotes = {
+      simbolo: String(data?.ticker ?? ticker),
+      marco: String(data?.marco ?? '1h') as MarcoPivote,
+      periodo: String(data?.periodo ?? 'diario'),
+      variante: (data?.variante === 'cierre' ? 'cierre' : 'apertura') as VarianteWoodie,
+      barras: num(data?.barras) ?? 0,
+      ultimaVelaCerrada: data?.ultima_vela_cerrada !== false,
+      base: {
+        alto: num(data?.base?.alto) ?? 0,
+        bajo: num(data?.base?.bajo) ?? 0,
+        cierre: num(data?.base?.cierre) ?? 0,
+        aperturaActual: num(data?.base?.apertura_actual) ?? 0,
+        huecoPct: num(data?.base?.hueco_pct),
+        fecha: String(data?.base?.fecha ?? ''),
+      },
+      niveles,
+      nivelCercano: String(data?.nivel_cercano ?? ''),
+      confluencia: {
+        ppWoodie: num(data?.confluencia?.pp_woodie) ?? 0,
+        ppClasico: num(data?.confluencia?.pp_clasico) ?? 0,
+        ppWoodieCierre: num(data?.confluencia?.pp_woodie_cierre) ?? 0,
+        distanciaPct: num(data?.confluencia?.distancia_pct),
+        umbralPct: num(data?.confluencia?.umbral_pct) ?? 0.15,
+        hayConfluencia: Boolean(data?.confluencia?.hay_confluencia),
+        desvioVariantesPct: num(data?.confluencia?.desvio_variantes_pct),
+      },
+      vwap: {
+        valor: num(data?.vwap?.valor),
+        anclaje: String(data?.vwap?.anclaje ?? ''),
+        precioSobre: Boolean(data?.vwap?.precio_sobre),
+        distanciaPct: num(data?.vwap?.distancia_pct),
+        nota: String(data?.vwap?.nota ?? ''),
+      },
+      superTrend: {
+        alcista: Boolean(data?.supertrend?.alcista),
+        nivel: num(data?.supertrend?.nivel),
+        factor: num(data?.supertrend?.factor) ?? 3,
+      },
+      colinealidad: {
+        acuerdoPct: num(data?.colinealidad?.acuerdo_pct),
+        muestra: num(data?.colinealidad?.muestra) ?? 0,
+      },
+      precio: {
+        actual: num(data?.precio?.actual) ?? 0,
+        sobrePP: Boolean(data?.precio?.sobre_pp),
+        sobreVWAP: Boolean(data?.precio?.sobre_vwap),
+        atr: num(data?.precio?.atr),
+      },
+      senal: {
+        veredicto:
+          data?.senal?.veredicto === 'LONG' || data?.senal?.veredicto === 'SHORT'
+            ? data.senal.veredicto
+            : null,
+        condiciones: (Array.isArray(data?.senal?.condiciones) ? data.senal.condiciones : []).map(
+          (x: any): CondicionPivote => ({
+            texto: String(x?.texto ?? ''),
+            cumplida: Boolean(x?.cumplida),
+            detalle: String(x?.detalle ?? ''),
+          }),
+        ),
+        condicionesCumplidas: num(data?.senal?.condiciones_cumplidas) ?? 0,
+        ladoAuditado: data?.senal?.lado_auditado === 'short' ? 'short' : 'long',
+        ultimaSenal: data?.senal?.ultima_senal
+          ? ({
+              direccion: data.senal.ultima_senal.direccion === 'venta' ? 'venta' : 'compra',
+              veredicto: data.senal.ultima_senal.veredicto === 'SHORT' ? 'SHORT' : 'LONG',
+              precio: num(data.senal.ultima_senal.precio) ?? 0,
+              stop: num(data.senal.ultima_senal.stop),
+              barrasAtras: num(data.senal.ultima_senal.barras_atras) ?? 0,
+            } as UltimaSenalPivote)
+          : null,
+        direccion: (data?.senal?.direccion ?? 'ninguna') as Pivotes['senal']['direccion'],
+        disparo: Boolean(data?.senal?.disparo),
+        operable: Boolean(data?.senal?.operable),
+        motivoNoOperable: data?.senal?.motivo_no_operable
+          ? String(data.senal.motivo_no_operable)
+          : null,
+        entrada: num(data?.senal?.entrada),
+        stop: num(data?.senal?.stop),
+        objetivo1: num(data?.senal?.objetivo1),
+        objetivo2: num(data?.senal?.objetivo2),
+        riesgoBeneficio: num(data?.senal?.riesgo_beneficio),
+        marcasTotales: num(data?.senal?.marcas_totales) ?? 0,
+      },
+      fase: {
+        numero: num(data?.fase?.numero) ?? 0,
+        nombre: String(data?.fase?.nombre ?? ''),
+        direccion: String(data?.fase?.direccion ?? 'ninguna'),
+        barrasEnFase: num(data?.fase?.barras_en_fase),
+        caducidad: num(data?.fase?.caducidad) ?? 30,
+      },
+      avisos: Array.isArray(data?.avisos) ? data.avisos.map(String) : [],
+    };
+
+    return { datos, procedencia: 'real', actualizado: new Date().toISOString() };
   } catch (e) {
     return { datos: null, procedencia: 'sin-fuente', nota: mensajeError(e) };
   }

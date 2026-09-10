@@ -129,24 +129,15 @@ estática prerrenderiza en claro y el cliente montaba en oscuro.
 | Rejilla cayendo a una columna | `Rejilla.rupturaDe` | Umbrales puestos sobre el tamaño de ventana, medidos contra el ancho útil: la barra lateral se come 244 px |
 | Hidratación #418 | `OvertonSignalMatrix_v4` | Mutación de tema durante el render |
 | 404 en `/api/smc` | `useSMCLive` | Endpoint inexistente, se pedía en cada carga |
-| **`c` sin declarar en `generatePDF` — SIN CORREGIR** | `FinancialStatements.jsx:26` | Ver abajo |
+| `c` sin declarar en `generatePDF` | `FinancialStatements.jsx` | **YA CORREGIDO** (10 sep 2026): la paleta es ahora el 6.º parámetro |
 
-### `generatePDF` lanza ReferenceError — SIN CORREGIR
+### ~~`generatePDF` lanza ReferenceError~~ — YA CORREGIDO
 
-`frontend/components/FinancialStatements.jsx:26`
-
-La función se declara como `generatePDF(title, ticker, companyName, rows, years)`
-pero dentro usa `c.ink`, `c.surface`, `c.down`… ocho veces. **`c` no es
-parámetro ni existe en el ámbito.** El único `c` del archivo es el segundo
-argumento del helper `color(v, c)`, que es otra función.
-
-Se llama desde cuatro sitios (líneas 828 y 1153-1155), así que **pulsar
-«exportar PDF» revienta con `ReferenceError: c is not defined`**. Lo cazan a la
-vez `expo lint` (8 errores `no-undef`) y `scripts/verificar-ambitos.js` — es
-exactamente la misma familia que el `r_` de SMC.
-
-Arreglo probable: pasar la paleta como parámetro (`generatePDF(..., colors)`),
-porque el archivo ya tiene `useTheme()` en el componente que la invoca.
+Comprobado el 10 de septiembre de 2026: la firma es
+`generatePDF(title, ticker, companyName, rows, years, c)` y las cuatro
+llamadas pasan la paleta. `verificar-ambitos.js` da 0 identificadores sin
+declarar en 102 archivos. Esta entrada se deja para que nadie vuelva a
+buscarlo.
 
 ### Trampas de método aprendidas
 
@@ -406,6 +397,394 @@ adaptador de bróker. Sigue siendo el proyecto de meses de abajo.
 
 ---
 
+## NQE — port del indicador Pine (10 sep 2026)
+
+`backend/nqe.py` + `/nqe/{ticker}` + `backend/test_nqe.py` (35 pruebas) +
+`components/estrategia/robot/PanelNQE.tsx`, en la **columna central** del
+dashboard de Estrategia, justo debajo de `GraficoMercado`.
+
+**Es un GRÁFICO, no una tabla**, y ahí está el aprendizaje: se entregó primero
+como panel de filas y hubo que rehacerlo. Lo que se pedía era el mismo
+instrumento que `GraficoMercado` —velas, recorrido del precio y las señales
+encima—, y el Pine estaba sólo para que se viera la lógica.
+
+Dos paneles sobre el mismo eje: PRECIO (velas + trailing de UT Bot +
+SuperTrend + VWAP + niveles del impulso + POC + triángulos de compra/venta) y
+SCORE (la línea del motor con su banda de umbral). El segundo no es decorativo:
+sin él, un triángulo sale de la nada; con él se ve que el disparo es el cruce
+fuera de la banda.
+
+**Va en la columna ANCHA a propósito.** En la del robot son ~400 px, y ahí cada
+vela mide 2 px y el cuerpo desaparece. Antes estuvo al final de la columna del
+robot y el usuario no la encontró: medido en el navegador, quedaba a 1.402 px
+de scroll dentro de un contenedor de 3.641 con una ventana de 968.
+
+Reutiliza tal cual el lenguaje visual de `GraficoMercado`: `MARGEN`, `escala`,
+`trazo`, velas huecas al alza y macizas a la baja, escala de precio en `Text`
+absoluto fuera del SVG y cursor por `PanResponder`. Añade dos cosas propias:
+
+- `escalera()` para UT Bot y SuperTrend. Son NIVELES que saltan, no curvas:
+  unirlos con una diagonal dibuja una transición que nunca existió.
+- La escala de precio incluye las líneas del indicador y los niveles del
+  impulso, no sólo las velas. Con un SuperTrend a tres ATR, escalar sólo con
+  las velas lo saca del panel y desaparece sin avisar.
+
+**Los niveles de Fibonacci se dibujan SIEMPRE**, aunque el filtro esté
+apagado. El Pine separa `showFib` (dibujo) de `useFib` (filtro) y aquí se
+habían atado por error: apagar el filtro borraba la medida de estructura de la
+pantalla.
+
+Es una traducción literal del Pine v2.1 del usuario, barra a barra y con el
+mismo orden de ejecución: motor de posición/velocidad/masa/fuerza, umbral por
+percentil móvil de 500, UT Bot, SuperTrend, Fibonacci como medidor de
+estructura, triple barrera con gate de Wilson, pronóstico por analogía y POC.
+
+**Vive en el backend y no en `indicadores.ts` por tres razones**, y conviene no
+volver a discutirlo: la triple barrera es un proceso online que necesita
+recorrer la serie entera; el umbral es un percentil móvil de 500 barras; y hace
+falta OHLCV completo, no sólo los cierres que hoy llegan al frontend.
+
+### UT Bot: el módulo ES «UT Bot Alerts» (Pine v4)
+
+El usuario pasó después el script suelto de *UT Bot Alerts*. **La recursión del
+trailing stop y las señales ya eran idénticas** a las del NQE — no hubo que
+cambiar ni una línea de la lógica. Lo que no era evidente leyendo el Pine, y
+por eso queda escrito:
+
+```
+ema   = ema(src, 1)          -> es el propio src
+above = crossover(ema, stop)
+buy   = src > stop and above -> el `src > stop` es redundante
+```
+
+`crossover(a, b)` ya exige `a > b`, así que `buy` se reduce a un cruce limpio
+del precio con su trailing. Y los valores por defecto del script (Key Value 1,
+ATR 10) son ya los del NQE.
+
+**No se da por buena esa equivalencia: se comprueba.**
+`test_ut_bot_equivale_al_script_de_alertas` reimplementa el script LITERALMENTE
+y por separado —conservando incluso lo redundante— y compara marca a marca.
+Si compartiera código con el motor, no demostraría nada.
+
+Lo que sí faltaba era **enseñarlo**: antes UT Bot era sólo un filtro y una fila
+de texto. Ahora dibuja sus carteles «Buy»/«Sell» sobre el precio, con dos
+decisiones que conviene no deshacer:
+
+- **Cartel, no triángulo.** Los triángulos son la señal COMPUESTA del NQE
+  (score fuera de umbral + flujo + liquidez + los tres filtros); los carteles
+  son un módulo suelto. Van en listas separadas en el backend
+  (`serie.marcas` frente a `serie.ut_marcas`) y con forma distinta en pantalla,
+  porque la regla del producto es que ningún indicador aislado ordena una
+  operación. Fundirlos en una sola capa haría justo eso sin decirlo.
+- **Cinta al pie, no `barcolor`.** El script recolorea las velas según de qué
+  lado del trailing está el precio. Aquí NO: en este terminal el verde y el
+  rojo de una vela significan cierre contra apertura, y pisarlos rompería esa
+  lectura en todas las pantallas. La misma información va en una cinta bajo el
+  eje, que además deja ver cuánto dura cada tramo.
+
+`ut_pos` vale **0 hasta el primer cruce**, igual que el `pos` del script.
+Pintar «largo» desde la primera barra sería dibujar una entrada que nunca
+ocurrió, y con una cinta de estado eso se lee como una operación real. Hay
+prueba (`test_ut_pos_no_inventa_posicion_inicial`).
+
+Sensibilidad y periodo de ATR están a la vista, no en un menú: son lo único
+que cambia el resultado, y un «Buy» sin saber con qué valores salió no se
+puede comparar con otro. Medido sobre AAPL 1H: key 1 → 292 cruces, key 2 →
+131, key 3 → 75.
+
+Y cambia con el marco, que era lo que se pedía. Medido sobre PBF:
+1H → 299 buy/sell en 5.082 barras · 4H → 93 en 1.707 · 1D → 77 en 1.254.
+
+### El hallazgo que hay que saber antes de tocar nada
+
+**Con el preset «Equilibrado» —los tres filtros puestos, que es el
+recomendado— el indicador da CERO señales.** Medido, no supuesto:
+
+| Serie | Cruces | + flujo y liquidez | Tras filtros | Sin Fibonacci |
+|---|---|---|---|---|
+| AAPL 1H, 5.082 barras | 255 | 199 | **0** | 137 |
+| TSLA 1H, 5.082 barras | 229 | 186 | **0** | 140 |
+| NVDA 1H, 5.082 barras | 247 | 218 | **0** | 168 |
+| SPY 1H, 5.082 barras | 254 | 188 | **1** | 128 |
+
+Aislando cada filtro sobre AAPL: sólo UT → 154, sólo SuperTrend → 150, sólo
+Fibonacci → 8, los tres → 0.
+
+**No es un bug del port.** Es estructural: `crossUp` exige un estallido de
+momento al alza y `fibOKL` exige estar a mitad de un retroceso del 23,6-78,6 %.
+Las dos cosas casi nunca ocurren en la misma barra. Hay una prueba que lo fija
+(`test_fibonacci_estrangula_el_embudo`) para que, si alguien «arregla» el cero
+cambiando el motor, salte y haya que decidirlo a propósito.
+
+**Y el gate tampoco abre nunca.** Con objetivo y stop simétricos a 1,5× ATR el
+acierto medido ronda el 50 % (AAPL: 79 operaciones largas, 50,6 %), la cota de
+Wilson queda en 0,42 y el umbral pide 0,65. Para abrirlo haría falta un acierto
+real por encima del 72 % con barrera simétrica. La esperanza sale ligeramente
+negativa (−0,03), que es lo esperable después de costes.
+
+Por eso la tarjeta enseña **las señales bloqueadas además de las validadas**,
+apagadas y rotuladas. Es fiel al original —el Pine las dibuja como círculos
+grises— y es la única forma de distinguir «el indicador no ve nada» de «ve algo
+pero no está demostrado». Los interruptores de filtrado están en la propia
+tarjeta, al lado del embudo que explica el cero: son los mismos mandos del
+grupo «Módulos de filtrado» del Pine, no un invento de esta pantalla.
+
+### El estado vacío del gráfico es el estado NORMAL
+
+Consecuencia directa del cero de arriba, y hay que tenerla presente al tocar la
+tarjeta: con la configuración por defecto el gráfico sale **sin un solo
+triángulo**, y eso se lee como una tarjeta rota. Peor aún con la ventana de
+dibujo: aunque haya 137 señales en 5.082 barras, en las 180 dibujadas caen
+unas cinco.
+
+Por eso la tarjeta lleva un aviso explícito dentro del gráfico que **nombra la
+causa concreta y el mando que la deshace**, y distingue los dos casos:
+
+- «sin señales en todo el histórico» → los filtros las descartaron todas, y
+  dice que Fibonacci es el que más recorta.
+- «N señales pero ninguna en las dibujadas» → sugiere ampliar a 4H o 1D.
+
+No quitar ese aviso sin sustituirlo por algo mejor: es lo único que separa
+«el indicador no ve nada» de «esto está roto».
+
+Y los triángulos bloqueados por el gate van **rellenos al 16 %**, no
+transparentes. Con la configuración por defecto TODAS las señales salen
+bloqueadas, así que la variante hueca es la que se ve el 99 % del tiempo:
+dibujarla con contorno tenue la hacía invisible.
+
+### Cómo comprobar que una placa se ve de verdad
+
+«No veo la tarjeta» no siempre es un build fallido. Antes de suponer nada:
+
+1. Confirmar que el bundle servido la lleva. **Ojo con los acentos**: el
+   minificador convierte la eñe, las vocales acentuadas y el punto medio en
+   secuencias de escape hexadecimales, así que buscar «Señales» sobre el bundle
+   devuelve cero aunque el texto esté ahí. Buscar cadenas SIN acentos.
+2. Cargar la pantalla en un navegador de verdad. Playwright con
+   `channel: 'msedge'` usa el Edge ya instalado y **no descarga 150 MB** de
+   Chromium. La ruta pide sesión: existe `POST /api/auth/register` para crear
+   una cuenta desechable, y se borra después con
+   `docker exec analisis_mongo mongosh analisis_db --eval 'db.users.deleteMany({email:"..."})'`.
+   La base se llama **`analisis_db`**, no `test_database`.
+3. **El dashboard NO scrollea con `window`.** El scroll vive en el `ScrollView`
+   interno, así que `document.body.scrollHeight` devuelve la altura de la
+   ventana y `window.scrollTo` no hace nada. Hay que subir por los padres del
+   elemento hasta dar con el que tiene `scrollHeight > clientHeight` y moverle
+   el `scrollTop`. Esto costó una captura equivocada.
+
+### Detalles del port que costaron encontrar
+
+- `ta.percentile_linear_interpolation` ⇒ `rolling().quantile(interpolation='linear')`
+  con `min_periods` completo. Devolver un umbral de respaldo antes de las 500
+  barras cambiaría la tasa de señales sin avisar.
+- `ta.stdev` es **poblacional** (`ddof=0`), no muestral.
+- `ta.atr` es RMA de Wilder sembrada con SMA, no una EMA cualquiera.
+- El volumen relativo se normaliza **por hora del día** y el estado se LEE
+  antes de actualizarse, igual que en Pine. Con una media plana, la forma de U
+  del volumen intradía marca como anómala toda la apertura, todos los días.
+- Los pivotes confirman `pivLen` barras después y **ahí** se escriben. Ese
+  retraso es lo que garantiza que no repinta.
+- El orden dentro del bucle importa: resolver pendientes → calcular gate →
+  registrar señal. Al revés, el gate que valida una señal contendría
+  operaciones cerradas después de ella.
+
+### Rendimiento
+
+~200 ms de cálculo sobre 5.082 barras. Lo lento es yfinance. Caché de 300 s por
+combinación de ticker y mandos.
+
+### Lo que NO se hizo
+
+No se toca la ejecución ni el tamaño de la posición: la tarjeta es de lectura,
+como el resto de Estrategia. Y no se ajustó ningún umbral del Pine para que
+«salieran señales»: eso sería maquetar el envoltorio de un número elegido a
+posteriori.
+
+
+---
+
+## Fibonacci — port del «Fib Retracement» (10 sep 2026)
+
+`backend/fibonacci.py` + `/fibonacci/{ticker}` + `backend/test_fibonacci.py`
+(18 pruebas) + `components/estrategia/mercado/PanelFibonacci.tsx`, en la
+columna del robot **debajo de `ClustersVolumen`**, que es donde lo pidió el
+usuario. Marcos: 5m, 15m, 1H, 1D y 1S.
+
+Es un GRÁFICO, con el mismo lenguaje visual que `GraficoMercado` y `PanelNQE`.
+
+### Los sesgos del script original, y qué se hizo con cada uno
+
+El más importante, y **no es evidente**:
+
+> **En modo lookback el retroceso está confinado a [0, 1] por construcción.**
+> Las anclas son el máximo y el mínimo de la ventana, y el cierre está DENTRO
+> de esa ventana. Así que ese método **no puede avisar nunca de que el impulso
+> se ha roto**: cuando el precio rompe, reancla el tramo en silencio y sigue
+> dibujando como si nada.
+
+Lo cazó una prueba que escribí esperando lo contrario, y está fijado en
+`test_en_lookback_el_retroceso_no_puede_salirse_del_tramo`.
+
+Los demás:
+
+| Sesgo | Qué se hizo |
+|---|---|
+| Máximo y mínimo se toman POR SEPARADO: pueden no pertenecer al mismo impulso | Modo `pivotes` (swings confirmados, no repintan). Es el **por defecto**; `lookback` sigue disponible para comparar |
+| El tramo puede ser un artefacto del tamaño de la ventana | Se detecta (extremo pegado al borde) y se avisa en pantalla |
+| La dirección puede decidirse por una o dos velas | Se detecta (separación pequeña) y se avisa |
+| Conversión días→velas mal calibrada: 28 días/mes y días naturales tratados como sesiones | Se trabaja SÓLO en velas, que es el modo por defecto del propio script |
+| **Bug real**: `Flow = ... : FIBS == 2 and High != -1 ? Low : na` comprueba `High` donde debería comprobar `Low` | No aplica (no se porta el modo de precio manual), pero queda anotado |
+
+**Aviso de nomenclatura**: los ratios > 1 de este script NO son objetivos al
+alza. Continúan el tramo más allá de su extremo final — en un impulso alcista
+caen por debajo del mínimo. Por eso el interruptor se llama «> 100 %» y no
+«extensiones»: rotularlos así los haría leer como objetivos de beneficio,
+cuando marcan justo lo contrario.
+
+### Decisiones de dibujo que conviene no deshacer
+
+- **Las velas se ajustan al ancho, no al revés.** La columna del robot son
+  ~400 px; con 180 velas cada una mide 2 px. `ANCHO_MIN_VELA = 4` fija cuántas
+  caben y se recorta la cola. El gráfico se acorta antes que volverse ilegible.
+- **La escala la fijan las velas y los RETROCESOS, nunca los niveles > 100 %.**
+  Con un impulso roto, la 2.618 queda a un 25 % de distancia y arrastraba la
+  escala entera: las velas se aplastaban en el tercio inferior. Los niveles que
+  no caben se cuentan y se dicen en el pie.
+- **El tramo se dibuja** como diagonal con sus dos puntos. Sin ella, siete
+  horizontales no dicen de dónde salen, que es lo único que hay que poder
+  auditar en un Fibonacci.
+- **El pie va en orden CRONOLÓGICO**, no por precio. En un tramo bajista el
+  máximo es el más antiguo, y escribirlo «bajo → alto» hacía leer «26 ago a
+  30 jul».
+- **El pivote se calibra por marco**: ±4 en semanal, ±8 en el resto. Ocho
+  semanas de confirmación por lado dejaban el último swing en hace medio año
+  (ratio 2,1 sobre AAPL); con ±4 sale un tramo vigente.
+
+### Comprobado por marco (PBF, 10 sep 2026)
+
+| Marco | Tramo | Retroceso |
+|---|---|---|
+| 5m | 78,97 → 75,90 | 67,9 % |
+| 15m | 75,64 → 78,97 | 25,4 % |
+| 1H | 77,94 → 72,24 | 103,3 % |
+| 1D | 74,46 → 63,95 | 129,5 % |
+| 1S | 51,64 → 36,26 | 271,8 % |
+
+
+---
+
+## Pivotes de Woodie — con los sesgos del texto corregidos (10 sep 2026)
+
+`backend/pivots.py` + `/pivots/{ticker}` + `backend/test_pivots.py` (35 pruebas)
++ `components/estrategia/mercado/PanelPivotes.tsx`, en la columna del robot
+**debajo de `PanelFibonacci`**. Marcos: 5m, 15m, 1H, 4H, 1D y 1S.
+
+Es una ESCALERA, no un gráfico de velas, y es deliberado: lo que se viene a
+mirar aquí es a qué altura está el precio dentro del mapa y cuánto queda al
+siguiente nivel. En 400 px, siete horizontales sobre velas de 2 px no contestan
+eso. Es el mismo diagrama que el usuario dibujó en ASCII en su texto.
+
+### Los tres errores del texto que entregó, y qué se hizo
+
+**1. La fórmula de Woodie del texto no es la de Woodie.**
+
+El texto: `PP = (H + L + 2C) / 4`, «da más peso al cierre anterior».
+La real, y la de TradingView: `PP = (H_ant + L_ant + 2 × APERTURA_actual) / 4`.
+
+El doble peso va a la **apertura del periodo en curso**, no al cierre anterior.
+Ahí está su reactividad, y por eso es el único pivote clásico que incorpora el
+hueco de apertura. Eso invierte otra afirmación del texto: su tabla puntúa a
+Woodie igual que a Traditional en «mercados con gaps», cuando con la variante
+del cierre el hueco se ignora por completo.
+
+Se calculan **las dos**, `apertura` (por defecto) y `cierre`, con un conmutador
+en la tarjeta. `test_las_dos_variantes_difieren_cuando_hay_hueco` demuestra que
+coinciden EXACTAMENTE sin hueco y divergen con él: ésa es la diferencia real,
+no el peso del cierre.
+
+**2. «PP + VWAP + Supertrend» no son tres confirmaciones independientes.**
+
+Los tres son medias de precio reciente. Exigir los tres no triplica la
+evidencia, la cuenta tres veces. Es el mismo hallazgo que ya está anotado para
+SuperTrend contra UT Bot a factor bajo (94 % de acuerdo, «ahí deja de confirmar
+nada»).
+
+Se MIDE: `colinealidad` da el porcentaje de barras en que el lado del PP y el
+del VWAP coinciden, y por encima del 85 % la tarjeta lo dice. Medido sobre AAPL
+sale 44-52 % según marco — o sea que en este caso **sí** aportan cosas
+distintas. La medida vale en las dos direcciones.
+
+**3. La secuencia del texto es temporal, no simultánea.**
+
+«Precio > PP → > VWAP → SuperTrend verde → ruptura → retroceso → rechazo» no es
+un `and`: ruptura y retroceso son estados opuestos. Evaluarlos a la vez no
+dispara casi nunca — el mismo fallo que dejó el embudo del NQE en cero.
+
+Implementado como **máquina de estados** de cuatro fases con caducidad, y la
+tarjeta enseña en cuál está. `test_la_secuencia_no_dispara_con_las_condiciones_simultaneas`
+mide que la coincidencia simultánea es residual (≤ 2 % de las rupturas).
+
+### Mejoras añadidas
+
+- **Tasa de toque medida por nivel**, en vez de repartir estrellas. De los
+  últimos 60 periodos, en cuántos llegó el precio. Sobre AAPL 1H: PP 73 %,
+  R1 47 %, R2 15 %, R3 7 %, S1 37 %, S2 12 %, S3 5 %. Los niveles del periodo
+  en curso NO cuentan (su máximo aún puede crecer), y cada uno se calcula con
+  el periodo ANTERIOR — si no, el PP caería siempre dentro del rango y saldría
+  100 %: look-ahead disfrazado de estadística. Hay prueba.
+- **El VWAP se ancla al inicio del periodo del pivote**, no es rodante. Con
+  pivotes diarios es el VWAP de sesión de toda la vida. El rodante de 50 barras
+  de `nqe.py` es otra cosa y no se puede comparar con niveles del día.
+- **El objetivo es el siguiente nivel EN LA DIRECCIÓN del viaje**, no R1 a
+  ciegas. El texto decía «R1 como primer objetivo», y eso sólo vale si el
+  precio aún no lo ha rebasado; si ya está por encima, «objetivo R1» apunta
+  hacia atrás. Lo cazó una prueba con una compra cuyo objetivo salía por debajo
+  de la entrada.
+- **Un objetivo más cerca que el stop se marca NO OPERABLE** y se dice el R/B.
+
+### El veredicto LONG / SHORT y su auditoría
+
+La tarjeta da un veredicto explícito, y **sólo con las SEIS condiciones
+cumplidas en orden**. El resto del tiempo enseña «SIN SEÑAL · N de 6» con la
+lista completa y lo que falta en cada punto.
+
+Distinción que hay que mantener: **el sesgo NO es el veredicto**. Que el precio
+esté por encima del PP es sesgo de compra y así se rotula; la orden sólo
+aparece cuando la secuencia se completa. Fundirlos convertiría «precio sobre el
+PP» en una orden de compra, que es exactamente contra lo que avisaba el texto
+original del usuario. Hay prueba (`test_el_sesgo_no_es_el_veredicto`).
+
+Cada condición viaja con **su medida** («78,05 vs 77,56»), no sólo con el
+check: un ✓ sin cifra detrás no se puede auditar. Y las tres últimas salen de
+la FASE alcanzada, no de comparar el cierre de hoy — «se rompió un máximo» es
+algo que pasó y quedó registrado.
+
+También viaja `ultima_senal`: la última secuencia que sí se completó, con su
+precio, su stop y cuántas velas hace. Sin eso, una tarjeta que casi nunca
+dispara parece rota.
+
+El stop de cada señal va al **extremo del retroceso** ±0,5 ATR, no a una
+distancia fija: es el precio que invalida el rechazo que dio la entrada.
+
+### Cosas que no hay que «arreglar»
+
+- **Los niveles NO cambian entre 5m, 15m, 1H y 4H.** Salen del periodo
+  anterior, no de la vela que se mira: con pivotes diarios, el mapa es el mismo
+  y así debe ser. Lo que cambia con el marco es la señal. Hay prueba que lo
+  fija (`test_los_niveles_no_dependen_del_marco`).
+- El periodo del pivote sube con el marco: intradía → diario, 1D → semanal,
+  1S → mensual.
+
+### Corregido de paso
+
+`/fibonacci` agrupaba el semanal con `W-MON`, que en pandas va de **martes a
+lunes** y mezcla dos semanas de calendario en cada vela. Ahora usa `W` (semana
+ISO, lunes a domingo), que es además lo que hace `reagrupar()` en el frontend.
+Fallo mío de esta misma sesión.
+
+
+---
+
 ## PENDIENTE MAYOR: motor de trading algorítmico («Estrategia»)
 
 El usuario pidió una opción nueva en el menú lateral llamada **Estrategia** y
@@ -431,7 +810,7 @@ backtest sin look-ahead, paper broker, scanner, ejecución y adaptador de broker
 | Order Book nivel II | **NO EXISTE.** |
 | Order Flow / delta de agresores | **NO EXISTE.** |
 | Spread bid/ask | **NO EXISTE.** |
-| Backtest | **NO EXISTE.** |
+| Backtest | **Existe.** `backend/backtest.py`, `/backtest/{ticker}`, sin look-ahead y con pruebas. |
 | Broker / ejecución / paper trading | **NO EXISTE.** |
 
 ### BLOQUEO CRÍTICO — decirlo antes de que invierta tiempo

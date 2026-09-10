@@ -11177,6 +11177,414 @@ async def run_backtest(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==============================================================================
+# NQE — Newtonian Quant Engine
+# ==============================================================================
+
+# Marcos admitidos y qué hay que pedirle a Yahoo para cada uno. El 4H no
+# existe en yfinance: se compone agregando horarias, igual que en /mtf.
+NQE_MARCOS = {
+    "1h": ("1h", "730d", None),
+    "4h": ("1h", "730d", "4h"),
+    "1d": ("1d", "5y", None),
+}
+
+# Duración de la barra en minutos, para saber si la última está cerrada.
+NQE_MINUTOS = {"1h": 60, "4h": 240, "1d": 1440}
+
+
+@api_router.get("/nqe/{ticker}")
+async def get_nqe(
+    ticker: str,
+    marco: str = "1h",
+    preset: str = "equilibrado",
+    usar_ut: Optional[bool] = None,
+    usar_st: Optional[bool] = None,
+    usar_fib: Optional[bool] = None,
+    gate_estricto: bool = True,
+    horizonte: int = 12,
+    r_mult: float = 1.5,
+    coste_pct: float = 0.05,
+    ut_key: float = 1.0,
+    ut_len: int = 10,
+):
+    """
+    Port del indicador NQE de TradingView sobre barras reales.
+
+    El motor está en `backend/nqe.py` y tiene sus propias pruebas ejecutables
+    (`test_nqe.py`), entre ellas la de ausencia de look-ahead: truncar la serie
+    no puede cambiar las señales del tramo común. Sin esa prueba, el gate
+    estadístico no valdría nada — un acierto calculado con el futuro no valida,
+    sólo da confianza.
+
+    **Leer los `avisos`.** No son decorativos: ahí se dice si la muestra del
+    gate es demasiado corta, si el pronóstico no tiene analogías suficientes y,
+    sobre todo, si el embudo se ha quedado en cero. Con el preset «Equilibrado»
+    —los tres filtros puestos— eso último es lo NORMAL, no una avería: medido
+    sobre 5.082 barras horarias de AAPL, TSLA y NVDA, el filtro de Fibonacci
+    deja el embudo en 0 señales. Es una propiedad del indicador original, no
+    del port, y por eso los mandos viajan como parámetros: apagando Fibonacci
+    la misma serie da ~137 señales crudas.
+
+    `usar_ut`, `usar_st` y `usar_fib` sin valor toman el del preset; con valor
+    lo pisan, que es lo que permite ver dónde muere cada señal.
+
+    `ut_key` y `ut_len` son los dos mandos de «UT Bot Alerts» —sensibilidad y
+    periodo del ATR— con sus valores del script (1 y 10). El módulo UT Bot de
+    este motor ES ese script: la equivalencia está comprobada barra a barra en
+    `test_ut_bot_equivale_al_script_de_alertas`, contra una reimplementación
+    literal e independiente. Sus cruces viajan aparte en `serie.ut_marcas`,
+    separados de la señal compuesta del NQE, porque ningún módulo aislado
+    puede ordenar una operación.
+    """
+    try:
+        from nqe import Parametros as ParametrosNQE, calcular as calcular_nqe
+
+        ticker = ticker.upper().strip()
+        marco = (marco or "1h").lower().strip()
+        if marco not in NQE_MARCOS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Marco no admitido: {marco}. Usa uno de {list(NQE_MARCOS)}.",
+            )
+
+        clave = (
+            f"nqe:{ticker}:{marco}:{preset}:{usar_ut}:{usar_st}:{usar_fib}:"
+            f"{gate_estricto}:{horizonte}:{r_mult}:{coste_pct}:{ut_key}:{ut_len}"
+        )
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        intervalo, periodo, agregar = NQE_MARCOS[marco]
+        df = _load_history(ticker, period=periodo, interval=intervalo)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No hay histórico para {ticker}")
+
+        if agregar:
+            df = df.resample(agregar).agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna()
+
+        p = ParametrosNQE(
+            preset=preset,
+            horizonte=horizonte,
+            r_mult=r_mult,
+            coste_pct=coste_pct,
+            gate_estricto=gate_estricto,
+            ut_key=ut_key,
+            ut_len=ut_len,
+        ).resolver()
+        # Los interruptores explícitos se aplican DESPUÉS de resolver el
+        # preset: si no, «agresivo» los volvería a apagar y el mando de la
+        # interfaz no haría nada.
+        if usar_ut is not None:
+            p.usar_ut = bool(usar_ut)
+        if usar_st is not None:
+            p.usar_st = bool(usar_st)
+        if usar_fib is not None:
+            p.usar_fib = bool(usar_fib)
+
+        resultado = calcular_nqe(df, ticker, p)
+
+        # ¿Está cerrada la última vela? Importa: la señal de una vela abierta
+        # todavía puede desaparecer, y dibujarla sin decirlo es repintado.
+        cerrada = True
+        try:
+            ultima = df.index[-1]
+            ahora = pd.Timestamp.now(tz=ultima.tz) if ultima.tz else pd.Timestamp.now()
+            cerrada = bool(
+                (ahora - ultima) >= pd.Timedelta(minutes=NQE_MINUTOS[marco])
+            )
+        except Exception:
+            cerrada = True
+        resultado["ultima_vela_cerrada"] = cerrada
+        if not cerrada:
+            resultado["avisos"].insert(
+                0,
+                "La última vela SIGUE ABIERTA: su señal puede cambiar hasta el cierre.",
+            )
+
+        resultado["marco"] = marco
+        resultado["intervalo_fuente"] = intervalo + (f" agregado a {agregar}" if agregar else "")
+        cache_put(clave, resultado, 300)
+        return resultado
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Histórico insuficiente: condición esperable, no un error 500.
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logging.error(f"Error en /nqe/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==============================================================================
+# Retrocesos de Fibonacci
+# ==============================================================================
+
+# Marco -> (intervalo que se pide a Yahoo, periodo, reagrupación posterior).
+# El semanal se compone desde el diario porque el proveedor sirve `1wk` con
+# huecos; reagrupar por calendario a partir del diario es exacto.
+FIB_MARCOS = {
+    "5m": ("5m", "60d", None),
+    "15m": ("15m", "60d", None),
+    "1h": ("1h", "730d", None),
+    # 4H no existe en yfinance: se compone agregando horarias, igual que en
+    # /mtf y en /nqe.
+    "4h": ("1h", "730d", "4h"),
+    "1d": ("1d", "5y", None),
+    # «W» = semana ISO (lunes a domingo). NO «W-MON», que agrupa de martes a
+    # lunes y mezcla dos semanas de calendario en cada vela.
+    "1w": ("1d", "10y", "W"),
+}
+
+
+@api_router.get("/fibonacci/{ticker}")
+async def get_fibonacci(
+    ticker: str,
+    marco: str = "1d",
+    modo: str = "pivotes",
+    ventana: int = 100,
+    piv: int = 0,
+    invertir: bool = False,
+    extras: bool = False,
+    extensiones: bool = True,
+    barras: int = 180,
+):
+    """
+    Retrocesos de Fibonacci sobre el impulso vigente.
+
+    Port del script «Fib Retracement» del usuario, con los sesgos del original
+    corregidos y declarados. El motor está en `backend/fibonacci.py` y tiene
+    pruebas ejecutables (`test_fibonacci.py`), entre ellas una que compara el
+    modo `lookback` contra una reimplementación literal del Pine, nivel a
+    nivel.
+
+    Dos modos de anclaje:
+
+    * `lookback` — el del script: máximo y mínimo de las últimas `ventana`
+      velas, cada uno por su lado. Se conserva para poder comparar.
+    * `pivotes` — el recomendado, y el que corrige el sesgo principal: usa
+      swings CONFIRMADOS, que aparecen con `piv` velas de retraso pero después
+      ya no se mueven.
+
+    **Leer los `avisos`.** Ahí se dice si el tramo lo está definiendo el tamaño
+    de la ventana en vez del mercado, si la dirección de la escala se decidió
+    por una o dos velas, o si el impulso está roto. Y un detalle que no es
+    evidente: en modo `lookback` el retroceso está confinado a [0, 1] por
+    construcción —las anclas son los extremos de la ventana y el cierre está
+    dentro—, así que ese método **nunca puede avisar de que el impulso se
+    rompió**: reancla en silencio. En modo `pivotes` sí.
+    """
+    try:
+        import fibonacci as fibmod
+
+        ticker = ticker.upper().strip()
+        marco = (marco or "1d").lower().strip()
+        if marco not in FIB_MARCOS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Marco no admitido: {marco}. Usa uno de {list(FIB_MARCOS)}.",
+            )
+
+        clave = (
+            f"fib:{ticker}:{marco}:{modo}:{ventana}:{piv}:{invertir}:"
+            f"{extras}:{extensiones}:{barras}"
+        )
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        # Un pivote de ±8 en semanal son OCHO SEMANAS de confirmación por lado:
+        # el último swing confirmado sale de hace medio año y el gráfico
+        # enseña un tramo que ya no describe nada. Se calibra por marco, y el
+        # parámetro sigue estando para pisarlo.
+        if piv <= 0:
+            piv = 4 if marco == "1w" else 8
+
+        intervalo, periodo, agregar = FIB_MARCOS[marco]
+        df = _load_history(ticker, period=periodo, interval=intervalo)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No hay histórico para {ticker}")
+
+        if agregar:
+            df = df.resample(agregar).agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna()
+
+        resultado = fibmod.calcular(
+            df, ticker,
+            marco=marco,
+            modo=modo,
+            ventana=ventana,
+            piv=piv,
+            invertir=invertir,
+            extras=extras,
+            extensiones=extensiones,
+            barras_serie=barras,
+        )
+
+        # ¿Está cerrada la última vela? Con el tramo anclado en ella, la
+        # respuesta cambia hasta el cierre y conviene decirlo.
+        cerrada = True
+        try:
+            ultima = df.index[-1]
+            minutos = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080}[marco]
+            ahora = pd.Timestamp.now(tz=ultima.tz) if ultima.tz else pd.Timestamp.now()
+            cerrada = bool((ahora - ultima) >= pd.Timedelta(minutes=minutos))
+        except Exception:
+            cerrada = True
+        resultado["ultima_vela_cerrada"] = cerrada
+        if not cerrada:
+            resultado["avisos"].insert(
+                0, "La última vela SIGUE ABIERTA: el tramo puede cambiar hasta el cierre."
+            )
+
+        resultado["intervalo_fuente"] = intervalo + (f" agregado a {agregar}" if agregar else "")
+        cache_put(clave, resultado, 300)
+        return resultado
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logging.error(f"Error en /fibonacci/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==============================================================================
+# Puntos pivote de Woodie
+# ==============================================================================
+
+# Marco -> (intervalo que se pide, periodo, reagrupación posterior).
+PIVOT_MARCOS = {
+    "5m": ("5m", "60d", None),
+    "15m": ("15m", "60d", None),
+    "1h": ("1h", "730d", None),
+    "4h": ("1h", "730d", "4h"),
+    "1d": ("1d", "5y", None),
+    "1w": ("1d", "10y", "W"),
+}
+
+
+@api_router.get("/pivots/{ticker}")
+async def get_pivots(
+    ticker: str,
+    marco: str = "1h",
+    variante: str = "apertura",
+    periodo: Optional[str] = None,
+    muestra: int = 60,
+    barras: int = 180,
+):
+    """
+    Puntos pivote de Woodie, VWAP anclado y señal de confluencia.
+
+    El motor está en `backend/pivots.py`, con pruebas ejecutables
+    (`test_pivots.py`). Tres cosas que conviene saber antes de leer la
+    respuesta, porque contradicen lo que suele contarse de estos niveles:
+
+    1. **La fórmula de Woodie usa la APERTURA del periodo en curso**, no el
+       cierre anterior por partida doble: `PP = (H_ant + L_ant + 2·O_act) / 4`.
+       Ahí está su reactividad, y por eso es el único pivote clásico que
+       incorpora el hueco de apertura. `variante=cierre` calcula la versión que
+       circula por ahí, para poder comparar las dos.
+
+    2. **Los niveles NO cambian con el marco.** Salen del periodo anterior, así
+       que 5m y 4h con pivotes diarios enseñan el mismo mapa — y así debe ser.
+       Lo que cambia con el marco es la señal, no los niveles.
+
+    3. **PP y VWAP son casi la misma lectura.** El campo `colinealidad` dice en
+       qué porcentaje de barras coinciden; cuando pasa del 85 % se avisa, porque
+       exigir los dos no es doble confirmación.
+
+    Cada nivel viaja con su `toques_pct`: de los últimos `muestra` periodos, en
+    cuántos llegó el precio hasta él. Es la medida que sustituye a repartir
+    estrellas.
+    """
+    try:
+        import pivots as pivmod
+
+        ticker = ticker.upper().strip()
+        marco = (marco or "1h").lower().strip()
+        if marco not in PIVOT_MARCOS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Marco no admitido: {marco}. Usa uno de {list(PIVOT_MARCOS)}.",
+            )
+
+        clave = f"piv:{ticker}:{marco}:{variante}:{periodo}:{muestra}:{barras}"
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        intervalo, periodo_desc, agregar = PIVOT_MARCOS[marco]
+        df = _load_history(ticker, period=periodo_desc, interval=intervalo)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No hay histórico para {ticker}")
+        if agregar:
+            df = df.resample(agregar).agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna()
+
+        # Los niveles salen SIEMPRE del diario reagrupado, no de la serie del
+        # gráfico: con velas de 5m, el «día anterior» que se reconstruye a
+        # partir de ellas se queda sin las horas que el proveedor no sirve.
+        diario = _load_history(ticker, period="2y", interval="1d")
+        if diario is None or diario.empty:
+            raise HTTPException(status_code=404, detail=f"No hay diario para {ticker}")
+
+        p = pivmod.Parametros(
+            variante=variante if variante in (pivmod.VARIANTE_APERTURA, pivmod.VARIANTE_CIERRE)
+            else pivmod.VARIANTE_APERTURA,
+            periodo=periodo if periodo in pivmod.REGLA_PERIODO else None,
+            muestra_toques=max(10, min(int(muestra), 250)),
+            barras_serie=max(20, min(int(barras), 400)),
+        )
+        periodo_efectivo = p.periodo or pivmod.PERIODO_POR_MARCO.get(marco, "diario")
+        regla = pivmod.REGLA_PERIODO[periodo_efectivo]
+
+        base = diario if regla == "D" else diario.resample(regla).agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum",
+        }).dropna()
+
+        resultado = pivmod.calcular(df, base, ticker, marco=marco, p=p)
+
+        cerrada = True
+        try:
+            ultima = df.index[-1]
+            minutos = {"5m": 5, "15m": 15, "1h": 60, "4h": 240,
+                       "1d": 1440, "1w": 10080}[marco]
+            ahora = pd.Timestamp.now(tz=ultima.tz) if ultima.tz else pd.Timestamp.now()
+            cerrada = bool((ahora - ultima) >= pd.Timedelta(minutes=minutos))
+        except Exception:
+            cerrada = True
+        resultado["ultima_vela_cerrada"] = cerrada
+        if not cerrada:
+            resultado["avisos"].insert(
+                0,
+                "La última vela SIGUE ABIERTA. Y con la variante de apertura, el propio PP "
+                "se mueve mientras el periodo no cierre.",
+            )
+
+        cache_put(clave, resultado, 180)
+        return resultado
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logging.error(f"Error en /pivots/{ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
