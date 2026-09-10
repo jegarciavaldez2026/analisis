@@ -910,12 +910,27 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
             Por debajo de 1100 px se apila y la evidencia va primero. */}
         <View style={twoColumns ? styles.columnsRow : styles.columnsStack}>
           <View style={twoColumns ? styles.columnMain : styles.columnFull}>
+
+          {/* GF Score, a la altura de «Cotización frente al S&amp;P 500».
+
+              Las dos columnas abren ahora con una tarjeta de resumen y sus
+              bordes superiores coinciden: a la izquierda qué tal están los
+              fundamentales, a la derecha qué tal ha ido el precio. Antes esta
+              tarjeta iba detrás del rótulo «Ratios financieros» y él la
+              empujaba 52 px —margen + alto del título + separación—, mientras
+              que la de la derecha lleva su título DENTRO y arranca pegada al
+              borde de la columna. Dos tarjetas contiguas desalineadas por medio
+              renglón se leen como un fallo de maquetación, no como jerarquía.
+
+              El rótulo se queda abajo encabezando las tablas de ratios, que es
+              lo que de verdad enumera. */}
+          <View style={styles.tarjetaResumenRatios}>
+            <FinancialRadarChart ratios={data.ratios}  ticker={data.ticker}  currentPrice={data.metadata?.current_price} />
+          </View>
+
           {/* Ratio Categories */}
           <View style={styles.ratiosSection}>
             <Text style={styles.sectionTitle}>Ratios financieros</Text>
-
-            {/* ── Radar Chart ── */}
-            <FinancialRadarChart ratios={data.ratios}  ticker={data.ticker}  currentPrice={data.metadata?.current_price} />
 
 
             {/* Tabla densa: columnas alineadas para poder comparar ratios de un

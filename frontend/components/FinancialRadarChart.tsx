@@ -388,7 +388,10 @@ export default function FinancialRadarChart({ ratios, ticker, currentPrice }: Fi
           <View key={cat.category} style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: categoryColors[i] }]} />
             <Text style={styles.legendText} numberOfLines={1}>
-              {cat.category}:{' '}
+              {/* El nombre ya limpio de emoji, el mismo que rotula los ejes.
+                  Los ejes lo hacían y la leyenda no, así que la misma categoría
+                  aparecía escrita de dos formas dentro de la misma tarjeta. */}
+              {labels[i]}:{' '}
               <Text style={styles.legendValue}>{passedArr[i]}/{totalArr[i]}</Text>
             </Text>
           </View>

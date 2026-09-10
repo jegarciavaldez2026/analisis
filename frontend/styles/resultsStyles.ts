@@ -82,6 +82,11 @@ export function makeResultsStyles(c: ThemeColors) {
     flagLabel: { ...type.caption, color: c.ink, fontWeight: '600' },
 
     /* ── Categorías de ratios ── */
+    /* La tarjeta de GF Score abre la columna izquierda y su borde superior
+       tiene que casar con el de `chartSection`, que abre la derecha. Por eso
+       sólo lleva margen horizontal: cualquier margen arriba la desalinearía.
+       El hueco inferior lo pone el `marginBottom` de la propia tarjeta. */
+    tarjetaResumenRatios: { marginHorizontal: space.lg },
     ratiosSection: { margin: space.lg },
     categoryCard: {
       backgroundColor: c.surface,
