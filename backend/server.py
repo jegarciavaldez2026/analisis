@@ -12383,6 +12383,810 @@ async def get_pivots(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  TRADING SIMULADO
+#
+#  Simulación, y sólo simulación. No hay bróker, no hay credenciales de
+#  ninguna mesa y no existe ninguna ruta de código que pueda mandar una orden
+#  a ningún mercado. Lo que hay es contabilidad honesta de operaciones que
+#  nunca ocurrieron.
+#
+#  El motor vive en `backend/simulacion.py` y es PURO: no toca Mongo, ni
+#  yfinance, ni la red. Este bloque es la única capa que hace E/S, y por eso
+#  es deliberadamente fino — toda la aritmética que pueda equivocarse está al
+#  otro lado, donde hay 83 pruebas ejecutables.
+#
+#  LA CUENTA SIMULADA NO TOCA `db.portfolio`. Son dineros distintos y
+#  colecciones distintas. Mezclarlos corrompería el balance real del usuario,
+#  que sí representa posiciones que existen.
+# ══════════════════════════════════════════════════════════════════════════
+
+from dataclasses import asdict
+
+import simulacion as _sim
+import simulacion_senales as _sim_senales
+
+#: Marco → (intervalo de yfinance, periodo a pedir, regla de reagrupado).
+#: Es el mismo mapa que PIVOT_MARCOS a propósito: el robot tiene que mirar las
+#: mismas velas que la señal que lo dispara. Dos mapas distintos acabarían
+#: divergiendo y nadie lo notaría hasta que el stop saltara en la barra que no
+#: era.
+SIM_MARCOS = dict(PIVOT_MARCOS)
+
+#: Cuánto histórico se pide para rellenar el hueco desde el último tick.
+#: Se recorta después por marca temporal; pedir de más sólo cuesta caché.
+SIM_PERIODO_RELLENO = {
+    "5m": "5d", "15m": "5d", "1h": "1mo", "4h": "3mo", "1d": "6mo", "1w": "2y",
+}
+
+SIM_CAPITAL_POR_DEFECTO = 100_000.0
+
+#: Tope de barras que se recorren en un tick. Si alguien vuelve tras un mes,
+#: se rellena lo que quepa y se avisa: recorrer diez mil barras en una petición
+#: HTTP bloquearía el endpoint sin que nadie sepa por qué.
+SIM_MAX_BARRAS_RELLENO = 2000
+
+
+class SimIntencionRequest(BaseModel):
+    """Lo que manda el formulario manual. La validación de verdad la hace
+    `simulacion.validar()`; aquí sólo se comprueba la forma."""
+
+    simbolo: str
+    direccion: str                      # long | short
+    tipo: str = "MARKET"                # MARKET | LIMIT
+    cantidad: Optional[float] = None
+    precio_limite: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    apalancamiento: float = 1.0
+    #: Alternativa a `cantidad`: se calcula por riesgo sobre el capital.
+    riesgo_pct: Optional[float] = None
+    capital_pct: Optional[float] = None
+    caduca_en_horas: Optional[float] = None
+
+
+class SimParametrosRequest(BaseModel):
+    comision_pct: Optional[float] = None
+    deslizamiento_pct: Optional[float] = None
+    apalancamiento: Optional[float] = None
+    coste_prestamo_anual_pct: Optional[float] = None
+    riesgo_max_pct: Optional[float] = None
+    max_posiciones: Optional[int] = None
+
+
+class SimRobotRequest(BaseModel):
+    activo: bool
+    simbolo: Optional[str] = None
+    marco: str = "1h"
+    capital_pct: float = 25.0
+    riesgo_pct: float = 0.5
+
+
+class SimNivelesRequest(BaseModel):
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+
+
+class SimReiniciarRequest(BaseModel):
+    capital_inicial: float = SIM_CAPITAL_POR_DEFECTO
+
+
+# ── Persistencia ──────────────────────────────────────────────────────────
+
+async def _sim_siguiente_id(prefijo: str) -> str:
+    """
+    Identificador correlativo por año: `SIM-2026-0001`.
+
+    `find_one_and_update` con `$inc` y `upsert` es atómico en el servidor, así
+    que dos peticiones simultáneas no pueden recibir el mismo número. Contarlo
+    con un `count_documents` sí tendría esa carrera, y el fallo aparecería una
+    vez cada mil operaciones.
+    """
+    anio = datetime.utcnow().year
+    doc = await db.sim_contadores.find_one_and_update(
+        {"_id": f"{prefijo}:{anio}"},
+        {"$inc": {"n": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    n = (doc or {}).get("n", 1)
+    return f"{prefijo}-{anio}-{n:04d}"
+
+
+async def _sim_cargar(user_id: str) -> Tuple[_sim.Estado, dict]:
+    """Estado del motor y configuración de la cuenta. Se crea si no existe."""
+    doc = await db.sim_cuentas.find_one({"_id": user_id})
+    if doc is None:
+        estado = _sim.Estado(capital_inicial=SIM_CAPITAL_POR_DEFECTO)
+        doc = {
+            "_id": user_id,
+            "estado": _sim.a_dict(estado),
+            "robot": {"activo": False, "simbolo": None, "marco": "1h",
+                      "capital_pct": 25.0, "riesgo_pct": 0.5},
+            "creada": datetime.utcnow(),
+        }
+        await db.sim_cuentas.insert_one(doc)
+        return estado, doc
+    return _sim.de_dict(doc.get("estado") or {}), doc
+
+
+async def _sim_guardar(user_id: str, estado: _sim.Estado, robot: Optional[dict] = None):
+    cambio = {"estado": limpiar_no_finitos(_sim.a_dict(estado)),
+              "actualizada": datetime.utcnow()}
+    if robot is not None:
+        cambio["robot"] = robot
+    await db.sim_cuentas.update_one({"_id": user_id}, {"$set": cambio}, upsert=True)
+
+
+async def _sim_barras_desde(ticker: str, marco: str, desde_ts: Optional[int]) -> List[_sim.Barra]:
+    """
+    Las barras que han pasado desde el último tick.
+
+    Es lo que permite que un stop salte EN SU BARRA y no «cuando alguien
+    recargó la página». Si cierras el portátil el viernes con un stop a dos
+    puntos y el lunes abre con hueco, el stop se cierra en la barra del lunes,
+    con su fecha y su precio.
+    """
+    marco = marco if marco in SIM_MARCOS else "1d"
+    intervalo, _, agregar = SIM_MARCOS[marco]
+    periodo = SIM_PERIODO_RELLENO.get(marco, "6mo")
+
+    df = await asyncio.to_thread(_load_history, ticker, periodo, intervalo)
+    if df is None or df.empty:
+        return []
+    if agregar:
+        df = df.resample(agregar).agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum",
+        }).dropna()
+
+    barras: List[_sim.Barra] = []
+    for marca, fila in df.iterrows():
+        try:
+            ts = int(marca.timestamp())
+        except Exception:
+            continue
+        if desde_ts is not None and ts <= desde_ts:
+            continue
+        try:
+            barras.append(_sim.Barra(
+                ts=ts,
+                apertura=float(fila["Open"]), alto=float(fila["High"]),
+                bajo=float(fila["Low"]), cierre=float(fila["Close"]),
+                volumen=float(fila.get("Volume") or 0.0),
+            ))
+        except (ValueError, TypeError):
+            continue
+    return barras[-SIM_MAX_BARRAS_RELLENO:]
+
+
+async def _sim_tick(
+    user_id: str, estado: _sim.Estado, ticker: str, marco: str = "1d",
+) -> Tuple[List[_sim.Evento], List[str]]:
+    """
+    Avanza el motor hasta ahora. Recorre BARRAS, no el precio del momento.
+
+    Un precio suelto no dice por dónde ha pasado el mercado entre dos
+    consultas: usarlo para cerrar posiciones haría que el resultado dependiera
+    de cuándo alguien abrió la pestaña, que es la definición de un backtest
+    tramposo jugado en vivo.
+    """
+    eventos: List[_sim.Evento] = []
+    avisos: List[str] = []
+
+    # Punto de partida del relleno. En una cuenta recién creada NO es «el
+    # principio de los tiempos»: es el momento en que nació la primera orden, o
+    # ahora mismo si aún no hay ninguna. Sin esto, la primera consulta arrastra
+    # seis meses de velas y llena la curva de patrimonio de puntos anteriores a
+    # la propia cuenta.
+    #
+    # El motor además se defiende solo —una barra anterior a la apertura no
+    # cierra nada, y hay prueba—, pero pedirle que recorra medio año para
+    # descartarlo todo sería trabajo tirado en cada arranque.
+    if estado.ultimo_ts is None:
+        nacimientos = [o.creada_ts for o in estado.ordenes if o.creada_ts]
+        estado.ultimo_ts = (min(nacimientos) - 1) if nacimientos else int(
+            datetime.utcnow().timestamp()
+        )
+
+    simbolos = {p.simbolo for p in estado.abiertas()} | {o.simbolo for o in estado.pendientes()}
+    simbolos.add(ticker.upper())
+
+    for simbolo in sorted(simbolos):
+        barras = await _sim_barras_desde(simbolo, marco, estado.ultimo_ts)
+        if len(barras) >= SIM_MAX_BARRAS_RELLENO:
+            avisos.append(
+                f"{simbolo}: el hueco desde el último tick supera las "
+                f"{SIM_MAX_BARRAS_RELLENO} barras. Se ha rellenado el tramo más "
+                f"reciente; el anterior no se ha simulado."
+            )
+        for barra in barras:
+            eventos.extend(_sim.aplicar_barra(estado, simbolo, barra))
+
+        # El último precio conocido, para marcar a mercado lo que siga abierto.
+        cot = await asyncio.to_thread(cotizacion_rapida, simbolo)
+        if cot.get("ok"):
+            _sim.aplicar_precio(
+                estado, simbolo, float(cot["actual"]), int(datetime.utcnow().timestamp())
+            )
+
+    await _sim_bautizar(estado, eventos)
+    return eventos, avisos
+
+
+async def _sim_bautizar(estado: _sim.Estado, eventos: List[_sim.Evento]) -> None:
+    """
+    Pone el identificador definitivo a las posiciones que abrió el motor solo.
+
+    Un LIMIT que se ejecuta DENTRO de `aplicar_barra` no puede pedir un número
+    al contador de Mongo: el motor es puro y no habla con la base. Nace con un
+    provisional (`SIM-000004`) y se bautiza aquí con el formato del producto
+    (`SIM-2026-0004`).
+
+    Se renombra en los TRES sitios donde vive la referencia —posición, orden de
+    apertura y evento— porque un identificador que cambia en un sitio y no en
+    los otros rompe el puente entre la orden y su consecuencia, que es
+    justamente lo que este diseño existe para mantener.
+    """
+    provisionales = [p for p in estado.posiciones if p.id.count("-") == 1]
+    for posicion in provisionales:
+        viejo = posicion.id
+        posicion.id = await _sim_siguiente_id("SIM")
+        for orden in estado.ordenes:
+            if orden.posicion_id == viejo:
+                orden.posicion_id = posicion.id
+        for evento in eventos:
+            if evento.posicion_id == viejo:
+                evento.posicion_id = posicion.id
+                evento.detalle = evento.detalle.replace(viejo, posicion.id)
+
+
+async def _sim_precios(estado: _sim.Estado, extra: Optional[str] = None) -> Dict[str, float]:
+    precios = {
+        p.simbolo: float(p.ultimo_precio or p.entrada) for p in estado.abiertas()
+    }
+    if extra:
+        cot = await asyncio.to_thread(cotizacion_rapida, extra.upper())
+        if cot.get("ok"):
+            precios[extra.upper()] = float(cot["actual"])
+    return precios
+
+
+def _sim_respuesta(
+    estado: _sim.Estado, precios: Dict[str, float], robot: dict,
+    eventos: Optional[List[_sim.Evento]] = None,
+    avisos: Optional[List[str]] = None,
+) -> dict:
+    """
+    La foto completa de la cuenta.
+
+    Las tarjetas se calculan AQUÍ, no en el `.tsx`: la regla de arquitectura
+    del producto es que la lógica de trading no vive en los componentes
+    visuales. El componente pinta cifras; no las deduce.
+    """
+    ahora = int(datetime.utcnow().timestamp())
+
+    abiertas = [
+        _sim.tarjeta(p, precios.get(p.simbolo, p.ultimo_precio or p.entrada),
+                     estado.params, ahora)
+        for p in estado.abiertas()
+    ]
+    historial = [
+        _sim.tarjeta(p, p.salida or p.entrada, estado.params, p.cerrada_ts)
+        for p in sorted(estado.cerradas(), key=lambda x: x.cerrada_ts or 0, reverse=True)
+    ]
+
+    return limpiar_no_finitos({
+        "cuenta": _sim.metricas(estado, precios),
+        "parametros": asdict(estado.params),
+        "robot": robot,
+        "abiertas": abiertas,
+        "historial": historial,
+        # Las órdenes viajan APARTE de las posiciones, y no es un detalle de
+        # presentación: una orden pendiente todavía no es una posición, y una
+        # orden cancelada nunca lo fue.
+        "ordenes": [asdict(o) for o in sorted(
+            estado.ordenes, key=lambda x: x.creada_ts, reverse=True)[:200]],
+        "pendientes": [asdict(o) for o in estado.pendientes()],
+        "curva": estado.curva[-500:],
+        "eventos": [asdict(e) for e in (eventos or [])][-50:],
+        "avisos": list(avisos or []),
+        "ultimo_ts": estado.ultimo_ts,
+        "aviso_alcance": (
+            "Operaciones SIMULADAS. No hay bróker conectado ni ruta de ejecución: "
+            "ninguna de estas órdenes ha salido a ningún mercado. Los precios son "
+            "de Yahoo Finance, diferidos ~15 minutos."
+        ),
+    })
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────
+
+@api_router.get("/simulacion/estado")
+async def sim_estado(
+    ticker: str = "PBF",
+    marco: str = "1d",
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Avanza el motor y devuelve la cuenta entera.
+
+    Es el único endpoint que hace avanzar el tiempo. No hay tarea de fondo ni
+    planificador: el motor tiquea cuando se le consulta, pero rellena el hueco
+    recorriendo las barras que han pasado, así que el resultado no depende de
+    cuándo se consultó.
+    """
+    user_id = current_user["id"]
+    estado, doc = await _sim_cargar(user_id)
+    eventos, avisos = await _sim_tick(user_id, estado, ticker, marco)
+    await _sim_guardar(user_id, estado)
+    precios = await _sim_precios(estado, ticker)
+    return _sim_respuesta(estado, precios, doc.get("robot") or {}, eventos, avisos)
+
+
+@api_router.get("/simulacion/cuenta")
+async def sim_cuenta(current_user: dict = Depends(get_current_user)):
+    """Sólo el resumen, sin tocar Yahoo. Para la franja de KPIs."""
+    estado, doc = await _sim_cargar(current_user["id"])
+    precios = {p.simbolo: float(p.ultimo_precio or p.entrada) for p in estado.abiertas()}
+    return limpiar_no_finitos({
+        "cuenta": _sim.metricas(estado, precios),
+        "robot": doc.get("robot") or {},
+        "parametros": asdict(estado.params),
+    })
+
+
+@api_router.post("/simulacion/cuenta/reiniciar")
+async def sim_reiniciar(
+    peticion: SimReiniciarRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Borra la cuenta simulada y empieza de cero.
+
+    Cierra antes lo que esté abierto al último precio conocido, para que el
+    historial que se archiva esté completo en vez de quedar con posiciones
+    colgando. La interfaz pide confirmación: esto no se deshace.
+    """
+    user_id = current_user["id"]
+    estado, doc = await _sim_cargar(user_id)
+    ahora = int(datetime.utcnow().timestamp())
+    precios = {p.simbolo: float(p.ultimo_precio or p.entrada) for p in estado.abiertas()}
+    _sim.cerrar_todo(estado, precios, ahora, "END_OF_SESSION")
+
+    await db.sim_archivo.insert_one(limpiar_no_finitos({
+        "user_id": user_id, "archivada": datetime.utcnow(),
+        "estado": _sim.a_dict(estado),
+    }))
+
+    nuevo = _sim.Estado(
+        capital_inicial=max(1.0, float(peticion.capital_inicial)),
+        params=estado.params,
+    )
+    robot = dict(doc.get("robot") or {})
+    robot["activo"] = False   # nunca se reanuda solo
+    await _sim_guardar(user_id, nuevo, robot)
+    await db.sim_senales_vistas.delete_many({"user_id": user_id})
+
+    return {
+        "ok": True,
+        "capital_inicial": nuevo.capital_inicial,
+        "archivadas": len(estado.posiciones),
+        "nota": "La cuenta anterior se ha archivado, no se ha borrado.",
+    }
+
+
+@api_router.post("/simulacion/parametros")
+async def sim_parametros(
+    peticion: SimParametrosRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Comisión, deslizamiento, apalancamiento y topes de riesgo."""
+    user_id = current_user["id"]
+    estado, doc = await _sim_cargar(user_id)
+    actuales = asdict(estado.params)
+    for clave, valor in peticion.dict(exclude_none=True).items():
+        actuales[clave] = valor
+    try:
+        nuevos = _sim.Parametros(**actuales)
+        nuevos.validar()
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    estado.params = nuevos
+    await _sim_guardar(user_id, estado)
+    return {"ok": True, "parametros": asdict(nuevos)}
+
+
+@api_router.post("/simulacion/ordenes")
+async def sim_crear_orden(
+    peticion: SimIntencionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Crea una orden simulada.
+
+    MARKET → se ejecuta contra el último precio y nace la posición.
+    LIMIT   → queda PENDING. **No hay posición todavía**, y eso es justo lo que
+              separa la intención de la consecuencia.
+
+    Una orden rechazada SE GUARDA, con su motivo escrito. La pregunta «¿por qué
+    no entró?» es tan legítima como «¿por qué entró?».
+    """
+    user_id = current_user["id"]
+    simbolo = peticion.simbolo.upper().strip()
+    estado, doc = await _sim_cargar(user_id)
+
+    cot = await asyncio.to_thread(cotizacion_rapida, simbolo)
+    if not cot.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sin cotización para {simbolo}: no hay precio con el que simular.",
+        )
+    precio_mercado = float(cot["actual"])
+    ahora = int(datetime.utcnow().timestamp())
+
+    referencia = (
+        float(peticion.precio_limite)
+        if peticion.tipo == "LIMIT" and peticion.precio_limite is not None
+        else precio_mercado
+    )
+
+    # Cantidad: la explícita, o la que sale del riesgo. Si no hay ninguna de
+    # las dos, se dice — no se inventa un tamaño por defecto.
+    cantidad = peticion.cantidad
+    nota_tamano = None
+    if cantidad is None:
+        if peticion.riesgo_pct is None or peticion.stop_loss is None:
+            raise HTTPException(
+                status_code=422,
+                detail=("Hace falta la cantidad, o bien un riesgo por operación y un "
+                        "stop loss con los que calcularla."),
+            )
+        capital = _sim.balance(estado) * ((peticion.capital_pct or 100.0) / 100.0)
+        cantidad = _sim.tamano_por_riesgo(
+            capital, peticion.riesgo_pct, referencia, peticion.stop_loss
+        )
+        if not cantidad:
+            raise HTTPException(
+                status_code=422,
+                detail=("Con ese capital, ese riesgo y esa distancia al stop no cabe "
+                        "ni una acción."),
+            )
+        nota_tamano = (
+            f"{cantidad} acciones calculadas con {peticion.riesgo_pct:.2f} % de riesgo "
+            f"sobre {peticion.capital_pct or 100:.0f} % del balance."
+        )
+
+    intencion = _sim.Intencion(
+        simbolo=simbolo,
+        direccion=peticion.direccion,
+        tipo=peticion.tipo,
+        cantidad=float(cantidad),
+        precio_referencia=referencia,
+        precio_limite=peticion.precio_limite,
+        stop_loss=peticion.stop_loss,
+        take_profit=peticion.take_profit,
+        apalancamiento=peticion.apalancamiento or estado.params.apalancamiento,
+        origen="manual",
+    )
+
+    # El identificador de POSICIÓN sólo se reserva si va a haber posición.
+    # Consumirlo en una orden rechazada dejaría huecos en la serie
+    # (SIM-2026-0001 y luego SIM-2026-0005), y un hueco en una secuencia se
+    # lee como «me han borrado operaciones».
+    orden_id = await _sim_siguiente_id("ORD")
+    posicion_id = (
+        await _sim_siguiente_id("SIM")
+        if intencion.tipo == "MARKET" and not _sim.bloquean(_sim.validar(estado, intencion))
+        else ""
+    )
+    orden, posicion, fallos, eventos = _sim.enviar(
+        estado, intencion, orden_id, posicion_id, ahora, precio_mercado,
+    )
+
+    if orden.tipo == "LIMIT" and orden.viva and peticion.caduca_en_horas:
+        orden.caduca_ts = ahora + int(peticion.caduca_en_horas * 3600)
+
+    await _sim_guardar(user_id, estado)
+    precios = await _sim_precios(estado, simbolo)
+
+    return limpiar_no_finitos({
+        "ok": orden.estado != "REJECTED",
+        "orden": asdict(orden),
+        "posicion": _sim.tarjeta(posicion, precio_mercado, estado.params, ahora)
+                    if posicion else None,
+        "rechazos": [asdict(f) for f in fallos],
+        "avisos": [f.mensaje for f in fallos if not f.bloquea],
+        "nota_tamano": nota_tamano,
+        "eventos": [asdict(e) for e in eventos],
+        "cuenta": _sim.metricas(estado, precios),
+    })
+
+
+@api_router.delete("/simulacion/ordenes/{orden_id}")
+async def sim_cancelar_orden(
+    orden_id: str, current_user: dict = Depends(get_current_user),
+):
+    """Cancela una PENDING. Nunca hubo posición, así que no toca el win rate."""
+    user_id = current_user["id"]
+    estado, _ = await _sim_cargar(user_id)
+    evento = _sim.cancelar_orden(estado, orden_id, int(datetime.utcnow().timestamp()))
+    if evento is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{orden_id} no existe o ya no está pendiente.",
+        )
+    await _sim_guardar(user_id, estado)
+    return {"ok": True, "evento": asdict(evento)}
+
+
+@api_router.post("/simulacion/posiciones/{posicion_id}/cerrar")
+async def sim_cerrar_posicion(
+    posicion_id: str, current_user: dict = Depends(get_current_user),
+):
+    """Cierre manual, al último precio conocido."""
+    user_id = current_user["id"]
+    estado, doc = await _sim_cargar(user_id)
+    posicion = estado.posicion(posicion_id)
+    if posicion is None:
+        raise HTTPException(status_code=404, detail=f"{posicion_id} no existe.")
+    if not posicion.abierta:
+        # No es un error: es un doble clic. Se contesta con el estado real en
+        # vez de un 400 que la interfaz tendría que interpretar.
+        return {"ok": False, "motivo": "La posición ya estaba cerrada.",
+                "posicion": asdict(posicion)}
+
+    cot = await asyncio.to_thread(cotizacion_rapida, posicion.simbolo)
+    precio = float(cot["actual"]) if cot.get("ok") else (
+        posicion.ultimo_precio or posicion.entrada)
+    evento = _sim.cerrar_a_mano(
+        estado, posicion_id, precio, int(datetime.utcnow().timestamp())
+    )
+    await _sim_guardar(user_id, estado)
+    precios = await _sim_precios(estado)
+    return limpiar_no_finitos({
+        "ok": True,
+        "evento": asdict(evento) if evento else None,
+        "posicion": _sim.tarjeta(posicion, precio, estado.params, posicion.cerrada_ts),
+        "cuenta": _sim.metricas(estado, precios),
+    })
+
+
+@api_router.patch("/simulacion/posiciones/{posicion_id}")
+async def sim_mover_niveles(
+    posicion_id: str,
+    peticion: SimNivelesRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Mueve el stop o el objetivo de una posición abierta.
+
+    Se revalida la coherencia direccional: un stop movido al otro lado de la
+    entrada convierte la protección en una orden de cerrar con la pérdida
+    máxima, y no da ningún error por sí solo.
+    """
+    user_id = current_user["id"]
+    estado, _ = await _sim_cargar(user_id)
+    posicion = estado.posicion(posicion_id)
+    if posicion is None or not posicion.abierta:
+        raise HTTPException(status_code=404, detail=f"{posicion_id} no está abierta.")
+
+    sl = peticion.stop_loss if peticion.stop_loss is not None else posicion.stop_loss
+    tp = peticion.take_profit if peticion.take_profit is not None else posicion.take_profit
+    fallos = _sim._coherencia_direccional(posicion.direccion, posicion.entrada, sl, tp)
+    if fallos:
+        raise HTTPException(status_code=422, detail=" · ".join(f.mensaje for f in fallos))
+
+    posicion.stop_loss, posicion.take_profit = sl, tp
+    await _sim_guardar(user_id, estado)
+    return {"ok": True, "posicion": asdict(posicion)}
+
+
+@api_router.get("/simulacion/historial")
+async def sim_historial(
+    limite: int = 200, current_user: dict = Depends(get_current_user),
+):
+    """Posiciones cerradas, de la más reciente a la más antigua."""
+    estado, _ = await _sim_cargar(current_user["id"])
+    cerradas = sorted(estado.cerradas(), key=lambda x: x.cerrada_ts or 0, reverse=True)
+    return limpiar_no_finitos({
+        "operaciones": [
+            _sim.tarjeta(p, p.salida or p.entrada, estado.params, p.cerrada_ts)
+            for p in cerradas[:limite]
+        ],
+        "total": len(cerradas),
+        "metricas": _sim.metricas(estado),
+    })
+
+
+@api_router.get("/simulacion/decisiones")
+async def sim_decisiones(
+    limite: int = 50, current_user: dict = Depends(get_current_user),
+):
+    """
+    Por qué el robot hizo —o no hizo— cada cosa.
+
+    Se guardan TAMBIÉN las decisiones de no operar. Un registro que sólo existe
+    cuando hay operación no contesta la mitad de las preguntas.
+    """
+    cursor = db.sim_decisiones.find({"user_id": current_user["id"]}).sort("ts", -1).limit(limite)
+    filas = await cursor.to_list(length=limite)
+    for f in filas:
+        f["id"] = str(f.pop("_id"))
+    return {"decisiones": limpiar_no_finitos(filas)}
+
+
+@api_router.post("/simulacion/robot")
+async def sim_robot(
+    peticion: SimRobotRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Enciende o apaga el robot.
+
+    Con ROBOT = OFF no se abre nada nuevo, pero las posiciones existentes
+    SIGUEN monitorizándose: apagar el robot no es abandonar lo que ya está en
+    el mercado. Eso lo garantiza que el tick vive en `/simulacion/estado`, que
+    no mira esta bandera.
+    """
+    user_id = current_user["id"]
+    estado, doc = await _sim_cargar(user_id)
+    robot = dict(doc.get("robot") or {})
+    robot.update({
+        "activo": bool(peticion.activo),
+        "simbolo": (peticion.simbolo or robot.get("simbolo") or "").upper() or None,
+        "marco": peticion.marco if peticion.marco in SIM_MARCOS else "1h",
+        "capital_pct": float(peticion.capital_pct),
+        "riesgo_pct": float(peticion.riesgo_pct),
+        "cambiado": datetime.utcnow().isoformat(),
+    })
+    await _sim_guardar(user_id, estado, robot)
+    return {"ok": True, "robot": robot}
+
+
+@api_router.post("/simulacion/robot/evaluar")
+async def sim_robot_evaluar(
+    ticker: str = "PBF",
+    marco: str = "1h",
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Una vuelta del robot: lee las señales que YA EXISTEN, decide y, si procede,
+    abre una operación simulada.
+
+    **Jerarquía del producto, respetada al pie de la letra:**
+    `/pivots` dispara; `/overton`, `/nqe` y `/mtf` sólo vetan o encogen. Ningún
+    indicador aislado ordena una operación.
+
+    **Deduplicación estructural:** el `signal_id` incluye el timestamp de la
+    BARRA, no la hora de consulta, y se guarda como `_id`. El segundo intento
+    dentro de la misma vela choca contra la clave primaria de Mongo. Atómico y
+    sin crear ningún índice.
+    """
+    user_id = current_user["id"]
+    ticker = ticker.upper().strip()
+    estado, doc = await _sim_cargar(user_id)
+    robot = doc.get("robot") or {}
+
+    if not robot.get("activo"):
+        return {"ok": False, "motivo": "El robot está apagado.", "decision": None}
+
+    # Las cuatro lecturas. Ninguna es obligatoria salvo la que dispara: si
+    # /overton o /nqe fallan, se opera con menos confluencia y se dice.
+    try:
+        pivotes = await get_pivots(ticker, marco=marco)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo leer la señal de pivotes para {ticker}: {e}",
+        )
+
+    async def _suave(corutina):
+        try:
+            return await corutina
+        except Exception:
+            return None
+
+    overton_res = await _suave(get_overton_signal(ticker))
+    mtf_res = await _suave(get_mtf_consensus(ticker))
+    nqe_res = await _suave(get_nqe(ticker, marco=marco if marco in NQE_MARCOS else "1h"))
+
+    # Tope por liquidez: la misma regla de participación que ya usa la pantalla
+    # —no pasar del 1 % del volumen medio— para que el robot no sea el mercado.
+    max_liquidez = None
+    if isinstance(overton_res, dict):
+        # La clave es `max_acciones_1pct_adv`, leída del `return` de
+        # `_calc_liquidez_ejecucion` (server.py:8077). El nombre plausible
+        # —`max_acciones_1pct`— no da error: da `None` en todas las empresas.
+        max_liquidez = (overton_res.get("liquidez") or {}).get("max_acciones_1pct_adv")
+
+    decision = _sim_senales.evaluar(
+        ticker, marco, pivotes,
+        overton=overton_res, nqe=nqe_res, mtf=mtf_res,
+        balance=_sim.balance(estado),
+        capital_pct=float(robot.get("capital_pct", 25.0)),
+        riesgo_pct=float(robot.get("riesgo_pct", 0.5)),
+        max_acciones_liquidez=int(max_liquidez) if max_liquidez else None,
+    )
+
+    registro = decision.a_dict()
+    registro.update({"user_id": user_id, "ts": datetime.utcnow()})
+
+    if not decision.opera or decision.intencion is None:
+        await db.sim_decisiones.insert_one(limpiar_no_finitos(dict(registro)))
+        return limpiar_no_finitos({
+            "ok": False,
+            "motivo": decision.motivo_no_operar or "Sin señal.",
+            "decision": decision.a_dict(),
+        })
+
+    # ── Deduplicación. El `_id` es la señal: el duplicado choca solo. ──────
+    try:
+        await db.sim_senales_vistas.insert_one({
+            "_id": f"{user_id}:{decision.signal_id}",
+            "user_id": user_id, "signal_id": decision.signal_id,
+            "simbolo": ticker, "marco": marco, "direccion": decision.direccion,
+            "ts_barra": decision.ts_barra, "ts": datetime.utcnow(),
+        })
+    except Exception:
+        return limpiar_no_finitos({
+            "ok": False,
+            "motivo": (
+                "Esta señal ya se procesó en esta misma vela. El robot no abre dos "
+                "operaciones sobre la misma barra."
+            ),
+            "decision": decision.a_dict(),
+        })
+
+    # ── Enfriamiento: no reabrir justo después de cerrar ──────────────────
+    ultima = max(
+        (p.cerrada_ts or 0) for p in estado.cerradas()
+        if p.simbolo == ticker and p.direccion == decision.direccion
+    ) if any(p.simbolo == ticker and p.direccion == decision.direccion
+             for p in estado.cerradas()) else 0
+    if ultima and decision.ts_barra:
+        intervalo_s = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400,
+                       "1d": 86400, "1w": 604800}.get(marco, 3600)
+        if decision.ts_barra - ultima < estado.params.enfriamiento_barras * intervalo_s:
+            registro["motivo_no_operar"] = "En enfriamiento tras el último cierre."
+            await db.sim_decisiones.insert_one(limpiar_no_finitos(dict(registro)))
+            return limpiar_no_finitos({
+                "ok": False, "motivo": registro["motivo_no_operar"],
+                "decision": decision.a_dict(),
+            })
+
+    resultado = await db.sim_decisiones.insert_one(limpiar_no_finitos(dict(registro)))
+    decision_id = str(resultado.inserted_id)
+
+    ahora = int(datetime.utcnow().timestamp())
+    cot = await asyncio.to_thread(cotizacion_rapida, ticker)
+    precio_mercado = float(cot["actual"]) if cot.get("ok") else decision.intencion.precio_referencia
+
+    orden_id = await _sim_siguiente_id("ORD")
+    posicion_id = (
+        await _sim_siguiente_id("SIM")
+        if not _sim.bloquean(_sim.validar(estado, decision.intencion))
+        else ""
+    )
+    orden, posicion, fallos, eventos = _sim.enviar(
+        estado, decision.intencion, orden_id, posicion_id, ahora,
+        precio_mercado, decision_id,
+    )
+    await _sim_guardar(user_id, estado)
+
+    return limpiar_no_finitos({
+        "ok": orden.estado != "REJECTED",
+        "decision": decision.a_dict(),
+        "decision_id": decision_id,
+        "orden": asdict(orden),
+        "posicion": _sim.tarjeta(posicion, precio_mercado, estado.params, ahora)
+                    if posicion else None,
+        "rechazos": [asdict(f) for f in fallos],
+        "eventos": [asdict(e) for e in eventos],
+        "resumen": _sim_senales.resumen_legible(decision),
+    })
+
+
 # Include the router in the main app
 app.include_router(api_router)
 

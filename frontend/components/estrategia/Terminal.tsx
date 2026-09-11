@@ -21,6 +21,7 @@ import {
   Pressable,
   StyleProp,
   Text,
+  TextInput,
   TextStyle,
   useWindowDimensions,
   View,
@@ -830,5 +831,119 @@ export function Punto({ tono }: { tono: Tone }) {
         backgroundColor: tono === 'neutral' ? colors.noSignal : fg,
       }}
     />
+  );
+}
+
+/* ==========================================================================
+ * Campo numérico — el único control de ENTRADA del terminal
+ * ==========================================================================
+ * `components/ui/Instrument` ya tiene un `Field`, pero está calibrado para
+ * lectura pausada: 44 px de alto y 15 px de letra. Doce campos de una boleta
+ * de orden a esa métrica no caben en los ~455 px de la columna del robot, y
+ * encogerlo allí rompería su propia escena. Se añade aquí, con la métrica del
+ * terminal, por la misma razón por la que `Terminal.tsx` existe.
+ *
+ * Tres decisiones que evitan los fallos típicos de un campo de precio:
+ *
+ * 1. **El texto escrito se conserva tal cual mientras se escribe.** Si el
+ *    valor se reformateara en cada pulsación, escribir «78.» se convertiría en
+ *    «78» y sería imposible teclear un decimal. El número sólo se normaliza al
+ *    salir del campo.
+ * 2. **La coma vale como separador decimal.** El teclado es español y «78,5»
+ *    no puede significar `NaN`.
+ * 3. **Un campo vacío es `null`, no cero.** Un stop a cero es una orden
+ *    perfectamente válida y catastrófica; un stop ausente es un hueco.
+ */
+
+export function CampoNumerico({
+  etiqueta,
+  valor,
+  onChange,
+  sufijo,
+  ayuda,
+  tono = 'neutral',
+  deshabilitado,
+  marcador,
+}: {
+  etiqueta: string;
+  valor: number | null;
+  onChange: (v: number | null) => void;
+  sufijo?: string;
+  /** Se dibuja bajo el campo. Es donde va la cifra derivada, no un tooltip. */
+  ayuda?: string | null;
+  tono?: Tone;
+  deshabilitado?: boolean;
+  marcador?: string;
+}) {
+  const { colors, palette, radius, hairline, numeric } = useTheme();
+  const { width } = useWindowDimensions();
+  const { fg } = toneColors(palette, tono);
+  const [foco, setFoco] = useState(false);
+  const [texto, setTexto] = useState<string | null>(null);
+
+  const mostrado = texto !== null ? texto : valor === null ? '' : String(valor);
+
+  const normalizar = (bruto: string) => {
+    const limpio = bruto.replace(',', '.').trim();
+    if (!limpio) return null;
+    const n = Number(limpio);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  return (
+    <View style={{ gap: 2, flexGrow: 1, minWidth: 0 }}>
+      <Rotulo tono={tono}>{etiqueta}</Rotulo>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          paddingHorizontal: 6,
+          minHeight: width >= CORTE_TACTIL ? 26 : AREA_MINIMA,
+          borderRadius: radius.xs,
+          borderWidth: hairline,
+          borderColor: foco ? colors.accent : tono === 'neutral' ? colors.rule : fg,
+          backgroundColor: deshabilitado ? colors.surfaceSunken : colors.surface,
+          opacity: deshabilitado ? 0.5 : 1,
+        }}
+      >
+        <TextInput
+          value={mostrado}
+          editable={!deshabilitado}
+          onChangeText={(t) => {
+            setTexto(t);
+            onChange(normalizar(t));
+          }}
+          onFocus={() => setFoco(true)}
+          onBlur={() => {
+            setFoco(false);
+            setTexto(null); // a partir de aquí manda el número, ya normalizado
+          }}
+          keyboardType="decimal-pad"
+          inputMode="decimal"
+          placeholder={marcador ?? '—'}
+          placeholderTextColor={colors.noSignal}
+          accessibilityLabel={etiqueta}
+          style={[
+            T.medida,
+            numeric,
+            {
+              flex: 1,
+              color: colors.ink,
+              paddingVertical: 2,
+              ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null),
+            },
+          ]}
+        />
+        {sufijo ? (
+          <Text style={[T.micro, { color: colors.inkFaint }]}>{sufijo}</Text>
+        ) : null}
+      </View>
+      {ayuda ? (
+        <Text style={[T.micro, { color: colors.inkFaint }]} numberOfLines={2}>
+          {ayuda}
+        </Text>
+      ) : null}
+    </View>
   );
 }

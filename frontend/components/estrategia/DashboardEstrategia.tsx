@@ -72,6 +72,13 @@ import {
 // respaldo estimado, y rotula cuál de los dos está enseñando). Reutilizarlo
 // es mejor que mantener un segundo calendario con otros datos.
 import EconomicCalendar from '../market/EconomicCalendar';
+// Trading simulado. Vive en su propia carpeta y en su propio hook: ni un solo
+// cálculo suyo entra en los paneles que ya existían.
+import { useSimulacion } from '../../lib/simulacion/useSimulacion';
+import BoletaManual from './simulacion/BoletaManual';
+import PanelOperaciones, { ResumenCuenta } from './simulacion/PanelOperaciones';
+import PanelRobot from './simulacion/PanelRobot';
+import GraficoOperaciones from './simulacion/GraficoOperaciones';
 
 /* ==========================================================================
  * Cabecera — buscador de símbolo y controles de la vista
@@ -126,7 +133,7 @@ function Cabecera({
     >
       <View style={{ gap: 1 }}>
         <Text style={[T.titular, { color: colors.ink }]}>Estrategia</Text>
-        <Rotulo>Terminal de decisión · solo lectura</Rotulo>
+        <Rotulo>Terminal de decisión · trading simulado</Rotulo>
       </View>
 
       {/* Antes esto era un campo de texto pelado que sólo aceptaba el ticker
@@ -168,7 +175,7 @@ function Cabecera({
       ) : null}
 
       {consenso ? <Chip texto={`Consenso MTF: ${consenso}`} tono="accent" /> : null}
-      <Chip texto="Paper · sin ejecución" tono="caution" icono="shield-outline" />
+      <Chip texto="Paper · órdenes simuladas" tono="caution" icono="flask-outline" />
       {!WS_HABILITADO ? <Chip texto="Sin flujo en vivo" icono="cloud-offline-outline" /> : null}
     </View>
   );
@@ -201,7 +208,7 @@ function AvisoAlcance() {
       accessibilityLabel={
         abierto
           ? 'Ocultar el detalle del alcance'
-          : 'Análisis y backtest sin ejecución. Ver el detalle del alcance'
+          : 'Trading simulado, sin bróker y sin ejecución real. Ver el detalle del alcance'
       }
       style={({ hovered }: any) => [
         {
@@ -220,7 +227,7 @@ function AvisoAlcance() {
       <View style={{ flex: 1, gap: 2, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={[T.datoFuerte, { color: palette.caution, flexShrink: 1 }]}>
-            Análisis y backtest — sin ejecución
+            Trading SIMULADO — sin bróker y sin ejecución real
           </Text>
           <Text style={[T.micro, { color: colors.inkMuted }]}>
             {abierto ? 'Ocultar' : 'Qué incluye'}
@@ -234,10 +241,13 @@ function AvisoAlcance() {
         {abierto ? (
           <Text style={[T.dato, { color: colors.inkMuted, lineHeight: 16 }]}>
             Señal, score, confluencia multi-marco, riesgo, tamaño y backtest sin look-ahead, todo
-            sobre datos reales. Lo que NO hay es ejecución: ni bróker conectado, ni paper trading,
-            ni órdenes. Sin libro de nivel II —yfinance no lo sirve— el robot no cronometra la
-            entrada al segundo; en su lugar mide liquidez (horquilla estimada por Corwin-Schultz,
-            impacto por Amihud y volumen medio) y con eso acota el tamaño de la posición.
+            sobre datos reales. Y desde ahora, trading SIMULADO: órdenes de mercado y limitadas,
+            largo y corto, con stop, objetivo y contabilidad de balance y equity. Lo que sigue sin
+            existir es la EJECUCIÓN REAL: no hay bróker conectado y ninguna orden sale a ningún
+            mercado. Los precios llegan de Yahoo con ~15 minutos de retraso, así que la simulación
+            vale para probar una estrategia, no para cronometrar una entrada. Sin libro de nivel II
+            —yfinance no lo sirve— el tamaño se acota con liquidez medida: horquilla estimada por
+            Corwin-Schultz, impacto por Amihud y volumen medio.
           </Text>
         ) : null}
       </View>
@@ -286,6 +296,35 @@ export default function DashboardEstrategia({
     segundosParaRefresco,
     falloRefresco,
   } = useEstrategia(simboloInicial, token);
+
+  /**
+   * Trading simulado.
+   *
+   * Hook aparte y estado aparte: la simulación no comparte ni una cifra con
+   * `useEstrategia`, y por eso no puede romper ninguno de los quince paneles
+   * que ya funcionaban. Lo único que viaja de un lado a otro es el SÍMBOLO y
+   * los dos deslizadores del robot —capital y riesgo—, que ya existían y ahora
+   * además dimensionan las operaciones que abre.
+   */
+  const sim = useSimulacion(token, simbolo, controles.capitalPct, controles.riesgoPct);
+
+  /**
+   * El selector MANUAL/AUTOMÁTICO es UNO solo.
+   *
+   * `controles.modo` ya existía en `ControlesRobot` y no hacía nada sobre la
+   * ejecución. Se reutiliza en vez de añadir un segundo interruptor: dos
+   * mandos para lo mismo acaban discrepando, y entonces la pantalla dice dos
+   * cosas a la vez sobre en qué modo está.
+   */
+  const cambiarModo = (m: 'manual' | 'automatico') => {
+    sim.setModo(m);
+    setControles({ modo: m });
+  };
+
+  const precioActual =
+    estado.mercado.datos?.precio ??
+    sim.estado?.abiertas.find((o) => o.simbolo === simbolo)?.precio_actual ??
+    null;
 
   /**
    * Alto real de la barra de estado, medido.
@@ -393,6 +432,39 @@ export default function DashboardEstrategia({
           columna central. Estaban en la banda inferior; aquí heredan el ancho
           del gráfico, que es el que necesitan: son curvas y tablas de cifras,
           y en una columna estrecha se recortan. */}
+      {/* Trading simulado. Va en la columna ANCHA por la misma razón que el
+          NQE: en los ~400 px de la columna del robot cada vela mide 2 px y el
+          cuerpo desaparece, y aquí además hay que poder seguir una línea de
+          entrada a salida. Y va DEBAJO del gráfico principal, no encima: la
+          decisión se toma mirando el precio y las operaciones son su
+          consecuencia. */}
+      <GraficoOperaciones
+        serie={estado.serie}
+        abiertas={sim.estado?.abiertas ?? []}
+        pendientes={sim.estado?.pendientes ?? []}
+        cerradas={sim.estado?.historial ?? []}
+        simbolo={simbolo}
+        cargando={sim.cargando}
+        compacto={compacto}
+      />
+      <PanelOperaciones
+        abiertas={sim.estado?.abiertas ?? []}
+        pendientes={sim.estado?.pendientes ?? []}
+        historial={sim.estado?.historial ?? []}
+        ordenes={sim.estado?.ordenes ?? []}
+        ahora={sim.ahora}
+        onCerrar={sim.cerrar}
+        onCancelar={sim.anularOrden}
+        cargando={sim.cargando}
+      />
+      <ResumenCuenta
+        cuenta={sim.estado?.cuenta ?? null}
+        robotActivo={sim.estado?.robot?.activo ?? false}
+        onReiniciar={sim.reiniciar}
+      />
+      {/* A partir de aquí, la CARTERA REAL. Son dineros distintos y no se
+          mezclan: la cuenta simulada vive en sus propias colecciones y su
+          balance nunca toca el de `/portfolio`. */}
       <RendimientoRobot curva={estado.curva} resumen={estado.resumen} cargando={cargando} />
       <EstadisticasRendimiento
         bloque={estado.resumen}
@@ -422,6 +494,32 @@ export default function DashboardEstrategia({
           lectura. */}
       <SesgoMultiMarco mtf={mtf} />
       <ControlesRobot controles={controles} onCambio={setControles} />
+      {/* La boleta va PEGADA a los controles y encima del plan: los
+          deslizadores de capital y riesgo que hay justo arriba son los que
+          dimensionan lo que se manda desde aquí, y leerlos a tres pantallas de
+          distancia de la orden es leerlos tarde. */}
+      <BoletaManual
+        simbolo={simbolo}
+        precioMercado={precioActual}
+        cuenta={sim.estado?.cuenta ?? null}
+        parametros={sim.estado?.parametros ?? null}
+        modo={controles.modo}
+        onModo={cambiarModo}
+        onEnviar={sim.enviarOrden}
+        deshabilitado={!token}
+      />
+      <PanelRobot
+        robot={sim.estado?.robot ?? null}
+        marco={sim.marco}
+        onMarco={sim.setMarco}
+        onConmutar={sim.conmutarRobot}
+        onEvaluar={sim.evaluarAhora}
+        pensando={sim.robotPensando}
+        segundosParaRobot={sim.segundosParaRobot}
+        ultimaDecision={sim.ultimaDecision}
+        decisiones={sim.decisiones}
+        simbolo={simbolo}
+      />
       <PlanPosicion
         bloque={estado.posicion}
         cargando={cargando}

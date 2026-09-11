@@ -886,7 +886,8 @@ backtest sin look-ahead, paper broker, scanner, ejecución y adaptador de broker
 | Order Flow / delta de agresores | **NO EXISTE.** |
 | Spread bid/ask | **NO EXISTE.** |
 | Backtest | **Existe.** `backend/backtest.py`, `/backtest/{ticker}`, sin look-ahead y con pruebas. |
-| Broker / ejecución / paper trading | **NO EXISTE.** |
+| Paper trading / trading simulado | **EXISTE.** `backend/simulacion.py` + `simulacion_senales.py` + 9 endpoints `/simulacion/*` + UI en `components/estrategia/simulacion/`. 86 pruebas. |
+| Broker real / ejecucion real | **NO EXISTE, y es deliberado.** |
 
 ### BLOQUEO CRÍTICO — decirlo antes de que invierta tiempo
 
@@ -936,3 +937,144 @@ existen y ya son reales.
   cifra** (ej.: el score es sobre 165, no sobre 100).
 - Verificar con pruebas ejecutables, no con afirmaciones. Varios bugs los
   encontraron los propios tests que escribí para validar los arreglos.
+
+---
+
+## Trading SIMULADO — entregado (11 sep 2026)
+
+`backend/simulacion.py` (motor puro) + `backend/simulacion_senales.py` (señal →
+intención) + bloque de 9 endpoints `/simulacion/*` en `server.py` +
+`frontend/lib/simulacion/` (3 archivos) + `components/estrategia/simulacion/` (5).
+**86 pruebas** (`test_simulacion.py` 56 · `test_simulacion_senales.py` 30).
+
+Simulación y sólo simulación: no hay bróker, no hay credenciales y **no existe
+ninguna ruta de código que pueda mandar una orden a ningún mercado**.
+
+### ORDEN y POSICIÓN son objetos distintos — no volver a fundirlos
+
+```
+ORDEN  ORD-2026-0001            POSICIÓN  SIM-2026-0001
+LONG · LIMIT · 14,00            (no existe todavía)
+PENDING  ──precio toca 14,00──► FILLED ───► OPEN  →  CLOSED / TAKE_PROFIT
+```
+
+La orden es la INTENCIÓN, la posición la CONSECUENCIA. Fundirlas parece un
+ahorro y no lo es: **una orden cancelada no es una operación con resultado
+cero**, nunca hubo posición, y si entrara en el denominador el win rate
+mentiría. Hay prueba (`test_orden_cancelada_no_entra_en_el_win_rate`) que
+demuestra que ese error bajaría el 60 % al 50 % sin haber operado nada.
+
+El panel tiene TRES secciones por eso: pendientes · abiertas · historial.
+
+### De dónde sale cada decisión del robot
+
+| Fuente | Papel | Por qué |
+|---|---|---|
+| `/pivots` | **DISPARA** | Única bidireccional con niveles coherentes Y las seis condiciones con su medida (`detalle`: «78,05 vs 77,56»). El registro de decisiones sale literalmente de ahí |
+| `/overton` | **VETA** o encoge | **Es LARGO POR CONSTRUCCIÓN**: `stop = precio − ATR·2,2`, `target = precio + ATR·N`. Sus niveles NO se usan nunca, ni siquiera en largo |
+| `/nqe` | matiza el tamaño | Con el preset por defecto da CERO señales en 5.082 barras. Exigir su acuerdo sería apagar el robot y llamarlo filtro |
+| `/mtf` | modifica el tamaño | Consenso contrario → CONTRA-TENDENCIA al 25 %, no «señal débil» |
+
+Los recortes se toman por **mínimo, no por producto**: 0,75 × 0,5 × 0,5 dejaría
+el tamaño en el 19 % y el robot no operaría de hecho sin que nada lo dijera.
+Hay prueba.
+
+### Deduplicación: cinco barreras, y la primera es estructural
+
+`signal_id = sha1(fuente|símbolo|marco|dirección|TIMESTAMP DE LA BARRA)`,
+guardado como `_id` en `db.sim_senales_vistas`. El duplicado choca contra la
+clave primaria de Mongo: **atómico y sin crear ningún índice** — que viene
+bien, porque este backend no crea ninguno ni tiene hook de `startup`.
+
+Que la clave lleve el sello de la BARRA y no la hora de consulta es lo que hace
+estructural el «una entrada por vela»: el robot puede evaluar veinte veces
+dentro de la misma vela y las veinte dan el mismo identificador.
+
+Las otras cuatro: una posición por (símbolo, dirección), `max_posiciones`,
+enfriamiento en barras tras cerrar, y revalidación de margen al ejecutar un
+LIMIT.
+
+### Cómo avanza el tiempo sin planificador
+
+No hay cron ni tarea de fondo. El motor tiquea cuando se consulta
+`/simulacion/estado`, pero **rellena el hueco recorriendo las BARRAS** que han
+pasado desde el último tick. Así un stop salta en SU barra y no «cuando alguien
+recargó la página».
+
+`aplicar_precio()` —un tick suelto— **no dispara stops a propósito**: un precio
+aislado no dice por dónde ha pasado el mercado entre dos consultas, y usarlo
+para cerrar haría que el resultado dependiera de cuándo se abrió la pestaña.
+
+### Bugs encontrados DURANTE esta sesión y ya corregidos
+
+| Bug | Cómo se cazó |
+|---|---|
+| **Una barra anterior a la apertura cerraba la posición.** Cuenta nueva → el relleno traía 6 meses de velas y cerraba por TAKE_PROFIT una posición de hacía 30 s, con el precio de hacía 4 meses. Salía «+386,29 · TAKE_PROFIT», perfectamente creíble | Prueba de extremo a extremo con `curl`, no una de escritorio. La guardia está ahora en el MOTOR (`_ya_existia`), no en quien le pasa las barras: es su propio invariante |
+| **Bloqueo mutuo en el gráfico de operaciones.** En el primer render `ancho = 0` → `anchoTrazado` negativo → `return null` → el `View` con `onLayout` no se dibujaba → `ancho` nunca llegaba. La tarjeta salía reducida a su cabecera | Una CAPTURA. `tsc`, `verificar-ambitos` y `verificar-imports` daban cero errores |
+| **Hidratación #418 del reloj.** `useState(() => Date.now())` se evalúa DURANTE el render; la exportación estática prerrenderiza con una hora y el cliente monta con otra | Consola del navegador. El #418 que QUEDA es preexistente y global: aparece igual en `/market`, `/portfolio` y `/watchlist` |
+| **`max_acciones_1pct` no existe.** La clave real de `_calc_liquidez_ejecucion` es `max_acciones_1pct_adv` | Leyendo el `return` ANTES de escribir el traductor, que es la regla del proyecto. El nombre plausible no da error: da `None` en todas las empresas |
+| **Los IDs saltaban `0001 → 0005`** porque una orden rechazada consumía también un número de posición | El número de posición sólo se reserva si va a haber posición. Un hueco en una secuencia se lee como «me han borrado operaciones» |
+| **`/portfolio` daba 401 al RECARGAR la página** (navegando por el menú, no). `AuthContext` deja el token en `axios.defaults`, y ese valor global mutable depende del orden de los efectos | Medido: menú → 200; recarga dura → 401 y «Portafolio vacío» con $0,00. Ahora `AccountWorkspace` manda la cabecera explícita en sus 9 peticiones |
+
+### Decisiones tomadas y sus supuestos declarados
+
+- **Apalancamiento**: multiplicador de nocional, **por defecto 1×**. Se modela
+  el margen retenido y el nivel de liquidación. **No** hay reglas de margen de
+  bróker, ni financiación diaria, ni avisos de garantías.
+- **Coste de préstamo del corto**: 0,30 % anual configurable. yfinance **no
+  publica la tasa real**: es un SUPUESTO, se rotula en la tarjeta, y sólo lo
+  paga el corto (hay prueba de que el largo no lo paga).
+- **P&L %**: se publican los DOS —`pct_precio` y `pct_capital`— porque con
+  apalancamiento difieren por el factor entero, y la tarjeta dice cuál enseña.
+  Un porcentaje sin base es el mismo fallo que un score sin su escala.
+- **Cadencia**: precio cada 20 s (`/price` está cacheado 60 s en servidor y
+  Yahoo llega con ~15 min de retraso); reloj de «tiempo abierto» a 1 Hz en
+  cliente, sin peticiones. Se para con la pestaña oculta.
+
+### Lo que NO se hizo, a propósito
+
+- **No se tocó ningún gráfico existente.** `GraficoMercado`, `PanelNQE`,
+  `PanelFibonacci` y `PanelPivotes` están intactos. La capa de operaciones es
+  un componente NUEVO (`simulacion/GraficoOperaciones.tsx`) que reutiliza el
+  lenguaje visual sin modificar los que ya funcionan.
+- **No se toca `db.portfolio`.** La cuenta simulada vive en `sim_cuentas`
+  (con órdenes y posiciones embebidas en su estado), más `sim_decisiones`,
+  `sim_senales_vistas`, `sim_contadores` y `sim_archivo`. Son dineros distintos.
+- No hay bróker real, ni adaptador, ni intención de tenerlo aquí.
+
+---
+
+## Portafolio — rediseño estilo terminal de bróker (11 sep 2026)
+
+`frontend/components/portfolio/CuentaIB.tsx` (nuevo), montado en
+`AccountWorkspace.tsx`. Favoritos NO cambia: comparte el archivo, no la lectura.
+
+**Qué sustituye:** «Resumen del Portafolio» y «Resumen Financiero» decían LO
+MISMO repartido en dos tarjetas de ~450 px. Ahora hay una franja de saldos
+—valor liquidativo con su desglose, resultado total y los seis saldos que lo
+componen— y una rejilla de posiciones ordenable de ocho columnas.
+
+Tres decisiones que conviene no deshacer:
+
+- **El valor liquidativo se descompone a la vista** (efectivo + posiciones) y
+  se COMPRUEBA: si la suma no cuadra con el total, la cabecera lo dice en vez
+  de enseñar una cifra grande que no cuadra con sus propios sumandos.
+- **Realizado y no realizado, separados y rotulados** («si vendieras hoy» /
+  «ventas ya cerradas»). Es la misma confusión que balance/equity.
+- **El peso de cada posición se dibuja** con una barra de ancho FIJO de 88 px.
+  Con `width: '100%'` la barra cruzaba la pantalla y parecía un subrayado.
+
+La rejilla desplaza en horizontal en pantallas estrechas en vez de encoger
+columnas: ocho columnas de cifras a 360 px no dan una tabla pequeña, dan ocho
+columnas ilegibles. Comprobado a 1600, 1024 y 420 px sin desbordamiento.
+
+`renderCashMovements(soloMovimientos)` enseña ahora sólo el historial de
+aportaciones: los saldos ya están arriba, y mantener dos sitios cuadrados es
+garantizar que un día digan cifras distintas.
+
+### Aviso sobre las pruebas locales
+
+`test_liquidez.py` no COLECCIONA en el Python local: hay fastapi 0.104.1 con
+starlette 1.3.1 y `APIRouter(prefix=...)` revienta por sí solo. No tiene que
+ver con este trabajo — en Docker el backend arranca bien. `test_backtest.py`
+tampoco corre bajo pytest: es un script con `sys.exit` al final.

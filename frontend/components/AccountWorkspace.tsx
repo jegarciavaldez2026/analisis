@@ -25,6 +25,13 @@ import PositionsTable from './portfolio/PositionsTable';
 import WatchlistTable from './portfolio/WatchlistTable';
 import type { ThemeColors } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+// Cabecera y rejilla de cuenta con densidad de terminal de bróker. Viven
+// aparte porque Favoritos comparte este archivo y no comparte esa lectura.
+import {
+  CabeceraCuenta,
+  CuentaVacia,
+  PosicionesCuenta,
+} from './portfolio/CuentaIB';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 /**
@@ -258,7 +265,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
 
   const fetchAnalysisHistory = async () => {
     try {
-      const res = await axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000 });
+      const res = await axios.get(`${BACKEND_URL}/api/history`, { timeout: 10000, headers: auth() });
       const seen = new Set();
       const unique = res.data.filter((item: any) => {
         if (seen.has(item.ticker)) return false;
@@ -269,14 +276,31 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     } catch (e) {}
   };
 
+  /**
+   * Cabecera de sesión EXPLÍCITA.
+   *
+   * `AuthContext` deja el token en `axios.defaults.headers.common`, y eso
+   * funciona mientras se llega aquí navegando por el menú. **Recargando la
+   * página sobre `/portfolio` no funciona**: medido, las tres peticiones
+   * salen sin cabecera y el backend contesta 401, así que la pantalla dibuja
+   * «Portafolio vacío» y $0,00 — que no se lee como «no ha cargado», se lee
+   * como «no tienes nada».
+   *
+   * Un valor global mutable cuyo momento de asignación depende del orden de
+   * los efectos es frágil por construcción. La cabecera se manda aquí, con el
+   * token que ya tiene este componente.
+   */
+  const auth = () => (token ? { Authorization: `Bearer ${token}` } : undefined);
+
   const fetchData = async () => {
     try {
       const timeout = 15000; // 15 seconds timeout
+      const headers = auth();
       
       if (activeTab === 'watchlist') {
         const [watchlistRes, alertsRes] = await Promise.all([
-          axios.get(`${BACKEND_URL}/api/watchlist`, { timeout }),
-          axios.get(`${BACKEND_URL}/api/watchlist/alerts`, { timeout })
+          axios.get(`${BACKEND_URL}/api/watchlist`, { timeout, headers }),
+          axios.get(`${BACKEND_URL}/api/watchlist/alerts`, { timeout, headers })
         ]);
         setWatchlist(watchlistRes.data);
         if (alertsRes.data.alerts && alertsRes.data.alerts.length > 0) {
@@ -285,9 +309,9 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
       } else {
         // Fetch in parallel with timeout
         const [portfolioRes, transactionsRes, cashRes] = await Promise.all([
-          axios.get(`${BACKEND_URL}/api/portfolio`, { timeout }),
-          axios.get(`${BACKEND_URL}/api/portfolio/transactions`, { timeout }),
-          axios.get(`${BACKEND_URL}/api/portfolio/cash`, { timeout })
+          axios.get(`${BACKEND_URL}/api/portfolio`, { timeout, headers }),
+          axios.get(`${BACKEND_URL}/api/portfolio/transactions`, { timeout, headers }),
+          axios.get(`${BACKEND_URL}/api/portfolio/cash`, { timeout, headers })
         ]);
         
         setPortfolio(portfolioRes.data);
@@ -296,7 +320,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         
         // Fetch evolution separately (can be slow)
         try {
-          const evolutionRes = await axios.get(`${BACKEND_URL}/api/portfolio/evolution`, { timeout: 30000 });
+          const evolutionRes = await axios.get(`${BACKEND_URL}/api/portfolio/evolution`, { timeout: 30000, headers });
           setPortfolioEvolution(evolutionRes.data);
         } catch (e) {
           console.log('Evolution fetch failed, skipping');
@@ -304,7 +328,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         
         // Fetch benchmark comparison
         try {
-          const benchmarkRes = await axios.get(`${BACKEND_URL}/api/portfolio/benchmark`, { timeout: 30000 });
+          const benchmarkRes = await axios.get(`${BACKEND_URL}/api/portfolio/benchmark`, { timeout: 30000, headers });
           setBenchmark(benchmarkRes.data);
         } catch (e) {
           console.log('Benchmark fetch failed, skipping');
@@ -368,7 +392,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         target_sell_price: editSellPrice ? parseFloat(editSellPrice) : null,
         notes: editNotes || null,
         price_change_threshold: parseFloat(editThreshold) || 5,
-      });
+      }, { headers: auth() });
       setShowEditWatchlistModal(false);
       setEditingWatchlistItem(null);
       fetchData();
@@ -415,7 +439,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         notify_on_price_change: notifyOnChange,
         price_change_threshold: parseFloat(priceThreshold) || 5,
         notes: watchlistNotes || null,
-      });
+      }, { headers: auth() });
       
       setShowAddWatchlist(false);
       resetWatchlistForm();
@@ -437,7 +461,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
     try {
-      await axios.delete(`${BACKEND_URL}/api/watchlist/${id}`);
+      await axios.delete(`${BACKEND_URL}/api/watchlist/${id}`, { headers: auth() });
       fetchData();
     } catch (error) {
       Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar') : Alert.alert('Error', 'No se pudo eliminar');
@@ -465,7 +489,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         transaction_date: editTxDate,
         commission: parseFloat(editTxCommission) || 0,
         notes: editTxNotes || null,
-      });
+      }, { headers: auth() });
       setShowEditTxModal(false);
       setEditingTx(null);
       fetchData();
@@ -525,7 +549,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         commission: parseFloat(txCommission) || 0,
         transaction_date: new Date(txDate).toISOString(),
         notes: txNotes || null,
-      });
+      }, { headers: auth() });
       
       setShowAddTransaction(false);
       resetTransactionForm();
@@ -547,7 +571,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
     try {
-      await axios.delete(`${BACKEND_URL}/api/portfolio/${id}`);
+      await axios.delete(`${BACKEND_URL}/api/portfolio/${id}`, { headers: auth() });
       fetchData();
       setShowTransactionHistory(false);
     } catch (error) {
@@ -595,7 +619,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         amount: parseFloat(cashAmount),
         description: cashDescription || null,
         movement_date: new Date(cashDate).toISOString(),
-      });
+      }, { headers: auth() });
       
       setShowCashModal(false);
       resetCashForm();
@@ -617,7 +641,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
     try {
-      await axios.delete(`${BACKEND_URL}/api/portfolio/cash/${id}`);
+      await axios.delete(`${BACKEND_URL}/api/portfolio/cash/${id}`, { headers: auth() });
       fetchData();
     } catch (error) {
       Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar') : Alert.alert('Error', 'No se pudo eliminar');
@@ -1131,7 +1155,17 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     );
   };
 
-  const renderCashMovements = () => {
+  /**
+   * `soloMovimientos` existe porque la cabecera de cuenta ya publica los
+   * saldos —efectivo, realizado, no realizado y valor total— y repetirlos
+   * cincuenta píxeles más abajo no es redundancia inofensiva: son dos sitios
+   * que hay que mantener cuadrados, y el día que uno se quede atrás la
+   * pantalla dirá dos cifras distintas para la misma cosa.
+   *
+   * Lo que sí es propio de esta tarjeta, y no está en ninguna otra parte, es
+   * el HISTORIAL de aportaciones y retiradas.
+   */
+  const renderCashMovements = (soloMovimientos = false) => {
     // Use portfolio data if available, otherwise calculate locally
     const cashAvailable = portfolio?.cash_available ?? 0;
     const realizedGains = portfolio?.realized_gains ?? 0;
@@ -1144,7 +1178,9 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     return (
       <View style={[styles.cashCard, { backgroundColor: colors.card }]}>
         <View style={styles.cashHeader}>
-          <Text style={[styles.metricsTitle, { color: colors.text }]}>Resumen Financiero</Text>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>
+            {soloMovimientos ? 'Movimientos de efectivo' : 'Resumen Financiero'}
+          </Text>
           <TouchableOpacity
             style={[styles.addCashButton, { backgroundColor: colors.primary }]}
             onPress={() => setShowCashModal(true)}
@@ -1154,6 +1190,7 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         </View>
         
         {/* Cash Section */}
+        {soloMovimientos ? null : (
         <View style={[styles.cashSection, { borderBottomColor: colors.border }]}>
           <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>EFECTIVO</Text>
           <View style={styles.cashSummary}>
@@ -1177,8 +1214,10 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
             </View>
           </View>
         </View>
+        )}
         
         {/* Gains Section */}
+        {soloMovimientos ? null : (
         <View style={[styles.gainsSection, { marginTop: 16 }]}>
           <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>GANANCIAS / PÉRDIDAS</Text>
           <View style={styles.gainsGrid}>
@@ -1198,9 +1237,10 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
             </View>
           </View>
         </View>
+        )}
         
         {/* Total Portfolio Value */}
-        {totalPortfolioValue > 0 && (
+        {!soloMovimientos && totalPortfolioValue > 0 && (
           <View style={[styles.totalPortfolioValue, { borderTopColor: colors.border }]}>
             <Text style={[styles.totalPortfolioLabel, { color: colors.text }]}>Valor Total del Portafolio</Text>
             <Text style={[styles.totalPortfolioAmount, { color: colors.primary }]}>
@@ -1214,7 +1254,16 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         
         {/* Recent Cash Movements */}
         {cashMovements.length > 0 && (
-          <View style={[styles.cashHistory, { borderTopColor: colors.border }]}>
+          <View
+            style={[
+              styles.cashHistory,
+              { borderTopColor: colors.border },
+              // Sin los bloques de saldos encima, el margen y la línea
+              // superiores dejaban una banda vacía de ~60 px entre el título
+              // de la tarjeta y su contenido.
+              soloMovimientos ? { marginTop: 0, paddingTop: 0, borderTopWidth: 0 } : null,
+            ]}
+          >
             <Text style={[styles.cashHistoryTitle, { color: colors.textSecondary }]}>Últimos movimientos</Text>
             {cashMovements.slice(0, 3).map((movement) => (
               <View key={movement.id} style={[styles.cashMovementItem, { borderBottomColor: colors.border }]}>
@@ -1595,52 +1644,37 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
             <>
               {portfolio && portfolio.holdings.length > 0 ? (
                 <>
-                  {/* Portfolio Summary with Hide Toggle */}
-                  <View style={[styles.summaryCard, { backgroundColor: colors.card }]}>
-                    <View style={styles.summaryHeader}>
-                      <Text style={[styles.summaryTitle, { color: colors.text }]}>Resumen del Portafolio</Text>
-                      <TouchableOpacity
-                        style={styles.hideToggle}
-                        onPress={() => setHideValues(!hideValues)}
-                      >
-                        <Ionicons
-                          name={hideValues ? 'eye-off' : 'eye'}
-                          size={20}
-                          color={colors.textSecondary}
-                        />
-                      </TouchableOpacity>
-                    </View>
-                    <View style={styles.summaryRow}>
-                      <View style={styles.summaryItem}>
-                        <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Invertido</Text>
-                        <Text style={[styles.summaryValue, { color: colors.text }]}>
-                          {formatCurrency(portfolio.total_invested)}
-                        </Text>
-                      </View>
-                      <View style={styles.summaryItem}>
-                        <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Valor Actual</Text>
-                        <Text style={[styles.summaryValue, { color: colors.text }]}>
-                          {formatCurrency(portfolio.current_value)}
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={[
-                      styles.totalPLContainer,
-                      { backgroundColor: portfolio.total_profit_loss >= 0 ? colors.upWash : colors.downWash }
-                    ]}>
-                      <Text style={[styles.totalPLLabel, { color: colors.text }]}>Ganancia/Pérdida Total</Text>
-                      <Text style={[
-                        styles.totalPLValue,
-                        { color: portfolio.total_profit_loss >= 0 ? colors.up : colors.down }
-                      ]}>
-                        {hideValues ? '••••••' : `${portfolio.total_profit_loss >= 0 ? '+' : ''}$${portfolio.total_profit_loss.toFixed(2)} (${portfolio.total_profit_loss_percent >= 0 ? '+' : ''}${portfolio.total_profit_loss_percent.toFixed(2)}%)`}
-                      </Text>
-                    </View>
+                  {/* Cabecera de cuenta: valor liquidativo con su desglose,
+                      resultado total y los saldos que lo componen. Sustituye a
+                      «Resumen del Portafolio» y a «Resumen Financiero», que
+                      decían lo mismo repartido en dos tarjetas de 450 px. */}
+                  <CabeceraCuenta
+                    saldos={portfolio as any}
+                    oculto={hideValues}
+                    onOcultar={() => setHideValues(!hideValues)}
+                    onEfectivo={() => setShowCashModal(true)}
+                    onOperacion={() => setShowAddTransaction(true)}
+                  />
+
+                  {/* Las posiciones van INMEDIATAMENTE debajo de los saldos:
+                      son lo que se viene a mirar. Los gráficos de evolución,
+                      reparto y sectores son contexto y bajan detrás. */}
+                  <View style={{ marginTop: 14 }}>
+                    <PosicionesCuenta
+                      posiciones={portfolio.holdings as any}
+                      oculto={hideValues}
+                      onPulsar={(pos: any) =>
+                        setSelectedHolding(
+                          portfolio.holdings.find((h) => h.ticker === pos.ticker) ?? null,
+                        )
+                      }
+                    />
                   </View>
-                  
-                  {/* Cash Movements */}
-                  {renderCashMovements()}
-                  
+
+                  {/* Movimientos de efectivo: el detalle, no la portada. Los
+                      saldos ya están arriba y no se repiten. */}
+                  <View style={{ marginTop: 14 }}>{renderCashMovements(true)}</View>
+
                   {/* Evolution Chart */}
                   {renderEvolutionChart()}
                   
@@ -1656,62 +1690,27 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
                   {/* Portfolio Metrics */}
                   {renderMetricsCard()}
                   
-                  {/* Dos lecturas de lo mismo: las tarjetas sirven para mirar
-                      una posición; la tabla, para compararlas entre sí. */}
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8 }}>
-                    <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 0 }]}>Posiciones</Text>
-                    <View style={{ flexDirection: 'row', gap: 2 }}>
-                      {([['tarjetas', 'Tarjetas'], ['tabla', 'Detalle']] as const).map(([clave, etiqueta]) => {
-                        const activa = vistaPosiciones === clave;
-                        return (
-                          <Pressable
-                            key={clave}
-                            onPress={() => setVistaPosiciones(clave)}
-                            accessibilityRole="tab"
-                            accessibilityState={{ selected: activa }}
-                            style={({ pressed }) => [{
-                              paddingHorizontal: 10,
-                              paddingVertical: 6,
-                              minHeight: 32,
-                              justifyContent: 'center',
-                              borderRadius: 5,
-                              borderWidth: 1,
-                              borderColor: activa ? colors.primary : colors.border,
-                              backgroundColor: activa ? `${colors.primary}18` : 'transparent',
-                              opacity: pressed ? 0.7 : 1,
-                            }]}
-                          >
-                            <Text style={{
-                              fontSize: 12,
-                              fontWeight: activa ? '700' : '500',
-                              color: activa ? colors.primary : colors.textSecondary,
-                            }}>
-                              {etiqueta}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  </View>
-
-                  {vistaPosiciones === 'tabla' ? (
-                    <PositionsTable holdings={portfolio.holdings as any} />
-                  ) : (
-                    portfolio.holdings.map(renderPortfolioHolding)
-                  )}
                 </>
               ) : (
                 <>
-                  {/* Show cash section even when no holdings */}
-                  {renderCashMovements()}
-                  
-                  <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
-                    <Ionicons name="briefcase-outline" size={60} color={colors.textSecondary} />
-                    <Text style={[styles.emptyTitle, { color: colors.text }]}>Portafolio vacío</Text>
-                    <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
-                      Registra tus compras para llevar control
-                    </Text>
+                  {/* Sin posiciones la cuenta SIGUE existiendo: puede haber
+                      efectivo aportado y ventas ya realizadas. Enseñar sólo
+                      «Portafolio vacío» escondía ese dinero. */}
+                  {portfolio ? (
+                    <CabeceraCuenta
+                      saldos={portfolio as any}
+                      oculto={hideValues}
+                      onOcultar={() => setHideValues(!hideValues)}
+                      onEfectivo={() => setShowCashModal(true)}
+                      onOperacion={() => setShowAddTransaction(true)}
+                    />
+                  ) : null}
+
+                  <View style={{ marginTop: 14 }}>
+                    <CuentaVacia onOperacion={() => setShowAddTransaction(true)} />
                   </View>
+
+                  <View style={{ marginTop: 14 }}>{renderCashMovements(true)}</View>
                 </>
               )}
             </>
