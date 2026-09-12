@@ -23,12 +23,6 @@
     "ast_hash": "b3f4056b47aa3a30fc0940678e63b733",
     "semantic_hash": "b3f4056b47aa3a30fc0940678e63b733"
   },
-  "backend/overton_enhanced.py": {
-    "mtime": 1786291474.197813,
-    "seen": 1789208145.8869045,
-    "ast_hash": "1c1d8cd25486ff8cfea93ed60348fe1f",
-    "semantic_hash": "1c1d8cd25486ff8cfea93ed60348fe1f"
-  },
   "backend/patterns.py": {
     "mtime": 1786885056.463298,
     "seen": 1789208145.8869045,

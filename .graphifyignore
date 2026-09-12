@@ -1,0 +1,14 @@
+# Configuración de herramientas de agentes: cuatro copias casi idénticas de
+# skills de terceros (606 ficheros). No es código de este proyecto y dominaría
+# el grafo. Ver el commit del grafo de conocimiento.
+.agents/
+.cursor/
+.claude/
+.opencode/
+.emergent/
+.codex/
+.impeccable/
+
+# Iconos de Expo: boilerplate (favicon, react-logo, splash). Cada PNG cuesta
+# su propio subagente de visión y no aporta ningún concepto.
+frontend/assets/images/
