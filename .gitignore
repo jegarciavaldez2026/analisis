@@ -109,3 +109,9 @@ backend/models/
 # Salida de compilar.bat / iniciar.bat
 .compilar_log.txt
 .iniciar_log.txt
+
+# graphify: sidecars con rutas absolutas de la máquina, no del repo
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/
+graphify-out/stat-index.json
