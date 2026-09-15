@@ -13,7 +13,7 @@
  * identidad visual.
  */
 
-import React, { ReactNode, useCallback, useMemo, useRef, useState } from 'react';
+import React, { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LayoutChangeEvent,
   PanResponder,
@@ -575,7 +575,9 @@ export function Deslizador({
   const [ancho, setAncho] = useState(0);
   const anchoRef = useRef(0);
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   const medir = useCallback((e: LayoutChangeEvent) => {
     const w = e.nativeEvent.layout.width;

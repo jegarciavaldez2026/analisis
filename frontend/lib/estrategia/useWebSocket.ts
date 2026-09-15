@@ -76,7 +76,9 @@ export function useSocket<T>({
   const temporizadorRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vivoRef = useRef(true);
   const traducirRef = useRef(traducir);
-  traducirRef.current = traducir;
+  useEffect(() => {
+    traducirRef.current = traducir;
+  }, [traducir]);
 
   /** Vuelca lo pendiente al estado. Aquí es donde se corta el exceso de renders. */
   const volcar = useCallback(() => {
@@ -138,7 +140,9 @@ export function useSocket<T>({
     };
 
     ws.onclose = () => {
-      if (!vivoRef.current) return;
+      // El cierre llega asíncrono: si ya hay otro socket (reconectar, o el
+      // efecto se rehízo), éste no puede programar una segunda conexión.
+      if (!vivoRef.current || socketRef.current !== ws) return;
       setConexion('desconectado');
       const intento = (intentosRef.current += 1);
       const espera = Math.min(ESPERA_BASE * 2 ** (intento - 1), ESPERA_MAX);
