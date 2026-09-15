@@ -17,9 +17,11 @@ import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 import type { ThemeColors } from '../../contexts/ThemeContext';
 import { inkOn, Palette } from '../../theme/tokens';
 import HeatmapContainer from '../../components/Heatmap/HeatmapContainer';
+import RejillaHistorial, { FilaHistorial } from '../../components/history/RejillaHistorial';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
 
@@ -184,7 +186,8 @@ function HistoryCard({
   mercado?: EnhancedHistoryItem;
   colors: ThemeColors;
   palette: Palette;
-  onDelete: (id: string, ticker: string) => void;
+  /** El historial es compartido y sólo lo borra un administrador. Sin función no hay botón. */
+  onDelete?: (id: string, ticker: string) => void;
   isDeleting: boolean;
 }) {
   const [price, setPrice] = useState<PriceInfo>(() =>
@@ -519,15 +522,17 @@ function HistoryCard({
           <Ionicons name="time-outline" size={13} color={colors.textSecondary} />
           <Text style={[styles.dateText, { color: colors.textSecondary }]}>{formatDate(item.analysis_date)}</Text>
         </View>
-        <TouchableOpacity
-          style={[styles.deleteButton, { backgroundColor: colors.danger + '15' }]}
-          onPress={() => onDelete(item.id, item.ticker)}
-          disabled={isDeleting}
-        >
-          {isDeleting
-            ? <ActivityIndicator size="small" color={colors.danger} />
-            : <Ionicons name="trash-outline" size={17} color={colors.danger} />}
-        </TouchableOpacity>
+        {onDelete ? (
+          <TouchableOpacity
+            style={[styles.deleteButton, { backgroundColor: colors.danger + '15' }]}
+            onPress={() => onDelete(item.id, item.ticker)}
+            disabled={isDeleting}
+          >
+            {isDeleting
+              ? <ActivityIndicator size="small" color={colors.danger} />
+              : <Ionicons name="trash-outline" size={17} color={colors.danger} />}
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -558,10 +563,18 @@ export default function HistoryScreen() {
   const [history,       setHistory]      = useState<HistoryItem[]>([]);
   const [enhanced,      setEnhanced]     = useState<EnhancedHistoryItem[]>([]);
   const [loading,       setLoading]      = useState(true);
+  /** Precios en vivo del mapa. Van aparte de `loading`: la lista sale de Mongo
+   *  en milisegundos y no tiene por qué esperar a las cotizaciones. */
+  const [cargandoMapa,  setCargandoMapa] = useState(true);
   const [refreshing,    setRefreshing]   = useState(false);
+  const { token, esAdmin } = useAuth();
   const [deleting,      setDeleting]     = useState<string | null>(null);
   const [activeFilter,  setActiveFilter] = useState<FilterType>('TODOS');
   const [busqueda,      setBusqueda]     = useState('');
+  /** Rejilla o tarjetas. La rejilla es la de por defecto: la pregunta que
+   *  trae a esta pantalla es «cual de todas», y eso solo se contesta con las
+   *  cifras en columna. Las tarjetas siguen ahi para mirar UNA. */
+  const [vistaHistorial, setVistaHistorial] = useState<'rejilla' | 'tarjetas'>('rejilla');
   /** Ticker abierto en la ficha. `null` = lista. */
   const [seleccion,     setSeleccion]    = useState<string | null>(null);
   /** Medias por sector, calculadas por el backend sobre tus propios análisis. */
@@ -580,21 +593,27 @@ export default function HistoryScreen() {
   }, []);
 
   const fetchHistory = async () => {
-    try {
-      // Las dos listas se piden a la vez y con el mismo tope. Antes el básico
-      // traía 50 y el mapa hasta 200: tocar en el mapa una empresa que no
-      // estuviera entre los 50 últimos análisis abría una ficha vacía.
-      const [basicRes, enhancedRes] = await Promise.allSettled([
-        axios.get(`${BACKEND_URL}/api/history`, { params: { limit: 200 }, timeout: 15000 }),
-        axios.get(`${BACKEND_URL}/api/history/enhanced`, { params: { limit: 200 }, timeout: 45000 }),
-      ]);
+    // Las dos listas se piden a la vez y con el mismo tope. Antes el básico
+    // traía 50 y el mapa hasta 200: tocar en el mapa una empresa que no
+    // estuviera entre los 50 últimos análisis abría una ficha vacía.
+    //
+    // Pero NO se esperan juntas. La lista sale de Mongo en ~15 ms; el mapa
+    // necesita la cotización de cada empresa y en frío tarda ~4 s (96 empresas,
+    // medido). Antes el spinner esperaba a las dos y la pantalla entera pagaba
+    // lo que sólo cuesta el mapa.
+    const basico = axios
+      .get(`${BACKEND_URL}/api/history`, { params: { limit: 200 }, timeout: 15000 })
+      .then((res) => setHistory(res.data))
+      .catch((err) => console.error('Error fetching history:', err))
+      .finally(() => setLoading(false));
 
-      if (basicRes.status === 'fulfilled') setHistory(basicRes.value.data);
-
-      if (enhancedRes.status === 'fulfilled') {
+    setCargandoMapa(true);
+    const mapa = axios
+      .get(`${BACKEND_URL}/api/history/enhanced`, { params: { limit: 200 }, timeout: 45000 })
+      .then((res) => {
         // Deduplicar por ticker — solo el análisis más reciente
         const seen = new Set<string>();
-        const unique = (enhancedRes.value.data as EnhancedHistoryItem[]).filter((item) => {
+        const unique = (res.data as EnhancedHistoryItem[]).filter((item) => {
           if (seen.has(item.ticker)) return false;
           seen.add(item.ticker);
           return true;
@@ -602,15 +621,16 @@ export default function HistoryScreen() {
         setEnhanced(unique);
         // La hora que se enseña al pie del mapa es la de ESTOS precios, no la
         // del reloj: si la petición falla, el mapa sigue diciendo cuándo se
-        // trajo lo que estás viendo.
-        setActualizado(new Date());
-      }
-    } catch (err) {
-      console.error('Error fetching history:', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+        // trajo lo que estás viendo. El backend puede servir la última lectura
+        // mientras recalcula, y dice su edad en `X-Edad-Datos`.
+        const edad = Number(res.headers?.['x-edad-datos'] ?? 0);
+        setActualizado(new Date(Date.now() - (Number.isFinite(edad) ? edad : 0) * 1000));
+      })
+      .catch((err) => console.warn('Precios del mapa no disponibles:', err))
+      .finally(() => setCargandoMapa(false));
+
+    await Promise.allSettled([basico, mapa]);
+    setRefreshing(false);
 
     // Las series de un año van APARTE y después. `/history/enhanced` responde
     // en un segundo con `fast_info` y es lo que pinta el mapa nada más abrir;
@@ -648,7 +668,8 @@ export default function HistoryScreen() {
     if (!confirmed) return;
     setDeleting(id);
     try {
-      await axios.delete(`${BACKEND_URL}/api/history/${id}`);
+      // Cabecera explícita: el borrado exige sesión de administrador.
+      await axios.delete(`${BACKEND_URL}/api/history/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setHistory(prev => prev.filter(i => i.id !== id));
       setEnhanced(prev => prev.filter(i => i.id !== id));
     } catch {
@@ -670,7 +691,7 @@ export default function HistoryScreen() {
     if (!confirmed) return;
     setLoading(true);
     try {
-      await axios.delete(`${BACKEND_URL}/api/history`);
+      await axios.delete(`${BACKEND_URL}/api/history`, { headers: { Authorization: `Bearer ${token}` } });
       setHistory([]);
       setEnhanced([]);
       Platform.OS === 'web'
@@ -764,6 +785,31 @@ export default function HistoryScreen() {
     );
   }, [filteredHistoryBase, busqueda]);
 
+  /** Filas de la rejilla: el analisis guardado mas las metricas de mercado que
+   *  ya estan en memoria. No dispara ninguna peticion nueva. */
+  const filasRejilla: FilaHistorial[] = useMemo(
+    () =>
+      filteredHistory.map((h: any) => {
+        const m = metricas.get(h.ticker);
+        return {
+          id: h.id,
+          ticker: h.ticker,
+          company_name: h.company_name,
+          analysis_date: h.analysis_date,
+          recommendation: h.recommendation,
+          favorable_percentage: h.favorable_percentage,
+          sector: h.sector ?? null,
+          current_price: m?.current_price ?? h.current_price ?? null,
+          change_1d: m?.change_1d ?? null,
+          change_1w: m?.change_1w ?? null,
+          change_1m: m?.change_1m ?? null,
+          change_ytd: m?.change_ytd ?? null,
+          relative_volume: m?.relative_volume ?? null,
+        };
+      }),
+    [filteredHistory, metricas],
+  );
+
   if (loading) {
     return (
       <View style={[styles.centerContainer, { backgroundColor: colors.background }]}>
@@ -772,11 +818,33 @@ export default function HistoryScreen() {
     );
   }
 
-  // Header component rendered above the FlashList
-  const ListHeader = () => (
+  // Cabecera de la lista. Es un ELEMENTO, no un componente: definida como
+  // `const ListHeader = () => (…)` era un tipo nuevo en cada render, así que
+  // React la desmontaba entera — el mapa de calor volvía a su estado inicial
+  // cada vez que llegaba un dato y el buscador perdía el foco con cada tecla.
+  const cabecera = (
     <View>
+      {/* Mientras llegan los precios: la lista de abajo ya se puede usar. */}
+      {cargandoMapa && enhanced.length === 0 && history.length > 0 && (
+        <View style={[styles.heatmapWrapper, { paddingBottom: 12 }]}>
+          <View
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12,
+              borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
+              borderColor: colors.border, backgroundColor: colors.card,
+            }}
+            accessibilityLiveRegion="polite"
+          >
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={{ fontSize: 12, color: colors.inkMuted }}>
+              Cargando los precios del mapa de calor…
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* Heatmap (collapsible) */}
-      {enhanced.length === 0 && history.length > 0 && !loading && (
+      {enhanced.length === 0 && history.length > 0 && !cargandoMapa && (
         <View style={[styles.heatmapWrapper, { paddingBottom: 12 }]}>
           <View
             style={{
@@ -885,6 +953,35 @@ export default function HistoryScreen() {
         </ScrollView>
       )}
 
+      {/* Rejilla o tarjetas. Mismo conmutador que en Favoritos y Posiciones:
+          la rejilla compara, la tarjeta detalla. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
+                     gap: 2, paddingHorizontal: 16, paddingBottom: 8 }}>
+        {([['rejilla', 'Rejilla'], ['tarjetas', 'Tarjetas']] as const).map(([clave, etiqueta]) => {
+          const activa = vistaHistorial === clave;
+          return (
+            <Pressable
+              key={clave}
+              onPress={() => setVistaHistorial(clave)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: activa }}
+              style={({ pressed }) => [{
+                paddingHorizontal: 10, paddingVertical: 6, minHeight: 32,
+                justifyContent: 'center', borderRadius: 5, borderWidth: 1,
+                borderColor: activa ? colors.accent : colors.border,
+                backgroundColor: activa ? colors.accentWash : 'transparent',
+                opacity: pressed ? 0.7 : 1,
+              }]}
+            >
+              <Text style={{ fontSize: 12, fontWeight: activa ? '700' : '500',
+                             color: activa ? colors.accent : colors.textSecondary }}>
+                {etiqueta}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       {/* Filtros con su contador y buscador */}
       <View style={[styles.filterWrapper, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
         <ScrollView
@@ -937,13 +1034,15 @@ export default function HistoryScreen() {
           {filteredHistory.length}{' '}
           {activeFilter === 'TODOS' ? 'análisis' : filteredHistory.length === 1 ? 'resultado' : 'resultados'}
         </Text>
-        <TouchableOpacity
-          style={[styles.deleteAllButton, { backgroundColor: colors.danger + '15' }]}
-          onPress={deleteAllHistory}
-        >
-          <Ionicons name="trash-outline" size={18} color={colors.danger} />
-          <Text style={[styles.deleteAllText, { color: colors.danger }]}>Borrar todo</Text>
-        </TouchableOpacity>
+        {esAdmin ? (
+          <TouchableOpacity
+            style={[styles.deleteAllButton, { backgroundColor: colors.danger + '15' }]}
+            onPress={deleteAllHistory}
+          >
+            <Ionicons name="trash-outline" size={18} color={colors.danger} />
+            <Text style={[styles.deleteAllText, { color: colors.danger }]}>Borrar todo</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -1045,7 +1144,7 @@ export default function HistoryScreen() {
             mercado={datosMercado ?? undefined}
             colors={colors}
             palette={palette}
-            onDelete={deleteAnalysis}
+            onDelete={esAdmin ? deleteAnalysis : undefined}
             isDeleting={deleting === abierta.id}
           />
         </ScrollView>
@@ -1056,7 +1155,7 @@ export default function HistoryScreen() {
   if (filteredHistory.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <ListHeader />
+        {cabecera}
         <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
           <Ionicons name="folder-open-outline" size={80} color={colors.textSecondary} />
           <Text style={[styles.emptyTitle, { color: colors.text }]}>
@@ -1068,6 +1167,22 @@ export default function HistoryScreen() {
               : 'No hay acciones con esta recomendación en tu historial'}
           </Text>
         </View>
+      </View>
+    );
+  }
+
+  if (vistaHistorial === 'rejilla') {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <ScrollView
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+          }
+        >
+          {cabecera}
+          <RejillaHistorial filas={filasRejilla} onAbrir={setSeleccion} />
+        </ScrollView>
       </View>
     );
   }
@@ -1089,7 +1204,7 @@ export default function HistoryScreen() {
             mercado={porTicker.get(item.ticker)}
             colors={colors}
             palette={palette}
-            onDelete={deleteAnalysis}
+            onDelete={esAdmin ? deleteAnalysis : undefined}
             isDeleting={deleting === item.id}
           />
           </TouchableOpacity>
@@ -1098,7 +1213,7 @@ export default function HistoryScreen() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
         }
-        ListHeaderComponent={<ListHeader />}
+        ListHeaderComponent={cabecera}
       />
     </View>
   );

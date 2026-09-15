@@ -119,7 +119,7 @@ function generatePDF(title, ticker, companyName, rows, years, c) {
   </text>
   <text x="${W - margin}" y="${tableTop + rows.length * rowH + 36}"
         font-family="Georgia, serif" font-size="9" fill="${c.inkFaint}" text-anchor="end">
-    FinAnalysis Pro
+    Fundamentor
   </text>
 </svg>`;
 
@@ -1173,15 +1173,18 @@ export default function FinancialStatements({ ticker, companyName }) {
   }
 
   return (
-    <div style={{ fontFamily: "Georgia, serif" }}>
+    // Mismo margen y cuerpo de título que la tarjeta anterior (Valoración FCFF):
+    // sin margen lateral esta tarjeta ocupaba 32 px más que las de arriba y el
+    // título iba a 22 px frente a 20. Medido en la ficha de AMZN a 1440 px.
+    <div style={{ fontFamily: "Georgia, serif", margin: "0 16px 24px" }}>
 
       {/* ── Header ── */}
       <div style={styles.header}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: c.ink }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: c.ink }}>
             Estados financieros
           </h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: c.inkMuted }}>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: c.inkMuted }}>
             {companyName || ticker} · {aniosVisibles.length ? `Últimos ${aniosVisibles.length} ejercicios fiscales` : 'Sin ejercicios'} · Millones USD
           </p>
         </div>

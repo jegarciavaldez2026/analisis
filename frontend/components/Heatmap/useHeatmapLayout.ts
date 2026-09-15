@@ -91,6 +91,49 @@ export interface Bloque {
 const CAP_MINIMA = 1e7;
 const cap = (v: Valor) => Math.max(v.market_cap ?? 0, CAP_MINIMA);
 
+/**
+ * Cómo se reparte el área.
+ *
+ *  · `real`        — el área ES la capitalización. Fiel, y con un recorrido de
+ *                    40.000:1 la mayor se come su sector y el resto cae al «+N».
+ *  · `comprimida`  — el área es la capitalización elevada a 0,25. El orden se
+ *                    conserva (la grande sigue siendo la mayor) pero las
+ *                    distancias se acortan, así que casi todas las empresas
+ *                    llegan a un tamaño rotulable y se ve su código.
+ *
+ * El precio de comprimir hay que decirlo, y la tarjeta lo dice al pie: **el
+ * área deja de ser proporcional a la capitalización**. Sigue siendo monótona
+ * —a más capitalización, más área— pero ya no se pueden comparar dos celdas
+ * por su tamaño. Es un cambio de escala honesto, no un suelo inventado: no se
+ * altera ningún dato, se cambia la función que lo dibuja, y se rotula cuál
+ * está activa.
+ */
+export type Area = 'real' | 'comprimida';
+
+/**
+ * Exponente de la compresión. NO es una preferencia estética: se eligió
+ * midiendo, replicando este mismo reparto fuera de la app sobre las 95
+ * empresas del historial y el lienzo real de 1290x620 px.
+ *
+ *   exponente   códigos visibles de 95
+ *   1,00 (real)        21
+ *   0,50               48
+ *   0,35               73
+ *   0,25               88   <- el elegido
+ *   0,15               92
+ *   0,00 (iguales)     95
+ *
+ * Se para en 0,25 y no baja más porque en 0,00 todas las celdas miden lo mismo
+ * y el área deja de significar nada: el mapa se convertiría en una cuadrícula
+ * y perdería la única variable que transporta además del color. Con 0,25 el
+ * orden de tamaño se conserva —la mayor sigue siendo la mayor— y quedan siete
+ * sin rotular, que son las que el nodo «+N» recoge y se pueden pulsar.
+ */
+const EXPONENTE_AREA = 0.25;
+
+const peso = (v: Valor, area: Area) =>
+  area === 'comprimida' ? Math.pow(cap(v), EXPONENTE_AREA) : cap(v);
+
 /** Por debajo de esto una celda no admite ni el ticker: va al grupo «+N». */
 export const MIN_ANCHO_CELDA = 32;
 export const MIN_ALTO_CELDA = 22;
@@ -127,7 +170,7 @@ function ordenar(valores: Valor[], orden: Orden, periodo: Periodo): Valor[] {
  * que volver a medir. Cortar antes dejaba celdas de veinte píxeles con un
  * ticker recortado dentro, que es justo lo que este mecanismo evita.
  */
-function repartirSector(valores: Valor[], ancho: number, alto: number, orden: Orden, periodo: Periodo) {
+function repartirSector(valores: Valor[], ancho: number, alto: number, orden: Orden, periodo: Periodo, area: Area) {
   const ordenados = ordenar(valores, orden, periodo);
 
   const intento = (visibles: number) => {
@@ -135,11 +178,11 @@ function repartirSector(valores: Valor[], ancho: number, alto: number, orden: Or
     const fuera = ordenados.slice(visibles);
     const hijos: { valor?: Valor; valores?: Valor[]; value: number }[] = dentro.map((v) => ({
       valor: v,
-      value: cap(v),
+      value: peso(v, area),
     }));
     // El nodo «+N» entra al reparto con la suma de lo que agrupa: conserva
     // exactamente el área que le corresponde a ese conjunto.
-    if (fuera.length) hijos.push({ valores: fuera, value: fuera.reduce((a, v) => a + cap(v), 0) });
+    if (fuera.length) hijos.push({ valores: fuera, value: fuera.reduce((a, v) => a + peso(v, area), 0) });
 
     const raiz = hierarchy<{ children?: any[]; value?: number }>({ children: hijos } as any)
       .sum((d: any) => d.value ?? 0)
@@ -178,6 +221,7 @@ export function useHeatmapLayout(
   alto: number,
   orden: Orden = 'cap',
   periodo: Periodo = '1d',
+  area: Area = 'comprimida',
 ): { bloques: Bloque[]; totalEmpresas: number; totalSectores: number } {
   return useMemo(() => {
     if (ancho <= 0 || alto <= 0 || !items.length) {
@@ -194,6 +238,10 @@ export function useHeatmapLayout(
       sector,
       valores,
       capitalizacion: valores.reduce((a, v) => a + cap(v), 0),
+      // Peso de reparto del bloque, en la misma escala que sus hijos. Va
+      // aparte de `capitalizacion`, que es el DATO y se sigue enseñando tal
+      // cual en la cabecera del sector.
+      pesoArea: valores.reduce((a, v) => a + peso(v, area), 0),
       agrupa: [] as string[],
     }));
 
@@ -228,6 +276,7 @@ export function useHeatmapLayout(
         sector: OTROS_SECTORES,
         valores: pequenos.flatMap((s) => s.valores),
         capitalizacion: pequenos.reduce((a, s) => a + s.capitalizacion, 0),
+        pesoArea: pequenos.reduce((a, s: any) => a + (s.pesoArea ?? s.capitalizacion), 0),
         agrupa: pequenos.map((s) => s.sector).sort((a, b) => a.localeCompare(b, 'es')),
       });
     }
@@ -236,7 +285,7 @@ export function useHeatmapLayout(
     // lo que importa es que los bloques sean legibles, y el orden dentro del
     // mapa no aporta significado —el nombre va escrito en cada bloque.
     const raiz = hierarchy<any>({ children: sectores } as any)
-      .sum((d: any) => d.capitalizacion ?? 0)
+      .sum((d: any) => d.pesoArea ?? d.capitalizacion ?? 0)
       .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
 
     treemap<any>()
@@ -254,7 +303,7 @@ export function useHeatmapLayout(
       const interiorAlto = Math.max(h - cabecera - 4, 0);
       const interiorAncho = Math.max(w - 4, 0);
 
-      const { dentro, fuera, hojas } = repartirSector(valores, interiorAncho, interiorAlto, orden, periodo);
+      const { dentro, fuera, hojas } = repartirSector(valores, interiorAncho, interiorAlto, orden, periodo, area);
 
       const celdas: Celda[] = [];
       let resto: CeldaResto | null = null;
@@ -318,5 +367,5 @@ export function useHeatmapLayout(
       // se dibujan: agrupar nueve en uno no hace que existan menos.
       totalSectores: crudos.length,
     };
-  }, [items, ancho, alto, orden, periodo]);
+  }, [items, ancho, alto, orden, periodo, area]);
 }

@@ -1,6 +1,7 @@
 {
   "expo": {
-    "name": "Análisis Financiero",
+    "name": "Fundamentor",
+    "description": "Fundamentor · Financial Data Intelligence",
     "slug": "analisis-financiero",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -14,13 +15,15 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": true
     },
     "web": {
       "bundler": "metro",
       "output": "static",
+      "name": "Fundamentor",
+      "shortName": "Fundamentor",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [

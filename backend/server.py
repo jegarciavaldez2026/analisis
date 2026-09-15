@@ -15,13 +15,15 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import timedelta
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends
+from fastapi import Depends, Request, Response
 from typing import Dict, List
 
 # ── Auth Config ───────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get("SECRET_KEY", "finanalysis-secret-key-2026-change-in-production")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_DAYS = 30
+# Antes 30 días sin forma de revocar. Con la versión de token (`tv`) las
+# sesiones se cortan al cambiar contraseña, rol o estado.
+ACCESS_TOKEN_EXPIRE_DAYS = 7
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 import requests
@@ -240,6 +242,10 @@ def cache_invalidar(prefijo: str):
     with _cache_lock:
         for k in [k for k in _cache if k.startswith(prefijo)]:
             _cache.pop(k, None)
+        # La reserva también: hay endpoints que la sirven mientras recalculan
+        # (`/history/enhanced`), y un análisis borrado volvería a aparecer.
+        for k in [k for k in _reserva if k.startswith(prefijo)]:
+            _reserva.pop(k, None)
 
 
 def cotizacion_rapida(tk: str) -> dict:
@@ -392,9 +398,15 @@ db = client[os.environ['DB_NAME']]
 # creada la conexión a Mongo, porque la caché vive en `db.traducciones` y sin
 # ella el coste es inasumible: 1-2 s por titular.
 from traduccion import traducir_noticias, LOCK_LLM  # noqa: E402
+import comparativa as comparativa_mod  # noqa: E402
+import screener as screener_mod  # noqa: E402
+import rendimiento as rendimiento_mod  # noqa: E402
+import rendimiento_api  # noqa: E402
+import usuarios as usuarios_mod  # noqa: E402
+from admin_api import crear_router as crear_router_admin  # noqa: E402
 
 
-async def _traducir_articulos(articulos: list) -> list:
+async def _traducir_articulos(articulos: list, espera: float = 0.0) -> list:
     """
     Traduce una lista de `NewsArticle` conservando el resto de campos.
 
@@ -407,12 +419,43 @@ async def _traducir_articulos(articulos: list) -> list:
     try:
         crudos = [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in articulos]
         traducidos = await traducir_noticias(
-            db, get_llm_model, crudos, campos=("title", "summary")
+            db, get_llm_model, crudos, campos=("title", "summary"), espera=espera
         )
         return [NewsArticle(**t) for t in traducidos]
     except Exception as e:
         logging.warning(f"No se pudieron traducir las noticias: {e}")
         return articulos
+
+
+async def _overton_con_traducciones(respuesta, espera: float = 0.0):
+    """
+    Copia de la respuesta de /overton con los titulares ya traducidos.
+
+    Se llama al RESPONDER, tanto con caché como sin ella: la caché guarda las
+    noticias en su idioma original y cada respuesta aplica lo que la cola haya
+    traducido hasta ese momento (una consulta a Mongo). Si se tradujera antes
+    de cachear, los titulares que no llegaran a tiempo quedarían en inglés
+    cinco minutos aunque la traducción ya estuviera hecha.
+
+    Se copia y no se muta: el objeto cacheado tiene que seguir en inglés, que
+    es la clave con la que se busca en la caché de traducciones.
+    """
+    if not isinstance(respuesta, dict) or not respuesta.get("news"):
+        return respuesta
+    copia = dict(respuesta)
+    copia["news"] = [dict(n) for n in respuesta["news"]]
+    try:
+        copia["news"] = await asyncio.wait_for(
+            traducir_noticias(
+                db, get_llm_model, copia["news"],
+                campos=("headline", "description"), espera=espera,
+            ),
+            timeout=espera + 2.0,
+        )
+    except Exception as e:  # noqa: BLE001 — sin traducción, en inglés; nunca sin noticias
+        logging.warning(f"Traducción de noticias de /overton no aplicada: {e}")
+        return respuesta
+    return copia
 
 
 # Create the main app without a prefix
@@ -2849,123 +2892,244 @@ class UserResponse(BaseModel):
     email: str
     name: str
     created_at: Optional[datetime] = None
+    role: str = "usuario"
+    debe_cambiar_password: bool = False
 
 class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserResponse
 
+class CambiarPasswordPropia(BaseModel):
+    password_actual: str = Field(min_length=1, max_length=256)
+    password_nueva: str = Field(min_length=1, max_length=256)
+
+# Registro público CERRADO salvo que el entorno lo abra (REGISTRO_ABIERTO=true).
+# Decisión del usuario (13 sep 2026): las cuentas las da de alta un
+# administrador desde «Usuarios», y el primero se crea desde la consola
+# (`gestion_usuarios.py crear-admin`). La app puede quedar expuesta a Internet
+# por el túnel de Cloudflare.
+REGISTRO_ABIERTO = os.environ.get("REGISTRO_ABIERTO", "").strip().lower() in ("1", "true", "si", "sí", "yes")
+
+# Cinco fallos por email en 15 minutos → espera. Retraso, no bloqueo: si no,
+# cualquiera dejaría fuera al administrador equivocándose a propósito.
+_LIMITADOR_LOGIN = usuarios_mod.LimitadorIntentos()
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(plain, hashed)
+    except Exception:  # noqa: BLE001 — un hash vacío o corrupto no autentica, pero tampoco revienta
+        return False
 
-def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire})
+# Hash de una contraseña que nadie conoce. Si el email no existe, el login
+# verifica contra él igualmente: responder más deprisa delataba qué emails
+# tienen cuenta.
+_HASH_FICTICIO = hash_password(uuid.uuid4().hex)
+
+def create_access_token(data: dict, token_version: int = 0) -> str:
+    """
+    `tv` es la versión de token del usuario. Al cambiar su contraseña, su rol o
+    su estado se sube `token_version` y TODAS sus sesiones dejan de valer al
+    instante. Antes los tokens duraban 30 días y no había forma de revocarlos.
+    """
+    ahora = datetime.utcnow()
+    to_encode = {
+        **data,
+        "exp": ahora + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS),
+        "iat": ahora,
+        "tv": int(token_version or 0),
+    }
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def _respuesta_usuario(user: dict) -> UserResponse:
+    return UserResponse(**usuarios_mod.usuario_publico(user))
+
+def _token_para(user: dict) -> Token:
+    return Token(
+        access_token=create_access_token({"sub": user["id"]}, user.get("token_version", 0)),
+        token_type="bearer",
+        user=_respuesta_usuario(user),
+    )
+
+async def _auditar(request: Optional[Request], accion: str, resultado: str = "ok", **datos) -> None:
+    try:
+        cabeceras = dict(request.headers) if request is not None else {}
+        cliente = request.client.host if request is not None and request.client else None
+        await db.auditoria.insert_one(usuarios_mod.evento_auditoria(
+            accion, resultado, ip=usuarios_mod.ip_de(cabeceras, cliente),
+            user_agent=cabeceras.get("user-agent"), **datos,
+        ))
+    except Exception as e:  # noqa: BLE001 — la auditoría no puede tumbar un inicio de sesión
+        logging.warning(f"Auditoría no registrada ({accion}): {e}")
+
+async def _resolver_usuario(credentials: Optional[HTTPAuthorizationCredentials], permitir_cambio_pendiente: bool) -> dict:
+    """
+    El usuario de la sesión, comprobado contra la base en CADA petición: que
+    exista, que esté activo y que la versión del token sea la vigente. El rol se
+    lee de la base y nunca del token, que seguiría vivo días después de
+    retirarlo. El motivo concreto del rechazo va al log, no al cliente.
+    """
     if not credentials:
         raise HTTPException(status_code=401, detail="No autenticado")
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Token inválido")
-        user = await db.users.find_one({"id": user_id})
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return user
     except JWTError:
-        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+        raise HTTPException(status_code=401, detail="Sesión no válida o caducada")
+    user_id = payload.get("sub")
+    user = await db.users.find_one({"id": user_id}) if user_id else None
+    motivo = usuarios_mod.motivo_token_invalido(payload, user)
+    if motivo:
+        logging.info(f"auth: token rechazado ({motivo}) sub={user_id}")
+        raise HTTPException(status_code=401, detail="Sesión no válida o caducada")
+    if user.get("debe_cambiar_password") and not permitir_cambio_pendiente:
+        raise HTTPException(status_code=403, detail="Tienes que cambiar la contraseña temporal antes de continuar.")
+    return user
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    return await _resolver_usuario(credentials, permitir_cambio_pendiente=False)
+
+async def get_user_cambio_password(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Como `get_current_user`, pero deja pasar a quien aún tiene que cambiar la temporal."""
+    return await _resolver_usuario(credentials, permitir_cambio_pendiente=True)
+
+async def require_admin(current_user: dict = Depends(get_current_user)):
+    if usuarios_mod.rol_de(current_user) != "admin":
+        raise HTTPException(status_code=403, detail="Esta acción es sólo para administradores.")
+    return current_user
 
 async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Usuario si la sesión es válida; `None` si no la hay o no vale. Antes un
+    `except:` desnudo trataba cualquier error como anónimo, y `/watchlist/alerts`
+    respondía entonces con los favoritos de TODOS los usuarios.
+    """
     if not credentials:
         return None
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            return None
-        return await db.users.find_one({"id": user_id})
-    except:
+        return await _resolver_usuario(credentials, permitir_cambio_pendiente=True)
+    except HTTPException:
         return None
 
 # ── Auth Endpoints ─────────────────────────────────────────────────────────────
 @api_router.post("/auth/register", response_model=Token)
-async def register(user_data: UserRegister):
-    """Register a new user"""
+async def register(user_data: UserRegister, request: Request):
+    """Alta pública. CERRADA salvo REGISTRO_ABIERTO: las cuentas las crea un administrador."""
+    if not REGISTRO_ABIERTO:
+        raise HTTPException(status_code=403, detail="El registro está cerrado. Pide a un administrador que te dé de alta.")
+    email = usuarios_mod.normalizar_email(user_data.email)
+    nombre = (user_data.name or "").strip()
+    if not usuarios_mod.email_valido(email) or not nombre:
+        raise HTTPException(status_code=400, detail="Faltan el nombre o un email válido.")
+    error = usuarios_mod.validar_password(user_data.password, email, nombre)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
     try:
-        # Verificar si el email ya existe
-        existing = await db.users.find_one({"email": user_data.email.lower()})
-        if existing:
-            raise HTTPException(status_code=400, detail="El email ya está registrado")
-        # Crear usuario
-        user_id = str(uuid.uuid4())
+        if await db.users.find_one({"email": email}, {"_id": 1}):
+            raise HTTPException(status_code=400, detail="No se pudo crear la cuenta con ese email.")
         user = {
-            "id": user_id,
-            "email": user_data.email.lower().strip(),
-            "name": user_data.name.strip(),
-            "password": hash_password(user_data.password),
-            "created_at": datetime.utcnow(),
+            "id": str(uuid.uuid4()), "email": email, "name": nombre[:80],
+            "password": hash_password(user_data.password), "created_at": datetime.utcnow(),
+            "role": usuarios_mod.ROL_POR_DEFECTO, "activo": True, "token_version": 0,
+            "debe_cambiar_password": False,
         }
         await db.users.insert_one(user)
-        # Crear token
-        token = create_access_token({"sub": user_id})
-        return Token(
-            access_token=token,
-            token_type="bearer",
-            user=UserResponse(id=user_id, email=user["email"], name=user["name"], created_at=user["created_at"])
-        )
     except HTTPException:
         raise
     except Exception as e:
         logging.error(f"Error registering user: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al registrar: {str(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo registrar la cuenta.")
+    await _auditar(request, "usuario_registrado", actor=user, objetivo=user)
+    return _token_para(user)
 
 @api_router.post("/auth/login", response_model=Token)
-async def login(user_data: UserLogin):
-    """Login with email and password"""
-    try:
-        user = await db.users.find_one({"email": user_data.email.lower()})
-        if not user or not verify_password(user_data.password, user["password"]):
-            raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-        token = create_access_token({"sub": user["id"]})
-        return Token(
-            access_token=token,
-            token_type="bearer",
-            user=UserResponse(id=user["id"], email=user["email"], name=user["name"], created_at=user.get("created_at"))
+async def login(user_data: UserLogin, request: Request):
+    """Inicio de sesión. El cliente ve siempre el mismo mensaje; el motivo va a la auditoría."""
+    email = usuarios_mod.normalizar_email(user_data.email)
+    espera = _LIMITADOR_LOGIN.segundos_de_espera(email)
+    if espera:
+        await _auditar(request, "login_bloqueado", "denegado", objetivo_email=email)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Demasiados intentos fallidos. Vuelve a intentarlo en {espera // 60 + 1} min.",
+            headers={"Retry-After": str(espera)},
         )
-    except HTTPException:
-        raise
+    try:
+        user = await db.users.find_one({"email": email})
+        correcta = verify_password(user_data.password or "", user["password"] if user else _HASH_FICTICIO)
     except Exception as e:
         logging.error(f"Error logging in: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al iniciar sesión: {str(e)}")
+        raise HTTPException(status_code=500, detail="No se pudo iniciar sesión.")
+    if not user or not correcta:
+        _LIMITADOR_LOGIN.registrar_fallo(email)
+        await _auditar(request, "login_fallido", "denegado", objetivo=user, objetivo_email=email,
+                       motivo="email inexistente" if not user else "contraseña incorrecta")
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
+    # Estas dos se comprueban DESPUÉS de la contraseña: antes delatarían la cuenta.
+    if not usuarios_mod.esta_activo(user):
+        await _auditar(request, "login_fallido", "denegado", objetivo=user, motivo="cuenta desactivada")
+        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada. Habla con un administrador.")
+    expira = user.get("password_temporal_expira")
+    if user.get("debe_cambiar_password") and expira and expira < datetime.utcnow():
+        await _auditar(request, "login_fallido", "denegado", objetivo=user, motivo="contraseña temporal caducada")
+        raise HTTPException(status_code=401, detail="La contraseña temporal ha caducado. Pide otra a un administrador.")
+    _LIMITADOR_LOGIN.limpiar(email)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"ultimo_login": datetime.utcnow()}})
+    await _auditar(request, "login_ok", actor=user, objetivo=user)
+    return _token_para(user)
 
 @api_router.get("/auth/me", response_model=UserResponse)
-async def get_me(current_user: dict = Depends(get_current_user)):
-    """Get current user info"""
-    return UserResponse(
-        id=current_user["id"],
-        email=current_user["email"],
-        name=current_user["name"],
-        created_at=current_user.get("created_at")
-    )
+async def get_me(current_user: dict = Depends(get_user_cambio_password)):
+    """Usuario de la sesión, con su rol. El frontend lo pide al arrancar en vez de fiarse de localStorage."""
+    return _respuesta_usuario(current_user)
 
 @api_router.put("/auth/profile")
 async def update_profile(update: dict, current_user: dict = Depends(get_current_user)):
-    """Update user profile"""
-    try:
-        allowed = {k: v for k, v in update.items() if k in ["name"]}
-        if "password" in update and update["password"]:
-            allowed["password"] = hash_password(update["password"])
-        await db.users.update_one({"id": current_user["id"]}, {"$set": allowed})
-        return {"message": "Perfil actualizado"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """
+    Cambia el NOMBRE. Antes cambiaba también la contraseña sin pedir la actual:
+    con un token robado se dejaba fuera al dueño. La contraseña va por
+    POST /auth/password.
+    """
+    nombre = str(update.get("name") or "").strip()
+    if not nombre:
+        raise HTTPException(status_code=400, detail="Sólo se puede cambiar el nombre y no puede quedar vacío.")
+    await db.users.update_one({"id": current_user["id"]}, {"$set": {"name": nombre[:80]}})
+    return {"message": "Perfil actualizado"}
+
+@api_router.post("/auth/password", response_model=Token)
+async def cambiar_password_propia(body: CambiarPasswordPropia, request: Request,
+                                  current_user: dict = Depends(get_user_cambio_password)):
+    """
+    Cambia la contraseña propia con la actual. Cierra las demás sesiones y
+    devuelve un token nuevo para que este dispositivo siga dentro.
+    """
+    if not verify_password(body.password_actual, current_user.get("password", "")):
+        await _auditar(request, "password_cambiada", "denegado", actor=current_user, objetivo=current_user,
+                       motivo="contraseña actual incorrecta")
+        raise HTTPException(status_code=400, detail="La contraseña actual no es correcta.")
+    if body.password_nueva == body.password_actual:
+        raise HTTPException(status_code=400, detail="La contraseña nueva tiene que ser distinta de la actual.")
+    error = usuarios_mod.validar_password(body.password_nueva, current_user.get("email", ""), current_user.get("name", ""))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    await db.users.update_one({"id": current_user["id"]}, {
+        "$set": {"password": hash_password(body.password_nueva), "debe_cambiar_password": False,
+                 "password_temporal_expira": None, "password_cambiada": datetime.utcnow()},
+        "$inc": {"token_version": 1},
+    })
+    user = await db.users.find_one({"id": current_user["id"]})
+    await _auditar(request, "password_cambiada", actor=user, objetivo=user)
+    return _token_para(user)
+
+@api_router.post("/auth/revocar-sesiones", response_model=Token)
+async def revocar_sesiones_propias(request: Request, current_user: dict = Depends(get_current_user)):
+    """«Cerrar sesión en todos los dispositivos». Este sigue dentro con el token nuevo."""
+    await db.users.update_one({"id": current_user["id"]}, {"$inc": {"token_version": 1}})
+    user = await db.users.find_one({"id": current_user["id"]})
+    await _auditar(request, "sesiones_revocadas", actor=user, objetivo=user)
+    return _token_para(user)
 
 @api_router.post("/analyze", response_model=AnalysisResponse)
 async def analyze_stock(request: AnalyzeRequest, current_user: dict = Depends(get_optional_user)):
@@ -3621,12 +3785,54 @@ class HistoryItemEnhanced(BaseModel):
     # que dice cuanto pesa cada valor.
     market_cap: float = 0.0
 
+# Hasta cuándo se sirve el historial con precios caducados mientras se recalcula
+# en segundo plano. Recalcular son ~4 s en frío (96 empresas, medido) y con 60 s
+# de caché casi cualquier visita los pagaba. Yahoo ya llega con ~15 min de
+# retraso: diez minutos más de edad no cambian la lectura, y la edad viaja en la
+# cabecera `X-Edad-Datos` para que el mapa no la haga pasar por actual.
+MAX_EDAD_HISTORIAL_S = 600
+_refresco_historial: Dict[str, asyncio.Task] = {}
+
+
 @api_router.get("/history/enhanced", response_model=List[HistoryItemEnhanced])
 async def get_enhanced_history(
+    response: Response,
     recommendation: Optional[str] = None,  # Filter by COMPRAR, MANTENER, VENDER
-    limit: int = 50
+    limit: int = 50,
 ):
     """Get enhanced analysis history with current prices and filters"""
+    clave_cache = f"hist:{recommendation or 'todo'}:{limit}"
+    guardado = cache_reserva(clave_cache)
+
+    cacheado = cache_get(clave_cache)
+    if cacheado is not None:
+        response.headers["X-Edad-Datos"] = str(int(guardado[1]) if guardado else 0)
+        return cacheado
+
+    if guardado is not None and guardado[1] < MAX_EDAD_HISTORIAL_S and not yahoo_limitado():
+        tarea = _refresco_historial.get(clave_cache)
+        if tarea is None or tarea.done():
+            _refresco_historial[clave_cache] = asyncio.create_task(
+                _refrescar_historial(recommendation, limit)
+            )
+        valor, edad = guardado
+        response.headers["X-Edad-Datos"] = str(int(edad))
+        return valor
+
+    response.headers["X-Edad-Datos"] = "0"
+    return await _calcular_historial_enhanced(recommendation, limit)
+
+
+async def _refrescar_historial(recommendation: Optional[str], limit: int):
+    """Recalcula en segundo plano. Un fallo aquí no tiene a quién devolverse."""
+    try:
+        await _calcular_historial_enhanced(recommendation, limit)
+    except Exception as e:
+        logging.warning(f"Refresco del historial en segundo plano: {e}")
+
+
+async def _calcular_historial_enhanced(recommendation: Optional[str], limit: int):
+    """Cálculo completo de /history/enhanced. Guarda en caché al terminar."""
     try:
         # Build query
         query = {}
@@ -3634,9 +3840,6 @@ async def get_enhanced_history(
             query["recommendation"] = recommendation.upper()
 
         clave_cache = f"hist:{recommendation or 'todo'}:{limit}"
-        cacheado = cache_get(clave_cache)
-        if cacheado is not None:
-            return cacheado
 
         # Proyeccion: un analisis guardado lleva dentro todos los ratios y las
         # series. Traer 1.000 documentos completos son megabytes de Mongo para
@@ -4272,6 +4475,14 @@ def get_market_status(timezone_name: str, open_hour: int, open_min: int, close_h
 # eso se llevaría por delante las marcas `_procedencia` / `_edad_s` que avisan
 # de que una lectura viene de la reserva. La forma sigue garantizada porque la
 # respuesta se construye con `MarketIndicatorsResponse`.
+# Lectura en curso de /market-indicators en segundo plano (una a la vez).
+_refresco_market_indicators: Optional[asyncio.Task] = None
+# Hasta cuándo se sirve una lectura caducada mientras se refresca. Pasado
+# esto se espera al cálculo: un índice de hace media hora presentado como
+# actual es peor que esperar unos segundos.
+MAX_EDAD_MARKET_INDICATORS_S = 300
+
+
 @api_router.get("/market-indicators")
 async def get_market_indicators():
     """Get market indicators: VIX, 10Y Treasury, S&P 500, Gold, Oil, EUR/USD, and Market Hours"""
@@ -4287,6 +4498,24 @@ async def get_market_indicators():
     if cacheado is not None:
         return cacheado
 
+    # Caducada hace poco: se sirve YA, marcada con su edad, y se recalcula
+    # en segundo plano para la visita siguiente. Recalcular son ~4,7 s aun en
+    # paralelo, y con 60 s de caché casi cualquier visita los pagaba.
+    global _refresco_market_indicators
+    guardado = cache_reserva(CLAVE_MI)
+    if guardado is not None and guardado[1] < MAX_EDAD_MARKET_INDICATORS_S and not yahoo_limitado():
+        if _refresco_market_indicators is None or _refresco_market_indicators.done():
+            _refresco_market_indicators = asyncio.create_task(_calcular_market_indicators())
+        valor, edad = guardado
+        return {**valor, "_procedencia": "reserva", "_edad_s": int(edad)} if isinstance(valor, dict) else valor
+
+    return await _calcular_market_indicators()
+
+
+async def _calcular_market_indicators():
+    """Cálculo completo de /market-indicators. Guarda en caché al terminar."""
+    CLAVE_MI = "market-indicators"
+
     if yahoo_limitado():
         reserva = con_reserva(
             CLAVE_MI,
@@ -4296,9 +4525,69 @@ async def get_market_indicators():
             return reserva
 
     try:
+
+        # ── Descarga en PARALELO ─────────────────────────────────────────
+        # Eran 26 series de cinco días y 4 `info` de cripto pedidas una detrás
+        # de otra DENTRO de la corrutina: 7 s cada vez que caducaba la caché,
+        # con el backend entero sin contestar mientras tanto. Se piden a la vez
+        # desde hilos y cada bloque de abajo lee su resultado. Un fallo se
+        # guarda como excepción y se relanza en su bloque, que lo captura igual
+        # que antes: un ticker caído sigue sin tumbar la respuesta.
+        #
+        # Divisas: un fallo en un cruce no tumba el resto; el que no venga
+        # simplemente no aparece.
+        FX_PAIRS = [
+            ("EUR/USD", "EURUSD=X"),
+            ("GBP/USD", "GBPUSD=X"),
+            ("USD/JPY", "USDJPY=X"),
+            ("USD/CHF", "USDCHF=X"),
+            ("USD/CAD", "USDCAD=X"),
+            ("AUD/USD", "AUDUSD=X"),
+            ("USD/MXN", "USDMXN=X"),
+            ("USD/CNY", "USDCNY=X"),
+            ("EUR/GBP", "EURGBP=X"),
+            ("GBP/JPY", "GBPJPY=X"),
+            ("EUR/JPY", "EURJPY=X"),
+        ]
+        _simbolos_5d = list(dict.fromkeys([
+            "^VIX", "^TNX", "^GSPC", "GC=F", "CL=F", "EURUSD=X", "^IBEX",
+            "BTC-USD", "ETH-USD", "HBAR-USD", "sol-USD", "^STOXX50E", "^GDAXI",
+            "^IXIC", "URTH", *[t for _, t in FX_PAIRS],
+        ]))
+        _simbolos_info = ["BTC-USD", "ETH-USD", "HBAR-USD", "sol-USD"]
+
+        def _intentar(funcion):
+            try:
+                return funcion()
+            except Exception as _e:  # noqa: BLE001 — se relanza en su bloque
+                return _e
+
+        _series_5d, _infos = await asyncio.gather(
+            asyncio.gather(*[
+                asyncio.to_thread(_intentar, lambda t=t: yf.Ticker(t).history(period="5d"))
+                for t in _simbolos_5d
+            ]),
+            asyncio.gather(*[
+                asyncio.to_thread(_intentar, lambda t=t: yf.Ticker(t).info) for t in _simbolos_info
+            ]),
+        )
+        _descargas_5d = dict(zip(_simbolos_5d, _series_5d))
+        _descargas_info = dict(zip(_simbolos_info, _infos))
+
+        def _h5d(simbolo):
+            valor = _descargas_5d[simbolo]
+            if isinstance(valor, BaseException):
+                raise valor
+            return valor
+
+        def _info_cripto_de(simbolo):
+            valor = _descargas_info[simbolo]
+            if isinstance(valor, BaseException):
+                raise valor
+            return valor or {}
+
         # VIX - Volatility Index
-        vix = yf.Ticker("^VIX")
-        vix_data = vix.history(period="5d")
+        vix_data = _h5d("^VIX")
         
         if not vix_data.empty:
             vix_current = float(vix_data['Close'].iloc[-1])
@@ -4313,8 +4602,7 @@ async def get_market_indicators():
             vix_date = ""
         
         # 10-Year Treasury Yield
-        treasury = yf.Ticker("^TNX")
-        treasury_data = treasury.history(period="5d")
+        treasury_data = _h5d("^TNX")
         
         if not treasury_data.empty:
             treasury_current = float(treasury_data['Close'].iloc[-1])
@@ -4329,8 +4617,7 @@ async def get_market_indicators():
             treasury_date = ""
         
         # S&P 500
-        sp500 = yf.Ticker("^GSPC")
-        sp500_data = sp500.history(period="5d")
+        sp500_data = _h5d("^GSPC")
         
         if not sp500_data.empty:
             sp500_current = float(sp500_data['Close'].iloc[-1])
@@ -4345,8 +4632,7 @@ async def get_market_indicators():
             sp500_date = ""
         
         # Gold (GC=F - Gold Futures)
-        gold = yf.Ticker("GC=F")
-        gold_data = gold.history(period="5d")
+        gold_data = _h5d("GC=F")
         
         if not gold_data.empty:
             gold_current = float(gold_data['Close'].iloc[-1])
@@ -4361,8 +4647,7 @@ async def get_market_indicators():
             gold_date = ""
         
         # Oil (CL=F - Crude Oil Futures WTI)
-        oil = yf.Ticker("CL=F")
-        oil_data = oil.history(period="5d")
+        oil_data = _h5d("CL=F")
         
         if not oil_data.empty:
             oil_current = float(oil_data['Close'].iloc[-1])
@@ -4377,8 +4662,7 @@ async def get_market_indicators():
             oil_date = ""
         
         # EUR/USD
-        eurusd = yf.Ticker("EURUSD=X")
-        eurusd_data = eurusd.history(period="5d")
+        eurusd_data = _h5d("EURUSD=X")
         
         if not eurusd_data.empty:
             eurusd_current = float(eurusd_data['Close'].iloc[-1])
@@ -4395,24 +4679,12 @@ async def get_market_indicators():
         # ── Divisas principales ────────────────────────────────────────────
         # Un solo fallo no puede tumbar toda la respuesta: cada cruce se
         # intenta por separado y el que no venga simplemente no aparece.
-        FX_PAIRS = [
-            ("EUR/USD", "EURUSD=X"),
-            ("GBP/USD", "GBPUSD=X"),
-            ("USD/JPY", "USDJPY=X"),
-            ("USD/CHF", "USDCHF=X"),
-            ("USD/CAD", "USDCAD=X"),
-            ("AUD/USD", "AUDUSD=X"),
-            ("USD/MXN", "USDMXN=X"),
-            ("USD/CNY", "USDCNY=X"),
-            ("EUR/GBP", "EURGBP=X"),
-            ("GBP/JPY", "GBPJPY=X"),
-            ("EUR/JPY", "EURJPY=X"),
-        ]
+        # `FX_PAIRS` se define arriba, junto a la descarga en paralelo.
 
         currencies: List[CurrencyPair] = []
         for fx_name, fx_ticker in FX_PAIRS:
             try:
-                fx_hist = yf.Ticker(fx_ticker).history(period="5d")
+                fx_hist = _h5d(fx_ticker)
                 if fx_hist.empty:
                     continue
                 fx_now = float(fx_hist['Close'].iloc[-1])
@@ -4507,8 +4779,7 @@ async def get_market_indicators():
         # IBEX 35 (Spanish Index)
         ibex35_indicator = None
         try:
-            ibex = yf.Ticker("^IBEX")
-            ibex_data = ibex.history(period="5d")
+            ibex_data = _h5d("^IBEX")
             if not ibex_data.empty:
                 ibex_current = float(ibex_data['Close'].iloc[-1])
                 ibex_prev = float(ibex_data['Close'].iloc[-2]) if len(ibex_data) > 1 else ibex_current
@@ -4531,15 +4802,14 @@ async def get_market_indicators():
         # Bitcoin
         bitcoin_indicator = None
         try:
-            btc = yf.Ticker("BTC-USD")
-            btc_data = btc.history(period="5d")
+            btc_data = _h5d("BTC-USD")
             if not btc_data.empty:
                 btc_current = float(btc_data['Close'].iloc[-1])
                 btc_prev = float(btc_data['Close'].iloc[-2]) if len(btc_data) > 1 else btc_current
                 btc_change = btc_current - btc_prev
                 btc_change_pct = (btc_change / btc_prev) * 100 if btc_prev > 0 else 0
                 btc_date = btc_data.index[-1].strftime('%Y-%m-%d')
-                btc_info = btc.info
+                btc_info = _info_cripto_de("BTC-USD")
                 bitcoin_indicator = CryptoIndicator(
                     name="Bitcoin",
                     symbol="BTC",
@@ -4557,15 +4827,14 @@ async def get_market_indicators():
         # Ethereum
         ethereum_indicator = None
         try:
-            eth = yf.Ticker("ETH-USD")
-            eth_data = eth.history(period="5d")
+            eth_data = _h5d("ETH-USD")
             if not eth_data.empty:
                 eth_current = float(eth_data['Close'].iloc[-1])
                 eth_prev = float(eth_data['Close'].iloc[-2]) if len(eth_data) > 1 else eth_current
                 eth_change = eth_current - eth_prev
                 eth_change_pct = (eth_change / eth_prev) * 100 if eth_prev > 0 else 0
                 eth_date = eth_data.index[-1].strftime('%Y-%m-%d')
-                eth_info = eth.info
+                eth_info = _info_cripto_de("ETH-USD")
                 ethereum_indicator = CryptoIndicator(
                     name="Ethereum",
                     symbol="ETH",
@@ -4583,15 +4852,14 @@ async def get_market_indicators():
         # Hedera
         hedera_indicator = None
         try:
-            hbar = yf.Ticker("HBAR-USD")
-            hbar_data = hbar.history(period="5d")
+            hbar_data = _h5d("HBAR-USD")
             if not hbar_data.empty:
                 hbar_current = float(hbar_data['Close'].iloc[-1])
                 hbar_prev = float(hbar_data['Close'].iloc[-2]) if len(hbar_data) > 1 else hbar_current
                 hbar_change = hbar_current - hbar_prev
                 hbar_change_pct = (hbar_change / hbar_prev) * 100 if hbar_prev > 0 else 0
                 hbar_date = hbar_data.index[-1].strftime('%Y-%m-%d')
-                hbar_info = hbar.info
+                hbar_info = _info_cripto_de("HBAR-USD")
                 hedera_indicator = CryptoIndicator(
                     name="Hedera",
                     symbol="HBAR",
@@ -4609,15 +4877,14 @@ async def get_market_indicators():
         # Solana
         solana_indicator = None
         try:
-            sol = yf.Ticker("sol-USD")
-            sol_data = sol.history(period="5d")
+            sol_data = _h5d("sol-USD")
             if not sol_data.empty:
                 sol_current = float(sol_data['Close'].iloc[-1])
                 sol_prev = float(sol_data['Close'].iloc[-2]) if len(sol_data) > 1 else sol_current
                 sol_change = sol_current - sol_prev
                 sol_change_pct = (sol_change / sol_prev) * 100 if sol_prev > 0 else 0
                 sol_date = sol_data.index[-1].strftime('%Y-%m-%d')
-                sol_info = sol.info
+                sol_info = _info_cripto_de("sol-USD")
                 solana_indicator = CryptoIndicator(
                     name="Solana",
                     symbol="SOL",
@@ -4637,8 +4904,7 @@ async def get_market_indicators():
         # Eurostoxx 50 (European Index)
         eurostoxx50_indicator = None
         try:
-            stoxx = yf.Ticker("^STOXX50E")
-            stoxx_data = stoxx.history(period="5d")
+            stoxx_data = _h5d("^STOXX50E")
             if not stoxx_data.empty:
                 stoxx_current = float(stoxx_data['Close'].iloc[-1])
                 stoxx_prev = float(stoxx_data['Close'].iloc[-2]) if len(stoxx_data) > 1 else stoxx_current
@@ -4660,8 +4926,7 @@ async def get_market_indicators():
         # DAX (German Index)
         dax_indicator = None
         try:
-            dax = yf.Ticker("^GDAXI")
-            dax_data = dax.history(period="5d")
+            dax_data = _h5d("^GDAXI")
             if not dax_data.empty:
                 dax_current = float(dax_data['Close'].iloc[-1])
                 dax_prev = float(dax_data['Close'].iloc[-2]) if len(dax_data) > 1 else dax_current
@@ -4683,8 +4948,7 @@ async def get_market_indicators():
         # NASDAQ Composite
         nasdaq_indicator = None
         try:
-            nasdaq = yf.Ticker("^IXIC")
-            nasdaq_data = nasdaq.history(period="5d")
+            nasdaq_data = _h5d("^IXIC")
             if not nasdaq_data.empty:
                 nasdaq_current = float(nasdaq_data['Close'].iloc[-1])
                 nasdaq_prev = float(nasdaq_data['Close'].iloc[-2]) if len(nasdaq_data) > 1 else nasdaq_current
@@ -4706,8 +4970,7 @@ async def get_market_indicators():
         # MSCI World Index (using iShares ETF as proxy)
         msci_world_indicator = None
         try:
-            msci = yf.Ticker("URTH")  # iShares MSCI World ETF
-            msci_data = msci.history(period="5d")
+            msci_data = _h5d("URTH")  # iShares MSCI World ETF
             if not msci_data.empty:
                 msci_current = float(msci_data['Close'].iloc[-1])
                 msci_prev = float(msci_data['Close'].iloc[-2]) if len(msci_data) > 1 else msci_current
@@ -4959,14 +5222,53 @@ async def get_watchlist(current_user: dict = Depends(get_current_user)):
         logging.error(f"Error fetching watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener watchlist: {str(e)}")
 
+@api_router.get("/watchlist/check/{ticker}")
+async def check_en_watchlist(ticker: str, current_user: dict = Depends(get_current_user)):
+    """
+    ¿Está este valor en MIS favoritos?
+
+    Existe para que la pantalla de análisis pueda pintar el botón en su estado
+    correcto sin descargarse la lista entera y buscar dentro. Devuelve también
+    el `id` y los objetivos, porque el mismo botón sirve para quitarlo y para
+    editar lo que ya hay — sin el id haría falta una segunda petición.
+
+    Tres segmentos de ruta, así que no colisiona con `/watchlist/{item_id}`.
+    """
+    try:
+        t = (ticker or "").upper().strip()
+        if not t:
+            raise HTTPException(status_code=400, detail="Ticker vacío")
+        doc = await db.watchlist.find_one({"ticker": t, "user_id": current_user["id"]})
+        if not doc:
+            return {"en_favoritos": False, "ticker": t}
+        return {
+            "en_favoritos": True,
+            "ticker": t,
+            "id": doc.get("id"),
+            "target_buy_price": doc.get("target_buy_price"),
+            "target_sell_price": doc.get("target_sell_price"),
+            "price_change_threshold": doc.get("price_change_threshold"),
+            "notify_on_price_change": doc.get("notify_on_price_change"),
+            "added_date": doc.get("added_date"),
+            "notes": doc.get("notes"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error comprobando watchlist para {ticker}: {e}")
+        raise HTTPException(status_code=500, detail="Error al comprobar favoritos")
+
+
 @api_router.post("/watchlist", response_model=WatchlistItem)
 async def add_to_watchlist(item: WatchlistItemCreate, current_user: dict = Depends(get_current_user)):
     """Add a stock to watchlist"""
     try:
         ticker = item.ticker.upper().strip()
         
-        # Check if already in watchlist
-        existing = await db.watchlist.find_one({"ticker": ticker})
+        # Duplicado: SIEMPRE acotado al usuario. Sin el filtro, el favorito de
+        # cualquier otra cuenta bloqueaba el alta — «ya está en tu watchlist»
+        # sobre una lista en la que el ticker no aparecía.
+        existing = await db.watchlist.find_one({"ticker": ticker, "user_id": current_user["id"]})
         if existing:
             raise HTTPException(status_code=400, detail=f"{ticker} ya está en tu watchlist")
         
@@ -5001,18 +5303,22 @@ async def add_to_watchlist(item: WatchlistItemCreate, current_user: dict = Depen
         raise HTTPException(status_code=500, detail=f"Error al agregar a watchlist: {str(e)}")
 
 @api_router.put("/watchlist/{item_id}", response_model=WatchlistItem)
-async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate, current_user: dict = Depends(get_optional_user)):
+async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate, current_user: dict = Depends(get_current_user)):
     """Update a watchlist item"""
     try:
-        existing = await db.watchlist.find_one({"id": item_id})
+        # El id va SIEMPRE emparejado con el dueño: un id es adivinable y por sí
+        # solo no autoriza nada. Si no es tuyo, para ti no existe (404, no 403:
+        # un 403 confirmaría que ese id existe en otra cuenta).
+        propietario = {"id": item_id, "user_id": current_user["id"]}
+        existing = await db.watchlist.find_one(propietario)
         if not existing:
             raise HTTPException(status_code=404, detail="Item no encontrado en watchlist")
         
         update_data = {k: v for k, v in update.dict().items() if v is not None}
         if update_data:
-            await db.watchlist.update_one({"id": item_id}, {"$set": update_data})
+            await db.watchlist.update_one(propietario, {"$set": update_data})
         
-        updated = await db.watchlist.find_one({"id": item_id})
+        updated = await db.watchlist.find_one(propietario)
         return WatchlistItem(**updated)
         
     except HTTPException:
@@ -5022,10 +5328,12 @@ async def update_watchlist_item(item_id: str, update: WatchlistItemUpdate, curre
         raise HTTPException(status_code=500, detail=f"Error al actualizar item: {str(e)}")
 
 @api_router.delete("/watchlist/{item_id}")
-async def remove_from_watchlist(item_id: str):
+async def remove_from_watchlist(item_id: str, current_user: dict = Depends(get_current_user)):
     """Remove a stock from watchlist"""
     try:
-        result = await db.watchlist.delete_one({"id": item_id})
+        # Antes no pedía sesión y borraba por id a secas: con el id de otra
+        # cuenta se le vaciaba la lista a su dueño.
+        result = await db.watchlist.delete_one({"id": item_id, "user_id": current_user["id"]})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Item no encontrado en watchlist")
         return {"message": "Item eliminado de watchlist"}
@@ -5036,10 +5344,10 @@ async def remove_from_watchlist(item_id: str):
         raise HTTPException(status_code=500, detail=f"Error al eliminar de watchlist: {str(e)}")
 
 @api_router.get("/watchlist/alerts")
-async def check_watchlist_alerts(current_user: dict = Depends(get_optional_user)):
+async def check_watchlist_alerts(current_user: dict = Depends(get_current_user)):
     """Check all watchlist items for price alerts"""
     try:
-        items = await db.watchlist.find({"user_id": current_user["id"]} if current_user else {}).to_list(100)
+        items = await db.watchlist.find({"user_id": current_user["id"]}).to_list(100)
         alerts = []
         
         for item in items:
@@ -5155,14 +5463,34 @@ class SectorAllocation(BaseModel):
     percentage: float
     holdings_count: int
 
+def _red(v, dec: int = 2):
+    """
+    Redondea, y deja pasar el HUECO.
+
+    `riesgo.py` devuelve `None` cuando una métrica no se puede sostener —pocas
+    sesiones, sin índice con que compararse, desviación bajista nula—. Ese None
+    tiene que llegar entero a la interfaz: convertirlo en 0.0 haría que un
+    Sortino imposible de calcular se leyera como «Sortino cero», que es una
+    afirmación, y falsa. NaN e infinito salen igual de fuera: son el resultado
+    de dividir por cero y no significan nada.
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return round(f, dec)
+
+
 class PortfolioMetrics(BaseModel):
     portfolio_beta: float = 0.0
     portfolio_alpha: float = 0.0
     sharpe_ratio: float = 0.0
     average_return: float = 0.0
     volatility: float = 0.0
-    risk_free_rate: float = 4.0  # Assumed 4%
-    # New metrics
     gain_loss_ratio: float = 0.0  # Ratio of gains to losses
     calmar_ratio: float = 0.0  # Return / Max Drawdown
     treynor_ratio: float = 0.0  # (Return - Risk Free) / Beta
@@ -5170,10 +5498,70 @@ class PortfolioMetrics(BaseModel):
     max_drawdown: float = 0.0
     # Contexto del cálculo: sin estos tres campos, alpha y Sharpe son cifras
     # sin denominador visible y no se pueden auditar desde la interfaz.
+    #
+    # `risk_free_rate` estaba declarado DOS veces en esta clase: arriba con
+    # `= 4.0` y un comentario «Assumed 4%», y aquí con `= 0.0`. En Python gana
+    # el segundo, así que aquel 4 % era letra muerta que engañaba al leer el
+    # modelo. Se deja una sola declaración.
     tracking_error: float = 0.0
     risk_free_rate: float = 0.0
     benchmark_return: float = 0.0
     metrics_method: str = "aproximado"
+
+    # ── CAPM, explícito ───────────────────────────────────────────────────
+    # El rendimiento que el modelo EXIGE a esta cartera por el riesgo de
+    # mercado que asume: rf + β·(rm − rf). Ya se calculaba para restarlo y
+    # obtener el alfa, pero no salía del backend, así que en pantalla el alfa
+    # era un número sin el cálculo que lo produce. Publicarlo permite auditar
+    # la resta: alfa = rendimiento − capm_esperado, y sus tres ingredientes
+    # están los tres a la vista.
+    capm_esperado: Optional[float] = None
+    prima_riesgo_mercado: Optional[float] = None   # rm − rf
+
+    # ── Riesgo de la cola y de la caída (de riesgo.py) ────────────────────
+    # Rentabilidad GEOMÉTRICA de la curva (CAGR). Conviven dos definiciones y
+    # hay que decirlo: `average_return` es la media aritmética anualizada, y
+    # ésta es la que un partícipe se lleva de verdad. Con colas gruesas se
+    # separan bastante —medido sobre una cartera de prueba: 35,5 % frente a
+    # 40,6 %—. Sharpe, Treynor y Calmar se calculan sobre la aritmética;
+    # Sortino, sobre ésta. Sin publicar las dos, dos ratios de la misma tarjeta
+    # tendrían numeradores distintos y nadie podría saberlo.
+    retorno_geometrico: Optional[float] = None
+
+    sortino: Optional[float] = None
+    desviacion_bajista: Optional[float] = None
+    var_95: Optional[float] = None
+    cvar_95: Optional[float] = None
+    ulcer_index: Optional[float] = None
+    drawdown_actual: Optional[float] = None
+    sesiones_recuperacion: Optional[int] = None
+
+    # ── Frente al índice ──────────────────────────────────────────────────
+    # `r_cuadrado` es el que dice si beta y alfa SIGNIFICAN algo. Una beta
+    # sobre una serie que no se parece al índice es aritméticamente correcta
+    # y estadísticamente vacía; sin R² no hay forma de distinguirlas.
+    r_cuadrado: Optional[float] = None
+    captura_alcista: Optional[float] = None
+    captura_bajista: Optional[float] = None
+
+    # ── Estructura de la cartera ──────────────────────────────────────────
+    # Cuánto riesgo ahorra diversificar: volatilidad media ponderada dividida
+    # entre la volatilidad real de la cartera. 1,0 = las posiciones se mueven
+    # a la vez y diversificar no sirve de nada; 1,4 = la cartera oscila un
+    # 40 % menos que la media de sus partes.
+    ratio_diversificacion: Optional[float] = None
+    concentracion_hhi: Optional[float] = None      # 0-100; 100 = una sola posición
+    peso_mayor: Optional[float] = None
+    posiciones_con_beta: Optional[int] = None
+    posiciones_totales: Optional[int] = None
+
+    # ── Series para los gráficos ──────────────────────────────────────────
+    # Submuestreadas en el servidor: la tarjeta dibuja una curva de ~180 px y
+    # mandar 250 puntos por cada una es peso sin información añadida.
+    curva_cartera: List[float] = []
+    curva_indice: List[float] = []
+    curva_fechas: List[str] = []
+    curva_drawdown: List[float] = []
 
 class PortfolioSummary(BaseModel):
     total_invested: float
@@ -5351,7 +5739,7 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             sector = "Otros"
             industry = "N/A"
             curr_price = 0
-            stock_beta = 1.0
+            stock_beta = None
             mean_return = 0.0
             volatility = 0.0
             max_dd = 0.0
@@ -5363,7 +5751,14 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                 stock = yf.Ticker(ticker)
                 info = await loop.run_in_executor(None, lambda: stock.info)
                 curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
-                stock_beta = info.get('beta', 1.0) or 1.0
+                # `or 1.0` hacía DOS cosas malas: rellenaba con 1,0 la beta
+                # que Yahoo no publica —y esa suposición entra en la beta de la
+                # cartera, en Treynor y en el CAPM sin que nada lo diga— y
+                # además convertía una beta REAL de 0,0 en 1,0, porque 0.0 es
+                # falsy. Ahora el hueco viaja como None y se cuenta: la tarjeta
+                # publica cuántas posiciones tienen beta de verdad.
+                _b = info.get('beta')
+                stock_beta = float(_b) if isinstance(_b, (int, float)) else None
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
                 pe_ratio = info.get('trailingPE') or info.get('forwardPE')
@@ -5562,9 +5957,20 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
             # Normalize weights
             weights = [w / current_value for w in weights]
             
-            # Portfolio Beta (weighted average)
-            portfolio_beta = sum(w * b for w, b in zip(weights, betas))
-            metrics.portfolio_beta = round(portfolio_beta, 2)
+            # Beta de la cartera. La media ponderada es CORRECTA para beta
+            # —a diferencia de la volatilidad, beta sí es lineal en los pesos—
+            # pero sólo sobre las posiciones que tienen beta. Las que no la
+            # tienen se excluyen y los pesos se renormalizan sobre el resto:
+            # meterlas con un 1,0 supuesto arrastraría la beta de toda la
+            # cartera hacia el mercado sin que nada lo dijera.
+            pares = [(w, b) for w, b in zip(weights, betas) if b is not None]
+            peso_con_beta = sum(w for w, _ in pares)
+            if pares and peso_con_beta > 0:
+                portfolio_beta = sum(w * b for w, b in pares) / peso_con_beta
+                metrics.portfolio_beta = round(portfolio_beta, 2)
+            else:
+                portfolio_beta = 0.0
+                metrics.portfolio_beta = 0.0
             
             # Gain-Loss Ratio
             total_gains = sum(gains) if gains else 0
@@ -5702,7 +6108,100 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
                                 )
                 except Exception as err:
                     logger.warning(f"No se pudo calcular el tracking error: {err}")
-        
+
+                # ── CAPM, publicado con sus ingredientes ──────────────────
+                # `expected_return` ya se calculaba arriba para restarlo. Sale
+                # ahora del backend para que el alfa se pueda auditar en
+                # pantalla: alfa = rendimiento − esperado, y los tres números
+                # visibles.
+                metrics.capm_esperado = round(expected_return, 2)
+                metrics.prima_riesgo_mercado = round(market_return - risk_free_rate, 2)
+
+                # ── Estructura de la cartera ──────────────────────────────
+                # Lo que se gana diversificando, medido: la volatilidad media
+                # ponderada frente a la real. Es exactamente la diferencia
+                # entre la fórmula vieja y la de covarianza, así que publicarla
+                # convierte aquel bug en una cifra útil.
+                try:
+                    vol_ponderada = sum(weighted_volatility) * 100
+                    if portfolio_volatility > 0 and vol_ponderada > 0:
+                        metrics.ratio_diversificacion = round(vol_ponderada / portfolio_volatility, 2)
+                    # Concentración: Herfindahl sobre los pesos, en 0-100.
+                    if weights:
+                        metrics.concentracion_hhi = round(sum(w * w for w in weights) * 100, 1)
+                        metrics.peso_mayor = round(max(weights) * 100, 1)
+                    metrics.posiciones_totales = len(betas)
+                    metrics.posiciones_con_beta = sum(1 for b in betas if b is not None)
+                except Exception as err:
+                    logger.warning(f"Estructura de la cartera: {err}")
+
+                # ── Panel de riesgo completo, reutilizando riesgo.py ───────
+                # No se reimplementa nada: `riesgo.metricas()` ya calcula
+                # Sortino, VaR, CVaR, Ulcer, R² y capturas, y está cubierto por
+                # test_riesgo.py con contrapruebas —se demuestra que el cálculo
+                # correcto y el incorrecto dan resultados distintos sobre el
+                # mismo dato—. Lo único que faltaba era darle la serie de la
+                # CARTERA en vez de la de un valor suelto.
+                #
+                # Espera PRECIOS, no rendimientos: se le pasa la curva de
+                # patrimonio, que es (1+r).cumprod() partiendo de 1.
+                try:
+                    if serie_cartera is not None and len(serie_cartera) > 60:
+                        curva = (1 + serie_cartera).cumprod()
+
+                        ref = None
+                        try:
+                            hb = yf.Ticker("^GSPC").history(period="1y")
+                            if hb is not None and not hb.empty:
+                                # Cruzar por FECHA, nunca por posición: la
+                                # cartera y el índice no comparten calendario, y
+                                # emparejar por índice da una beta creíble y sin
+                                # ningún significado.
+                                ref = hb["Close"].dropna()
+                                ref.index = pd.to_datetime(ref.index).tz_localize(None)
+                        except Exception:
+                            ref = None
+
+                        curva_fechas = pd.to_datetime(curva.index).tz_localize(None)
+                        curva.index = curva_fechas
+                        if ref is not None:
+                            comun = curva.index.intersection(ref.index)
+                            if len(comun) > 60:
+                                curva = curva.loc[comun]
+                                ref = ref.loc[comun]
+                            else:
+                                ref = None
+
+                        rm = riesgo.metricas(curva, ref, tasa_sin_riesgo=risk_free_rate / 100.0)
+                        if rm:
+                            metrics.retorno_geometrico = _red(rm.get("retorno_5a"))
+                            metrics.sortino = _red(rm.get("sortino"))
+                            metrics.desviacion_bajista = _red(rm.get("desviacion_bajista"))
+                            metrics.var_95 = _red(rm.get("var_95"))
+                            metrics.cvar_95 = _red(rm.get("cvar_95"))
+                            metrics.ulcer_index = _red(rm.get("ulcer_index"))
+                            metrics.drawdown_actual = _red(rm.get("drawdown_actual"))
+                            rec = rm.get("sesiones_recuperacion")
+                            metrics.sesiones_recuperacion = int(rec) if rec is not None else None
+                            metrics.r_cuadrado = _red(rm.get("r_cuadrado"))
+                            metrics.captura_alcista = _red(rm.get("captura_alcista"))
+                            metrics.captura_bajista = _red(rm.get("captura_bajista"))
+
+                        # ── Series para los gráficos ──────────────────────
+                        # Base 100 las dos, para que se puedan superponer: lo
+                        # que se compara es el RECORRIDO, no el nivel.
+                        paso = max(1, len(curva) // 180)
+                        c = curva.iloc[::paso]
+                        metrics.curva_cartera = [round(float(x) * 100, 2) for x in (c / float(curva.iloc[0]))]
+                        metrics.curva_fechas = [d.strftime("%Y-%m-%d") for d in c.index]
+                        bajo_agua = (curva / curva.cummax() - 1.0) * 100
+                        metrics.curva_drawdown = [round(float(x), 2) for x in bajo_agua.iloc[::paso]]
+                        if ref is not None:
+                            r2 = ref.iloc[::paso]
+                            metrics.curva_indice = [round(float(x) / float(ref.iloc[0]) * 100, 2) for x in r2]
+                except Exception as err:
+                    logger.warning(f"Panel de riesgo de la cartera: {err}")
+
         return PortfolioSummary(
             total_invested=total_invested,
             current_value=current_value,
@@ -5772,15 +6271,23 @@ async def delete_portfolio_transaction(transaction_id: str, current_user: dict =
         raise HTTPException(status_code=500, detail=f"Error al eliminar transacción: {str(e)}")
 
 @api_router.put("/portfolio/{transaction_id}")
-async def update_portfolio_transaction(transaction_id: str, update: dict):
-    """Update a portfolio transaction"""
+async def update_portfolio_transaction(transaction_id: str, update: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Edita una transacción PROPIA.
+
+    Antes no pedía sesión, no filtraba por dueño y aplicaba el cuerpo tal cual
+    en un `$set`: cualquiera podía reescribir el `user_id` o las acciones de la
+    transacción de otro. Ahora sólo los campos que edita la pantalla.
+    """
     try:
-        # Limpiar campos None
-        update_data = {k: v for k, v in update.items() if v is not None}
+        permitidos = {"transaction_type", "shares", "price_per_share", "transaction_date", "commission", "notes"}
+        update_data = {k: v for k, v in update.items() if k in permitidos and v is not None}
+        if update_data.get("transaction_type", "buy") not in ("buy", "sell"):
+            raise HTTPException(status_code=400, detail="Tipo de transacción no válido")
         if not update_data:
             raise HTTPException(status_code=400, detail="No hay datos para actualizar")
         result = await db.portfolio.update_one(
-            {"id": transaction_id},
+            {"id": transaction_id, "user_id": current_user["id"]},
             {"$set": update_data}
         )
         if result.matched_count == 0:
@@ -5790,7 +6297,7 @@ async def update_portfolio_transaction(transaction_id: str, update: dict):
         raise
     except Exception as e:
         logging.error(f"Error updating transaction: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error al actualizar transacción: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error al actualizar transacción")
 
 @api_router.get("/portfolio/transactions", response_model=List[PortfolioTransaction])
 async def get_portfolio_transactions(current_user: dict = Depends(get_current_user)):
@@ -5845,8 +6352,8 @@ async def get_cash_movements(current_user: dict = Depends(get_current_user)):
 async def delete_cash_movement(movement_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a cash movement"""
     try:
-        # Buscar por id solamente, sin filtrar por user_id para compatibilidad
-        result = await db.cash_movements.delete_one({"id": movement_id})
+        # Sólo los movimientos propios. Antes se borraba por id sin mirar el dueño.
+        result = await db.cash_movements.delete_one({"id": movement_id, "user_id": current_user["id"]})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Movimiento no encontrado")
         return {"message": "Movimiento eliminado"}
@@ -5875,34 +6382,6 @@ async def get_cash_summary(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         logging.error(f"Error getting cash summary: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener resumen: {str(e)}")
-@api_router.get("/debug/portfolio-raw")
-async def debug_portfolio_raw(current_user: dict = Depends(get_current_user)):
-    transactions = await db.portfolio.find(
-        {"$or": [
-            {"user_id": current_user["id"]},
-            {"user_id": ""},
-            {"user_id": {"$exists": False}}
-        ]}
-    ).to_list(1000)
-    holdings_map = {}
-    for tx in transactions:
-        t = tx['ticker']
-        if t not in holdings_map:
-            holdings_map[t] = {"shares": 0.0, "cost": 0.0, "tx_count": 0}
-        holdings_map[t]["tx_count"] += 1
-        if tx['transaction_type'] == 'buy':
-            holdings_map[t]["shares"] += tx['shares']
-            holdings_map[t]["cost"] += tx['total_amount']
-        else:
-            holdings_map[t]["shares"] -= tx['shares']
-            holdings_map[t]["cost"] -= tx['total_amount']
-    return {
-        "user_id": current_user["id"],
-        "total_transactions": len(transactions),
-        "holdings_raw": holdings_map,
-        "filtered_out": [t for t, d in holdings_map.items() if d["shares"] <= 0.0001]
-    }
-
 @api_router.get("/portfolio/evolution", response_model=PortfolioEvolution)
 async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)):
     """Get portfolio value evolution over time - uses transaction prices for accuracy"""
@@ -5934,14 +6413,17 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
         
         # Get current prices for current value calculation
         tickers = list(set(tx['ticker'] for tx in transactions))
-        current_prices = {}
-        for ticker in tickers:
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                current_prices[ticker] = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
-            except:
-                current_prices[ticker] = 0
+        # Precio actual de cada valor, a la vez y fuera del bucle de eventos.
+        # Antes: `stock.info` —el quoteSummary entero, sólo para leer el
+        # precio— en serie y bloqueando el backend. `cotizacion_rapida` hace
+        # una petición ligera y la guarda 60 s.
+        cotizaciones = await asyncio.gather(
+            *[asyncio.to_thread(cotizacion_rapida, t) for t in tickers]
+        )
+        current_prices = {
+            t: (c.get('actual') or 0) if c.get('ok') else 0
+            for t, c in zip(tickers, cotizaciones)
+        }
         
         # Build timeline: collect all event dates (transactions + cash movements)
         event_dates = set()
@@ -6085,6 +6567,13 @@ async def get_portfolio_evolution(current_user: dict = Depends(get_current_user)
 # ============================================
 
 class ScreenerFilters(BaseModel):
+    # Formato actual: {clave de ratio: {"min": x, "max": y}}. Claves y nombres
+    # en GET /screener/ratios; son los de la pantalla de Análisis.
+    filtros: Optional[Dict[str, Dict[str, Optional[float]]]] = None
+    # Dónde buscar: "app" (los valores fijos) o un universo del screener de Yahoo
+    # ("us", "es", "europa"). Ver `screener.UNIVERSOS`.
+    universo: Optional[str] = "app"
+    # Formato anterior. Se sigue aceptando y se traduce (`screener.normalizar_filtros`).
     min_pe: Optional[float] = None
     max_pe: Optional[float] = None
     min_roe: Optional[float] = None
@@ -6100,12 +6589,36 @@ class ScreenerResult(BaseModel):
     sector: str
     industry: str
     current_price: float
-    pe_ratio: Optional[float]
-    roe: Optional[float]
-    dividend_yield: Optional[float]
-    debt_to_equity: Optional[float]
-    market_cap: Optional[float]
+    currency: Optional[str] = None
+    ratios: Dict[str, Optional[float]]
     recommendation: str
+    # Campos anteriores, por compatibilidad
+    pe_ratio: Optional[float] = None
+    roe: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    debt_to_equity: Optional[float] = None
+    market_cap: Optional[float] = None
+
+class ScreenerResponse(BaseModel):
+    resultados: List[ScreenerResult]
+    # Valores revisados (los 30 de la app, o los candidatos que devolvió Yahoo).
+    universo: int
+    analizados: int
+    # Cuántos valores quedaron fuera por NO tener el dato de cada ratio filtrado.
+    # Sin esto, «0 resultados» se lee como «ninguno cumple».
+    sin_dato: Dict[str, int]
+    # Valores cuyo resumen o cálculo de Análisis aún no ha llegado. La pantalla
+    # repite la búsqueda mientras sea > 0.
+    pendientes: int = 0
+    filtros_aplicados: Dict[str, Dict[str, float]]
+    fuente: str
+    nombre_universo: str = ""
+    # Sólo al buscar en el mercado: cuántas empresas encontró Yahoo en total con
+    # los filtros que admite, y cuáles de los filtros se le mandaron.
+    total_mercado: Optional[int] = None
+    filtros_en_yahoo: List[str] = []
+    # Descartadas por tener la sede fuera del universo (ADR, líneas extranjeras).
+    fuera_de_region: int = 0
 
 # Popular stocks to screen
 POPULAR_TICKERS = [
@@ -6114,114 +6627,399 @@ POPULAR_TICKERS = [
     "KO", "PEP", "MRK", "ABT", "TMO", "COST", "NKE", "MCD", "BA", "CAT"
 ]
 
-@api_router.post("/screener", response_model=List[ScreenerResult])
-async def screen_stocks(filters: ScreenerFilters):
-    """Screen stocks based on financial criteria"""
+_SEMAFORO_SCREENER = asyncio.Semaphore(6)
+_SEMAFORO_ANALISIS_SCREENER = asyncio.Semaphore(4)
+_TAREAS_INFO_SCREENER: Dict[str, asyncio.Task] = {}
+_TAREAS_ANALISIS_SCREENER: Dict[str, asyncio.Task] = {}
+# Lo que una búsqueda espera antes de contestar con lo que haya. Treinta valores
+# a ~2 s cada uno, de cuatro en cuatro, son ~15 s en frío: se contesta antes y
+# la pantalla vuelve a preguntar.
+ESPERA_ANALISIS_SCREENER_S = 8.0
+# Al buscar en el mercado: cuántas empresas pide a Yahoo (ordenadas por
+# capitalización) y cuántas revisa de verdad. Cuarenta a ~2 s de cálculo de
+# Análisis son ~20 s en frío; más no cabría en una espera razonable. Se piden
+# 250 (el máximo de Yahoo) porque la limpieza de líneas extranjeras y
+# duplicados se come muchas de las primeras.
+TAMANO_CONSULTA_YAHOO = 250
+MAX_CANDIDATOS_MERCADO = 40
+
+
+async def _info_screener(ticker: str) -> Optional[dict]:
+    """
+    `info` de Yahoo con caché de 6 h.
+
+    El screener anterior pedía los treinta `info` EN SERIE en cada búsqueda
+    (30-60 s) y bloqueando el bucle de eventos. Ahora van en paralelo —seis a
+    la vez, para no provocar el límite de Yahoo— y una búsqueda repetida con
+    otros filtros ya no descarga nada: los ratios de resumen no cambian en
+    minutos.
+    """
+    clave = f"screener:info:{ticker}"
+    cacheado = cache_get(clave)
+    if cacheado is not None:
+        return cacheado
+    if yahoo_limitado():
+        return None
+    async with _SEMAFORO_SCREENER:
+        try:
+            info = await asyncio.to_thread(lambda: yf.Ticker(ticker).info)
+        except Exception as e:  # noqa: BLE001
+            if es_error_de_limite(e):
+                marcar_yahoo_limitado()
+            logging.warning(f"Screener: sin datos de {ticker}: {e}")
+            return None
+    if info:
+        cache_put(clave, info, 6 * 3600)
+    return info or None
+
+
+async def _ratios_analisis_screener(ticker: str) -> Optional[dict]:
+    """
+    Los ratios que sólo calcula Análisis (ROIC, WACC, Altman, Piotroski…), con
+    el MISMO `calculate_ratios` de esa pantalla. Caché de 12 h: salen de los
+    estados financieros, que cambian una vez por trimestre.
+
+    Un fallo se guarda como `{}` durante una hora: sin eso, un valor que Yahoo
+    no resuelve se reintentaría en cada búsqueda.
+    """
+    clave = f"screener:analisis:{ticker}"
+    cacheado = cache_get(clave)
+    if cacheado is not None:
+        return cacheado or None
+    if yahoo_limitado():
+        return None
+    async with _SEMAFORO_ANALISIS_SCREENER:
+        try:
+            ratios, _info = await asyncio.to_thread(lambda: calculate_ratios(yf.Ticker(ticker)))
+            plano = {k: ratios.get(k) for k in screener_mod.claves_de_analisis()}
+        except Exception as e:  # noqa: BLE001
+            if es_error_de_limite(e):
+                marcar_yahoo_limitado()
+            logging.warning(f"Screener: sin ratios de Análisis para {ticker}: {e}")
+            cache_put(clave, {}, 3600)
+            return None
+    cache_put(clave, plano, 12 * 3600)
+    return plano
+
+
+def _lanzar_en_segundo_plano(tickers: List[str], prefijo: str, registro: Dict[str, asyncio.Task], trabajo) -> List[asyncio.Task]:
+    """Arranca `trabajo(ticker)` para los que no estén en caché ni en curso. Sin duplicados."""
+    tareas = []
+    for t in tickers:
+        if cache_get(f"{prefijo}{t}") is not None:
+            continue
+        tarea = registro.get(t)
+        if tarea is None or tarea.done():
+            tarea = asyncio.create_task(trabajo(t))
+            registro[t] = tarea
+        tareas.append(tarea)
+    return tareas
+
+
+def _lanzar_info_screener(tickers: List[str]) -> List[asyncio.Task]:
+    return _lanzar_en_segundo_plano(tickers, "screener:info:", _TAREAS_INFO_SCREENER, _info_screener)
+
+
+def _lanzar_analisis_screener(tickers: List[str]) -> List[asyncio.Task]:
+    return _lanzar_en_segundo_plano(tickers, "screener:analisis:", _TAREAS_ANALISIS_SCREENER, _ratios_analisis_screener)
+
+
+# Rentabilidades y técnicos: una descarga de 6 años para 40 valores tarda
+# unos segundos. Pasado este tope, lo que falte cuenta como «sin dato».
+ESPERA_HISTORICO_SCREENER_S = 25.0
+
+
+async def _historico_screener(tickers: List[str]) -> None:
+    """
+    Rentabilidades, beta de 1 año y técnicos para los filtros de «Rentabilidad
+    bursátil» y «Técnicos», con las mismas funciones que la pantalla
+    Rendimiento. UNA descarga para todos los que falten, más el SPY para la
+    beta. Caché de 6 h por valor.
+    """
+    faltan = [t for t in tickers if cache_get(f"screener:historico:{t}") is None]
+    if not faltan or yahoo_limitado():
+        return
     try:
-        results = []
-        
-        for ticker in POPULAR_TICKERS:
+        velas = await asyncio.to_thread(rendimiento_api.descargar, faltan + [rendimiento_api.INDICE])
+    except Exception as e:  # noqa: BLE001
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+        logging.warning(f"Screener: sin histórico de cotizaciones: {e}")
+        return
+    indice = velas.get(rendimiento_api.INDICE)
+    cierres_indice = indice["Close"] if indice is not None and "Close" in indice else None
+    for t in faltan:
+        cache_put(f"screener:historico:{t}", rendimiento_mod.metricas_historicas(velas.get(t), cierres_indice), 6 * 3600)
+
+
+async def _candidatos_mercado(clave_universo: str, filtros: Dict[str, Dict[str, float]]):
+    """
+    Empresas del universo que pasan los filtros que admite el screener de Yahoo,
+    de mayor a menor capitalización y limpias de duplicados
+    (`screener.limpiar_candidatos`). Caché de 30 min por universo y filtros.
+
+    Devuelve `(símbolos, total que encontró Yahoo, claves de los filtros que se
+    le mandaron)`.
+    """
+    u = screener_mod.UNIVERSOS[clave_universo]
+    condiciones = screener_mod.condiciones_yahoo(filtros)
+    clave = f"screener:yahoo:{clave_universo}:{condiciones!r}"
+    cacheado = cache_get(clave)
+    if cacheado is not None:
+        return cacheado
+    if yahoo_limitado():
+        raise RuntimeError(f"Yahoo está limitando; reintento en {segundos_hasta_reintento()}s")
+
+    EQ = yf.EquityQuery
+    regiones = u["regiones"]
+    partes = [
+        EQ("eq", ["region", regiones[0]]) if len(regiones) == 1 else EQ("is-in", ["region", *regiones]),
+        EQ("is-in", ["exchange", *u["bolsas"]]),
+    ]
+    partes += [EQ(op, [campo, *valores]) for _clave, op, campo, valores in condiciones]
+    consulta = EQ("and", partes)
+    respuesta = await asyncio.to_thread(
+        lambda: yf.screen(consulta, sortField="intradaymarketcap", sortAsc=False, size=TAMANO_CONSULTA_YAHOO)
+    )
+    tickers = screener_mod.limpiar_candidatos(
+        respuesta.get("quotes", []), clave_universo, MAX_CANDIDATOS_MERCADO
+    )
+    salida = (tickers, respuesta.get("total"), [c[0] for c in condiciones])
+    cache_put(clave, salida, 1800)
+    return salida
+
+
+@api_router.get("/screener/ratios")
+async def get_screener_ratios():
+    """
+    Ratios filtrables, con el nombre y el umbral de la pantalla de Análisis, y
+    los universos donde se puede buscar.
+
+    Abrir el Screener arranca ya el cálculo de los ratios de Análisis de los
+    valores de la app en segundo plano: cuando se busca, normalmente ya están.
+    """
+    _lanzar_analisis_screener(POPULAR_TICKERS)
+    return {
+        "ratios": screener_mod.definiciones(),
+        "universos": [{"clave": k, "nombre": v["nombre"]} for k, v in screener_mod.UNIVERSOS.items()],
+    }
+
+
+@api_router.post("/screener", response_model=ScreenerResponse)
+async def screen_stocks(filters: ScreenerFilters):
+    """Filtra por los ratios principales de Análisis en la app o en el mercado (ver `screener.py`)."""
+    try:
+        crudos = filters.model_dump() if hasattr(filters, "model_dump") else filters.dict()
+        filtros = screener_mod.normalizar_filtros(filters.filtros, crudos)
+        clave_universo = filters.universo if filters.universo in screener_mod.UNIVERSOS else "app"
+
+        total_mercado: Optional[int] = None
+        filtros_en_yahoo: List[str] = []
+        if clave_universo == "app":
+            tickers = POPULAR_TICKERS
+        else:
             try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                
-                # Get key metrics
-                pe_ratio = info.get('trailingPE') or info.get('forwardPE')
-                roe = info.get('returnOnEquity')
-                if roe:
-                    roe = roe * 100  # Convert to percentage
-                dividend_yield = _rentabilidad_dividendo(info)
-                debt_equity = info.get('debtToEquity')
-                if debt_equity:
-                    debt_equity = debt_equity / 100  # yfinance returns as percentage
-                market_cap = info.get('marketCap')
-                if market_cap:
-                    market_cap = market_cap / 1e9  # Convert to billions
-                
-                # Apply filters
-                if filters.min_pe and (not pe_ratio or pe_ratio < filters.min_pe):
-                    continue
-                if filters.max_pe and (not pe_ratio or pe_ratio > filters.max_pe):
-                    continue
-                if filters.min_roe and (not roe or roe < filters.min_roe):
-                    continue
-                if filters.max_debt_equity and (debt_equity and debt_equity > filters.max_debt_equity):
-                    continue
-                if filters.min_dividend_yield and (not dividend_yield or dividend_yield < filters.min_dividend_yield):
-                    continue
-                if filters.min_market_cap and (not market_cap or market_cap < filters.min_market_cap):
-                    continue
-                if filters.sector and info.get('sector', '').lower() != filters.sector.lower():
-                    continue
-                
-                # Determine recommendation
-                score = 0
-                if pe_ratio and pe_ratio < 25:
-                    score += 1
-                if roe and roe > 15:
-                    score += 1
-                if dividend_yield and dividend_yield > 1:
-                    score += 1
-                if debt_equity and debt_equity < 1:
-                    score += 1
-                
-                recommendation = "MANTENER"
-                if score >= 3:
-                    recommendation = "COMPRAR"
-                elif score <= 1:
-                    recommendation = "VENDER"
-                
-                results.append(ScreenerResult(
-                    ticker=ticker,
-                    company_name=info.get('longName', ticker),
-                    sector=info.get('sector', 'N/A'),
-                    industry=info.get('industry', 'N/A'),
-                    current_price=info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0,
-                    pe_ratio=round(pe_ratio, 2) if pe_ratio else None,
-                    roe=round(roe, 2) if roe else None,
-                    dividend_yield=round(dividend_yield, 2) if dividend_yield else None,
-                    debt_to_equity=round(debt_equity, 2) if debt_equity else None,
-                    market_cap=round(market_cap, 2) if market_cap else None,
-                    recommendation=recommendation
-                ))
-                
-            except Exception as e:
-                logging.warning(f"Error screening {ticker}: {str(e)}")
+                tickers, total_mercado, filtros_en_yahoo = await _candidatos_mercado(clave_universo, filtros)
+            except Exception as e:  # noqa: BLE001
+                if es_error_de_limite(e):
+                    marcar_yahoo_limitado()
+                logging.warning(f"Screener de Yahoo ({clave_universo}): {e}")
+                raise HTTPException(
+                    status_code=502,
+                    detail="El screener de Yahoo Finance no respondió. Vuelve a intentarlo en unos segundos.",
+                )
+
+        tareas_info = _lanzar_info_screener(tickers)
+        tareas_analisis = _lanzar_analisis_screener(tickers)
+        necesita = screener_mod.necesita_analisis(filtros)
+        if clave_universo == "app":
+            # Treinta valores: el resumen se espera entero (≈3 s en frío) y, A LA
+            # VEZ, el cálculo de Análisis hasta 8 s si algún filtro lo usa.
+            esperas = []
+            if tareas_info:
+                esperas.append(asyncio.gather(*tareas_info))
+            if tareas_analisis and necesita:
+                esperas.append(asyncio.wait(tareas_analisis, timeout=ESPERA_ANALISIS_SCREENER_S))
+            if esperas:
+                await asyncio.gather(*esperas)
+        else:
+            # Mercado: resumen y cálculo tienen el mismo presupuesto. Lo que no
+            # llegue cuenta como pendiente y la pantalla vuelve a preguntar.
+            en_curso = list(tareas_info) + (list(tareas_analisis) if necesita else [])
+            if en_curso:
+                await asyncio.wait(en_curso, timeout=ESPERA_ANALISIS_SCREENER_S)
+
+        if screener_mod.necesita_historico(filtros):
+            try:
+                await asyncio.wait_for(_historico_screener(tickers), timeout=ESPERA_HISTORICO_SCREENER_S)
+            except asyncio.TimeoutError:
+                logging.warning("Screener: el histórico de cotizaciones no llegó a tiempo")
+
+        resultados: List[ScreenerResult] = []
+        sin_dato: Dict[str, int] = {}
+        pendientes = 0
+        analizados = 0
+        fuera_de_region = 0
+        for ticker in tickers:
+            info = cache_get(f"screener:info:{ticker}")
+            if info is None:
+                tarea = _TAREAS_INFO_SCREENER.get(ticker)
+                if tarea is not None and not tarea.done():
+                    pendientes += 1
                 continue
-        
-        return results
-        
+            if not screener_mod.pais_permitido(info, clave_universo):
+                fuera_de_region += 1
+                continue
+            analizados += 1
+            if filters.sector and (info.get('sector') or '').lower() != filters.sector.lower():
+                continue
+
+            guardado = cache_get(f"screener:analisis:{ticker}")
+            ratios = screener_mod.extraer(
+                info, _rentabilidad_dividendo(info), guardado or None,
+                historico=cache_get(f"screener:historico:{ticker}") or None,
+            )
+            cumple, faltan, por_calcular = screener_mod.evaluar(
+                ratios, filtros, analisis_listo=guardado is not None
+            )
+            if por_calcular:
+                pendientes += 1
+                continue
+            for c in faltan:
+                sin_dato[c] = sin_dato.get(c, 0) + 1
+            if not cumple:
+                continue
+
+            pe, roe = ratios.get("per"), ratios.get("roe")
+            div, de = ratios.get("dividend_yield"), ratios.get("deuda_capital")
+            score = sum([
+                bool(pe and pe < 25),
+                bool(roe and roe > 15),
+                bool(div and div > 1),
+                bool(de is not None and de < 100),
+            ])
+            recommendation = "COMPRAR" if score >= 3 else "VENDER" if score <= 1 else "MANTENER"
+
+            resultados.append(ScreenerResult(
+                ticker=ticker,
+                company_name=info.get('longName') or info.get('shortName') or ticker,
+                sector=info.get('sector') or 'N/A',
+                industry=info.get('industry') or 'N/A',
+                current_price=info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0,
+                currency=info.get('currency'),
+                ratios=ratios,
+                recommendation=recommendation,
+                pe_ratio=pe,
+                roe=roe,
+                dividend_yield=div,
+                debt_to_equity=round(de / 100, 2) if de is not None else None,
+                market_cap=ratios.get("capitalizacion"),
+            ))
+
+        return ScreenerResponse(
+            resultados=resultados,
+            universo=len(tickers),
+            analizados=analizados,
+            sin_dato=sin_dato,
+            pendientes=pendientes,
+            filtros_aplicados=filtros,
+            nombre_universo=screener_mod.UNIVERSOS[clave_universo]["nombre"],
+            total_mercado=total_mercado,
+            filtros_en_yahoo=filtros_en_yahoo,
+            fuera_de_region=fuera_de_region,
+            fuente=(
+                "Dos fuentes: el resumen de Yahoo Finance (últimos doce meses) y, para ROIC, ROCE, CROIC, "
+                "deuda neta, EV/EBIT, WACC, Altman, Piotroski y Montier, el mismo cálculo de la pantalla "
+                "de Análisis sobre los estados financieros. Los del resumen pueden diferir en unas décimas "
+                "de los de Análisis. Rentabilidades, beta de 1 año y técnicos salen de las cotizaciones "
+                "diarias ajustadas de Yahoo."
+            ),
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error in screener: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error en screener: {str(e)}")
 
+_DEPENDENCIAS_RENDIMIENTO = rendimiento_api.Dependencias(
+    cache_get=cache_get,
+    cache_put=cache_put,
+    info_de=_info_screener,
+    ratios_analisis_de=_ratios_analisis_screener,
+    yahoo_limitado=yahoo_limitado,
+)
+
+
+@api_router.get("/rendimiento/{ticker}")
+async def get_rendimiento(ticker: str, current_user: dict = Depends(get_current_user)):
+    """Ficha de rendimiento de un valor frente a su industria y al S&P 500 (ver `rendimiento_api.py`)."""
+    try:
+        return await rendimiento_api.ficha(ticker, _DEPENDENCIAS_RENDIMIENTO)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Yahoo Finance no tiene datos de «{ticker.upper()}». Comprueba el ticker.",
+        )
+    except rendimiento_api.YahooLimitado:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Yahoo está limitando las peticiones. Vuelve a intentarlo en {segundos_hasta_reintento()} s.",
+        )
+    except Exception as e:  # noqa: BLE001
+        if es_error_de_limite(e):
+            marcar_yahoo_limitado()
+        logging.error(f"Rendimiento de {ticker}: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudieron obtener los datos de Yahoo Finance. Vuelve a intentarlo en unos segundos.",
+        )
+
+
 @api_router.get("/screener/presets")
 async def get_screener_presets():
-    """Get predefined screener presets"""
+    """Presets con los umbrales de la pantalla de Análisis."""
     return {
         "presets": [
             {
-                "name": "Value Stocks",
-                "description": "P/E bajo, alto dividendo",
-                "filters": {"max_pe": 15, "min_dividend_yield": 2}
+                "name": "Valor",
+                "description": "P/E < 15 y dividendo > 2 %",
+                "filters": {"filtros": {"per": {"max": 15}, "dividend_yield": {"min": 2}}},
             },
             {
-                "name": "Growth Stocks", 
-                "description": "Alto ROE, bajo endeudamiento",
-                "filters": {"min_roe": 20, "max_debt_equity": 1}
+                "name": "Calidad",
+                "description": "ROE > 15 %, margen operativo > 15 %, deuda < 100 %",
+                "filters": {"filtros": {"roe": {"min": 15}, "margen_operativo": {"min": 15},
+                                        "deuda_capital": {"max": 100}}},
+            },
+            {
+                "name": "Crea valor",
+                "description": "ROIC > 15 % y ROIC por encima del WACC",
+                "filters": {"filtros": {"roic": {"min": 15}, "spread_roic_wacc": {"min": 0}}},
+            },
+            {
+                "name": "Solidez contable",
+                "description": "Altman > 2,99 y Piotroski ≥ 7",
+                "filters": {"filtros": {"altman_z": {"min": 2.99}, "piotroski": {"min": 7}}},
+            },
+            {
+                "name": "Generadoras de caja",
+                "description": "FCF Yield > 5 % y deuda neta/EBITDA < 3",
+                "filters": {"filtros": {"fcf_yield": {"min": 5}, "deuda_neta_ebitda": {"max": 3}}},
             },
             {
                 "name": "Blue Chips",
-                "description": "Gran capitalización, estables",
-                "filters": {"min_market_cap": 100, "max_debt_equity": 1.5}
+                "description": "Capitalización > 100 B$ y deuda < 150 %",
+                "filters": {"filtros": {"capitalizacion": {"min": 100}, "deuda_capital": {"max": 150}}},
             },
             {
-                "name": "Dividend Kings",
-                "description": "Alto rendimiento por dividendo",
-                "filters": {"min_dividend_yield": 3}
-            }
+                "name": "Dividendo sostenible",
+                "description": "Dividendo > 3 % con payout < 60 %",
+                "filters": {"filtros": {"dividend_yield": {"min": 3}, "payout": {"max": 60}}},
+            },
         ]
     }
+
 
 # ============================================
 # DIVIDENDOS E HISTÓRICO
@@ -6282,11 +7080,11 @@ async def get_dividend_info(ticker: str):
         raise HTTPException(status_code=500, detail=f"Error al obtener dividendos: {str(e)}")
 
 @api_router.get("/dividends/calendar/upcoming")
-async def get_upcoming_dividends():
+async def get_upcoming_dividends(current_user: dict = Depends(get_current_user)):
     """Get upcoming dividend payments from portfolio holdings"""
     try:
         # Get portfolio holdings
-        transactions = await db.portfolio.find().to_list(1000)
+        transactions = await db.portfolio.find({"user_id": current_user["id"]}).to_list(1000)
         holdings = {}
         for tx in transactions:
             ticker = tx['ticker']
@@ -6336,154 +7134,89 @@ async def get_upcoming_dividends():
 # ============================================
 
 class BenchmarkComparison(BaseModel):
-    portfolio_return: float
-    benchmark_return: float
-    alpha: float  # Excess return over benchmark
-    tracking_error: float
-    sharpe_portfolio: float
-    sharpe_benchmark: float
-    portfolio_volatility: float
-    benchmark_volatility: float
-    correlation: float
-    period: str
-    portfolio_values: List[dict]
-    benchmark_values: List[dict]
+    # Opcionales: sin posiciones o sin sesiones suficientes se devuelve el
+    # HUECO con su motivo (`nota`), no un cero que se leería como dato.
+    portfolio_return: Optional[float] = None
+    benchmark_return: Optional[float] = None
+    alpha: Optional[float] = None  # Diferencia de rentabilidad sobre la MISMA ventana
+    tracking_error: Optional[float] = None
+    sharpe_portfolio: Optional[float] = None
+    sharpe_benchmark: Optional[float] = None
+    portfolio_volatility: Optional[float] = None
+    benchmark_volatility: Optional[float] = None
+    correlation: Optional[float] = None
+    period: str = "1Y"
+    portfolio_values: List[dict] = []
+    benchmark_values: List[dict] = []
+    supuesto: Optional[str] = None
+    sesiones: int = 0
+    nota: Optional[str] = None
+    sin_precio: List[str] = []
+    tasa_sin_riesgo: Optional[float] = None
+
 
 @api_router.get("/portfolio/benchmark", response_model=BenchmarkComparison)
-async def compare_portfolio_to_benchmark():
-    """Compare portfolio performance to S&P500 benchmark"""
+async def compare_portfolio_to_benchmark(current_user: dict = Depends(get_current_user)):
+    """
+    Cartera del usuario frente al S&P 500 (SPY) en el último año.
+
+    Cálculo y supuesto declarado en `comparativa.py`. Lo que había antes:
+    ruta SIN sesión que leía las transacciones de TODOS los usuarios,
+    correlación fija en 0,85, curva interpolada en línea recta, volatilidad
+    como media ponderada, tipo sin riesgo a mano y ~5 s de descargas en serie
+    bloqueando el bucle de eventos.
+    """
     try:
-        # Get portfolio transactions
-        transactions = await db.portfolio.find().sort("transaction_date", 1).to_list(1000)
-        
-        if not transactions:
-            return BenchmarkComparison(
-                portfolio_return=0, benchmark_return=0, alpha=0,
-                tracking_error=0, sharpe_portfolio=0, sharpe_benchmark=0,
-                portfolio_volatility=0, benchmark_volatility=0, correlation=0,
-                period="1Y", portfolio_values=[], benchmark_values=[]
-            )
-        
-        # Get S&P500 data
-        spy = yf.Ticker("SPY")
-        spy_hist = spy.history(period="1y")
-        
-        if spy_hist.empty:
-            raise HTTPException(status_code=500, detail="No se pudo obtener datos del benchmark")
-        
-        # Calculate benchmark return
-        spy_start = float(spy_hist['Close'].iloc[0])
-        spy_end = float(spy_hist['Close'].iloc[-1])
-        benchmark_return = ((spy_end - spy_start) / spy_start) * 100
-        
-        # Calculate benchmark volatility
-        spy_returns = spy_hist['Close'].pct_change().dropna()
-        benchmark_volatility = float(spy_returns.std() * np.sqrt(252) * 100)
-        
-        # Get portfolio holdings and calculate return
-        holdings = {}
-        total_invested = 0
-        for tx in transactions:
-            ticker = tx['ticker']
-            if ticker not in holdings:
-                holdings[ticker] = {'shares': 0, 'cost': 0}
-            if tx['transaction_type'] == 'buy':
-                holdings[ticker]['shares'] += tx['shares']
-                holdings[ticker]['cost'] += tx['total_amount']
-                total_invested += tx['total_amount']
-            else:
-                holdings[ticker]['shares'] -= tx['shares']
-                holdings[ticker]['cost'] -= tx['total_amount']
-                total_invested -= tx['total_amount']
-        
-        # Calculate current portfolio value
-        current_value = 0
-        portfolio_returns = []
-        
-        for ticker, data in holdings.items():
-            if data['shares'] > 0:
-                try:
-                    stock = yf.Ticker(ticker)
-                    info = stock.info
-                    price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0
-                    current_value += data['shares'] * price
-                    
-                    # Get stock returns for correlation
-                    hist = stock.history(period="1y")
-                    if not hist.empty:
-                        returns = hist['Close'].pct_change().dropna()
-                        weight = (data['shares'] * price) / max(current_value, 1)
-                        portfolio_returns.append({'returns': returns, 'weight': weight})
-                except:
-                    current_value += data['cost']
-        
-        # Portfolio return
-        portfolio_return = ((current_value - total_invested) / total_invested * 100) if total_invested > 0 else 0
-        
-        # Alpha (excess return)
-        alpha = portfolio_return - benchmark_return
-        
-        # Calculate portfolio volatility (weighted average)
-        portfolio_volatility = 0
-        if portfolio_returns:
-            for pr in portfolio_returns:
-                vol = float(pr['returns'].std() * np.sqrt(252) * 100)
-                portfolio_volatility += vol * pr['weight']
-        
-        # Sharpe ratios (assuming 4% risk-free rate)
-        risk_free = 4.0
-        sharpe_portfolio = (portfolio_return - risk_free) / portfolio_volatility if portfolio_volatility > 0 else 0
-        sharpe_benchmark = (benchmark_return - risk_free) / benchmark_volatility if benchmark_volatility > 0 else 0
-        
-        # Correlation (simplified)
-        correlation = 0.85  # Typical correlation with market
-        
-        # Tracking error
-        tracking_error = abs(portfolio_volatility - benchmark_volatility)
-        
-        # Generate chart data points
-        portfolio_values = []
-        benchmark_values = []
-        
-        # Monthly data for last 12 months
-        for i in range(12):
-            month_offset = 11 - i
-            date = (datetime.now() - timedelta(days=month_offset * 30)).strftime('%Y-%m')
-            
-            # Interpolate values (simplified)
-            port_val = total_invested * (1 + (portfolio_return / 100) * (i / 11))
-            bench_val = 100 * (1 + (benchmark_return / 100) * (i / 11))
-            
-            portfolio_values.append({"date": date, "value": round(port_val, 2)})
-            benchmark_values.append({"date": date, "value": round(bench_val, 2)})
-        
-        return BenchmarkComparison(
-            portfolio_return=round(portfolio_return, 2),
-            benchmark_return=round(benchmark_return, 2),
-            alpha=round(alpha, 2),
-            tracking_error=round(tracking_error, 2),
-            sharpe_portfolio=round(sharpe_portfolio, 2),
-            sharpe_benchmark=round(sharpe_benchmark, 2),
-            portfolio_volatility=round(portfolio_volatility, 2),
-            benchmark_volatility=round(benchmark_volatility, 2),
-            correlation=round(correlation, 2),
-            period="1Y",
-            portfolio_values=portfolio_values,
-            benchmark_values=benchmark_values
+        transactions = await db.portfolio.find({"user_id": current_user["id"]}).to_list(1000)
+        acciones = comparativa_mod.posiciones_actuales(transactions)
+        if not acciones:
+            return BenchmarkComparison(**comparativa_mod.comparar({}, {}, pd.Series(dtype=float), 0.0))
+
+        clave = "bench:" + current_user["id"] + ":" + ",".join(
+            f"{t}={n:g}" for t, n in sorted(acciones.items())
         )
-        
+        cacheado = cache_get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        simbolos = list(acciones) + ["SPY"]
+
+        def _cierres(simbolo):
+            try:
+                h = _load_history(simbolo, period="1y", interval="1d")
+                return h["Close"] if h is not None and not h.empty else None
+            except Exception as e:  # noqa: BLE001 — un valor sin precio se declara, no tumba la tarjeta
+                logging.warning(f"Benchmark: sin histórico de {simbolo}: {e}")
+                return None
+
+        series, rf = await asyncio.gather(
+            asyncio.gather(*[asyncio.to_thread(_cierres, s) for s in simbolos]),
+            asyncio.to_thread(_tasa_sin_riesgo),
+        )
+        cierres = dict(zip(simbolos, series))
+        referencia = cierres.pop("SPY")
+        if referencia is None:
+            raise HTTPException(status_code=502, detail="No se pudo obtener el histórico del S&P 500 (SPY)")
+
+        resultado = comparativa_mod.comparar(cierres, acciones, referencia, rf)
+        resultado["tasa_sin_riesgo"] = round(rf * 100, 2)
+        respuesta = BenchmarkComparison(**resultado)
+        cache_put(clave, respuesta, 300)
+        return respuesta
+
     except HTTPException:
         raise
     except Exception as e:
         logging.error(f"Error comparing to benchmark: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+
 # ============================================
 # HISTORY DELETE ENDPOINTS
 # ============================================
 
 @api_router.delete("/history/{analysis_id}")
-async def delete_analysis(analysis_id: str):
+async def delete_analysis(analysis_id: str, current_user: dict = Depends(require_admin)):
     """Delete a single analysis from history"""
     try:
         result = await db.analyses.delete_one({"id": analysis_id})
@@ -6499,7 +7232,7 @@ async def delete_analysis(analysis_id: str):
         raise HTTPException(status_code=500, detail=f"Error al eliminar análisis: {str(e)}")
 
 @api_router.delete("/history")
-async def delete_all_history():
+async def delete_all_history(current_user: dict = Depends(require_admin)):
     """Delete all analysis history"""
     try:
         result = await db.analyses.delete_many({})
@@ -7162,13 +7895,28 @@ async def get_market_news(limit: int = 15):
         # Use multiple market symbols to aggregate diverse news
         market_symbols = ['^GSPC', '^DJI', '^IXIC', 'SPY', 'QQQ', '^VIX']  # S&P 500, Dow Jones, NASDAQ, SPY ETF, QQQ ETF, VIX
         
+        # Las seis consultas a Yahoo, a la vez y fuera del bucle de eventos.
+        # Antes iban en serie dentro de la corrutina: mientras duraban, el
+        # backend entero dejaba de contestar (medido: otra ruta cacheada pasó
+        # de 0,2 s a 3,9 s). Cinco minutos de caché: los titulares no cambian
+        # más deprisa, y así una visita repetida no vuelve a tocar Yahoo.
+        crudas = cache_get("market-news:crudas")
+        if crudas is None:
+            respuestas = await asyncio.gather(
+                *[asyncio.to_thread(lambda s=s: yf.Ticker(s).news or []) for s in market_symbols],
+                return_exceptions=True,
+            )
+            crudas = list(zip(market_symbols, respuestas))
+            if any(not isinstance(r, BaseException) and r for _, r in crudas):
+                cache_put("market-news:crudas", crudas, 300)
+
         all_news = []
         seen_titles = set()  # To avoid duplicates
-        
-        for symbol in market_symbols:
+
+        for symbol, raw_news in crudas:
             try:
-                ticker = yf.Ticker(symbol)
-                raw_news = ticker.news or []
+                if isinstance(raw_news, BaseException):
+                    raise raw_news
                 
                 for article in raw_news:
                     # New yfinance structure has nested 'content' object
@@ -10331,7 +11079,7 @@ async def get_overton_signal(ticker: str):
     #    calcula sobre barras diarias.
     cacheado = cache_get(clave_cache)
     if cacheado is not None:
-        return cacheado
+        return await _overton_con_traducciones(cacheado)
 
     # 2. Si Yahoo está limitando, ni se intenta: cada intento alarga la ventana.
     #    Se sirve la última lectura buena, diciendo de cuándo es.
@@ -10342,7 +11090,7 @@ async def get_overton_signal(ticker: str):
             motivo=f"Yahoo está limitando las peticiones; se reintenta en {espera}s.",
         )
         if reserva is not None:
-            return reserva
+            return await _overton_con_traducciones(reserva)
         raise HTTPException(
             status_code=503,
             detail=(
@@ -10611,8 +11359,10 @@ async def get_overton_signal(ticker: str):
                     impact = round(-0.8 - (neg_count * 0.6), 1)
                     impact = max(-4.0, impact)  # Floor en -4.0
                 else:
-                    # Neutral: impacto pequeño basado en longitud del título
-                    impact = round((len(title) % 5 - 2) * 0.3, 1)  # Entre -0.6 y +0.9
+                    # Neutral: 0. Antes salía de la LONGITUD del titular
+                    # ((len % 5 − 2) × 0,3): un número entre −0,6 y +0,9 que no medía
+                    # nada y que el panel «impacto en narrativa» pintaba como un dato.
+                    impact = 0.0
 
                 news_items.append({
                     "headline":    title,
@@ -10629,29 +11379,9 @@ async def get_overton_signal(ticker: str):
                            "impact": 0.0, "source": "N/A", "published": "N/A"}]
         _marca(f"news_fetch ({len(news_items)} items)")
 
-        # Traducción al español. Se hace DESPUÉS de calcular el impacto: la
-        # puntuación se obtiene por palabras clave en inglés («beat», «miss»,
-        # «downgrade»), así que traducir antes la dejaría a cero.
-        #
-        # Presupuesto de tiempo estricto: el modelo local no admite decodificar
-        # en paralelo (ver `traduccion.LOCK_LLM`), así que cada titular se
-        # traduce en serie y cada uno puede tardar 15-25 s. Sin límite, cuatro
-        # noticias con dos campos cada una podían superar los 30 s que el
-        # frontend espera — y entonces TODO /overton fallaba por timeout,
-        # dejando en «sin fuente» paneles que no tienen nada que ver con
-        # noticias (precio, señal, técnico, Ichimoku, volatilidad...). Mejor un
-        # titular en inglés a tiempo que una pantalla entera vacía por esperar
-        # la traducción.
-        try:
-            news_items = await asyncio.wait_for(
-                traducir_noticias(db, get_llm_model, news_items, campos=("headline", "description")),
-                timeout=8.0,
-            )
-        except asyncio.TimeoutError:
-            logging.warning(f"Traducción de noticias de /overton descartada por timeout ({ticker})")
-        except Exception as _e:
-            logging.warning(f"Traducción de noticias de /overton fallida: {_e}")
-        _marca("traduccion_noticias")
+        # Los titulares se traducen AL RESPONDER (`_overton_con_traducciones`),
+        # no aquí: la caché de abajo tiene que guardarlos en inglés. El impacto
+        # ya está calculado sobre el texto original, que es lo que necesita.
 
         news_impact_total = round(sum(n["impact"] for n in news_items), 2)
         bull_count        = sum(1 for n in news_items if n["impact"] > 0)
@@ -10944,7 +11674,9 @@ async def get_overton_signal(ticker: str):
         # Cinco minutos de vigencia y reserva permanente. La reserva es la que
         # sostiene la pantalla cuando Yahoo corta.
         cache_put(clave_cache, respuesta_overton, 300)
-        return respuesta_overton
+        # Hasta 6 s para los titulares: con `/no_think` son ~2 s cada uno y
+        # van los primeros en la cola. Lo que no llegue, en el próximo refresco.
+        return await _overton_con_traducciones(respuesta_overton, espera=6.0)
 
     except HTTPException:
         raise
@@ -12473,6 +13205,29 @@ class SimReiniciarRequest(BaseModel):
 
 # ── Persistencia ──────────────────────────────────────────────────────────
 
+#: Un cerrojo por usuario, para que dos peticiones no se pisen el estado.
+#:
+#: El problema es real y silencioso: la pantalla sondea `/simulacion/estado`
+#: cada 20 s y el robot llama a `/simulacion/robot/evaluar` por su cuenta. Las
+#: dos CARGAN el estado entero, lo mutan y lo GUARDAN entero. Si se solapan, el
+#: último guardado pisa al primero — y lo que se pierde es la posición que el
+#: robot acababa de abrir. No da error: simplemente desaparece.
+#:
+#: Un cerrojo en proceso basta porque el backend corre con UN solo worker de
+#: uvicorn (`CMD uvicorn server:app`, sin `--workers`). Si algún día se
+#: escalara a varios procesos, esto dejaría de proteger y habría que pasar al
+#: guardado condicional por `version`, que ya viaja en el documento.
+_SIM_CERROJOS: Dict[str, asyncio.Lock] = {}
+
+
+def _sim_cerrojo(user_id: str) -> asyncio.Lock:
+    cerrojo = _SIM_CERROJOS.get(user_id)
+    if cerrojo is None:
+        cerrojo = asyncio.Lock()
+        _SIM_CERROJOS[user_id] = cerrojo
+    return cerrojo
+
+
 async def _sim_siguiente_id(prefijo: str) -> str:
     """
     Identificador correlativo por año: `SIM-2026-0001`.
@@ -12504,18 +13259,55 @@ async def _sim_cargar(user_id: str) -> Tuple[_sim.Estado, dict]:
             "robot": {"activo": False, "simbolo": None, "marco": "1h",
                       "capital_pct": 25.0, "riesgo_pct": 0.5},
             "creada": datetime.utcnow(),
+            "version": 0,
         }
         await db.sim_cuentas.insert_one(doc)
         return estado, doc
+    doc.setdefault("version", 0)
     return _sim.de_dict(doc.get("estado") or {}), doc
 
 
-async def _sim_guardar(user_id: str, estado: _sim.Estado, robot: Optional[dict] = None):
+async def _sim_guardar(
+    user_id: str, estado: _sim.Estado, robot: Optional[dict] = None,
+    version_leida: Optional[int] = None,
+):
+    """
+    Escribe el estado. `version` se incrementa en cada escritura.
+
+    La versión no protege por sí sola —el cerrojo es quien serializa— pero deja
+    RASTRO: si alguna vez dos escrituras se pisaran, el aviso sale en el log en
+    vez de perderse una posición en silencio. Un fallo que no deja rastro es un
+    fallo que nadie arregla.
+    """
     cambio = {"estado": limpiar_no_finitos(_sim.a_dict(estado)),
               "actualizada": datetime.utcnow()}
     if robot is not None:
         cambio["robot"] = robot
-    await db.sim_cuentas.update_one({"_id": user_id}, {"$set": cambio}, upsert=True)
+
+    if version_leida is not None:
+        # Un documento creado ANTES de que existiera el campo `version` no
+        # tiene el campo: `{"version": 0}` no lo encuentra y el aviso saltaría
+        # una vez por cuenta antigua, que no es una carrera sino una migración.
+        # Se acepta explícitamente su ausencia y el `$inc` lo crea.
+        criterio: Dict[str, Any] = {"_id": user_id}
+        if version_leida == 0:
+            criterio["$or"] = [{"version": 0}, {"version": {"$exists": False}}]
+        else:
+            criterio["version"] = version_leida
+
+        resultado = await db.sim_cuentas.update_one(
+            criterio, {"$set": cambio, "$inc": {"version": 1}}
+        )
+        if resultado.matched_count:
+            return
+        logging.warning(
+            f"sim: escritura sobre version distinta de la leida para {user_id} "
+            f"(leida {version_leida}). Se reintenta sin condicion."
+        )
+
+    await db.sim_cuentas.update_one(
+        {"_id": user_id}, {"$set": cambio, "$inc": {"version": 1}}, upsert=True
+    )
 
 
 async def _sim_barras_desde(ticker: str, marco: str, desde_ts: Optional[int]) -> List[_sim.Barra]:
@@ -12717,10 +13509,40 @@ async def sim_estado(
     cuándo se consultó.
     """
     user_id = current_user["id"]
-    estado, doc = await _sim_cargar(user_id)
-    eventos, avisos = await _sim_tick(user_id, estado, ticker, marco)
-    await _sim_guardar(user_id, estado)
-    precios = await _sim_precios(estado, ticker)
+    async with _sim_cerrojo(user_id):
+        estado, doc = await _sim_cargar(user_id)
+
+        # ── El tick puede fallar. La LECTURA no. ──────────────────────────
+        #
+        # Antes, cualquier tropiezo del proveedor —un 429 de Yahoo, un timeout,
+        # una serie corrupta— tumbaba el endpoint entero con un 500. Y como
+        # esta es la ÚNICA fuente de la pantalla, el resultado era un panel sin
+        # una sola operación: exactamente igual que si no existieran. Tus
+        # posiciones seguían guardadas en Mongo y no había forma de verlas.
+        #
+        # Lo guardado se devuelve SIEMPRE. Lo que puede faltar es la
+        # actualización de precios, y eso se dice en `avisos`.
+        eventos: List[_sim.Evento] = []
+        avisos: List[str] = []
+        try:
+            eventos, avisos = await _sim_tick(user_id, estado, ticker, marco)
+            await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
+        except Exception as e:
+            logging.error(f"sim tick {user_id}/{ticker}: {e}")
+            avisos.append(
+                "No se han podido actualizar los precios en esta consulta "
+                f"({e}). Lo que ves son tus operaciones guardadas, con la "
+                "última valoración conocida. Nada se ha perdido."
+            )
+            # Se recarga limpio: el estado en memoria puede haber quedado a
+            # medias si el tick se cortó por la mitad.
+            estado, doc = await _sim_cargar(user_id)
+
+        try:
+            precios = await _sim_precios(estado, ticker)
+        except Exception:
+            precios = {}
+
     return _sim_respuesta(estado, precios, doc.get("robot") or {}, eventos, avisos)
 
 
@@ -12814,7 +13636,6 @@ async def sim_crear_orden(
     """
     user_id = current_user["id"]
     simbolo = peticion.simbolo.upper().strip()
-    estado, doc = await _sim_cargar(user_id)
 
     cot = await asyncio.to_thread(cotizacion_rapida, simbolo)
     if not cot.get("ok"):
@@ -12825,6 +13646,17 @@ async def sim_crear_orden(
     precio_mercado = float(cot["actual"])
     ahora = int(datetime.utcnow().timestamp())
 
+    async with _sim_cerrojo(user_id):
+        estado, doc = await _sim_cargar(user_id)
+        return await _sim_crear_orden_interno(
+            user_id, estado, doc, peticion, simbolo, precio_mercado, ahora
+        )
+
+
+async def _sim_crear_orden_interno(
+    user_id: str, estado, doc: dict, peticion: "SimIntencionRequest",
+    simbolo: str, precio_mercado: float, ahora: int,
+):
     referencia = (
         float(peticion.precio_limite)
         if peticion.tipo == "LIMIT" and peticion.precio_limite is not None
@@ -12887,7 +13719,7 @@ async def sim_crear_orden(
     if orden.tipo == "LIMIT" and orden.viva and peticion.caduca_en_horas:
         orden.caduca_ts = ahora + int(peticion.caduca_en_horas * 3600)
 
-    await _sim_guardar(user_id, estado)
+    await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
     precios = await _sim_precios(estado, simbolo)
 
     return limpiar_no_finitos({
@@ -12909,14 +13741,15 @@ async def sim_cancelar_orden(
 ):
     """Cancela una PENDING. Nunca hubo posición, así que no toca el win rate."""
     user_id = current_user["id"]
-    estado, _ = await _sim_cargar(user_id)
-    evento = _sim.cancelar_orden(estado, orden_id, int(datetime.utcnow().timestamp()))
-    if evento is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{orden_id} no existe o ya no está pendiente.",
-        )
-    await _sim_guardar(user_id, estado)
+    async with _sim_cerrojo(user_id):
+        estado, doc = await _sim_cargar(user_id)
+        evento = _sim.cancelar_orden(estado, orden_id, int(datetime.utcnow().timestamp()))
+        if evento is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{orden_id} no existe o ya no está pendiente.",
+            )
+        await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
     return {"ok": True, "evento": asdict(evento)}
 
 
@@ -12926,6 +13759,11 @@ async def sim_cerrar_posicion(
 ):
     """Cierre manual, al último precio conocido."""
     user_id = current_user["id"]
+    async with _sim_cerrojo(user_id):
+        return await _sim_cerrar_interno(user_id, posicion_id)
+
+
+async def _sim_cerrar_interno(user_id: str, posicion_id: str):
     estado, doc = await _sim_cargar(user_id)
     posicion = estado.posicion(posicion_id)
     if posicion is None:
@@ -12942,7 +13780,7 @@ async def sim_cerrar_posicion(
     evento = _sim.cerrar_a_mano(
         estado, posicion_id, precio, int(datetime.utcnow().timestamp())
     )
-    await _sim_guardar(user_id, estado)
+    await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
     precios = await _sim_precios(estado)
     return limpiar_no_finitos({
         "ok": True,
@@ -12966,7 +13804,12 @@ async def sim_mover_niveles(
     máxima, y no da ningún error por sí solo.
     """
     user_id = current_user["id"]
-    estado, _ = await _sim_cargar(user_id)
+    async with _sim_cerrojo(user_id):
+        return await _sim_mover_interno(user_id, posicion_id, peticion)
+
+
+async def _sim_mover_interno(user_id: str, posicion_id: str, peticion: "SimNivelesRequest"):
+    estado, doc = await _sim_cargar(user_id)
     posicion = estado.posicion(posicion_id)
     if posicion is None or not posicion.abierta:
         raise HTTPException(status_code=404, detail=f"{posicion_id} no está abierta.")
@@ -12978,7 +13821,7 @@ async def sim_mover_niveles(
         raise HTTPException(status_code=422, detail=" · ".join(f.mensaje for f in fallos))
 
     posicion.stop_loss, posicion.take_profit = sl, tp
-    await _sim_guardar(user_id, estado)
+    await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
     return {"ok": True, "posicion": asdict(posicion)}
 
 
@@ -13065,6 +13908,9 @@ async def sim_robot_evaluar(
     """
     user_id = current_user["id"]
     ticker = ticker.upper().strip()
+    # Lectura sin cerrojo: las cuatro consultas de señal tardan y retener el
+    # cerrojo durante ellas dejaría el sondeo de la pantalla esperando medio
+    # minuto. El estado se RECARGA bajo cerrojo justo antes de escribir.
     estado, doc = await _sim_cargar(user_id)
     robot = doc.get("robot") or {}
 
@@ -13162,17 +14008,23 @@ async def sim_robot_evaluar(
     cot = await asyncio.to_thread(cotizacion_rapida, ticker)
     precio_mercado = float(cot["actual"]) if cot.get("ok") else decision.intencion.precio_referencia
 
-    orden_id = await _sim_siguiente_id("ORD")
-    posicion_id = (
-        await _sim_siguiente_id("SIM")
-        if not _sim.bloquean(_sim.validar(estado, decision.intencion))
-        else ""
-    )
-    orden, posicion, fallos, eventos = _sim.enviar(
-        estado, decision.intencion, orden_id, posicion_id, ahora,
-        precio_mercado, decision_id,
-    )
-    await _sim_guardar(user_id, estado)
+    # Se recarga el estado bajo cerrojo: entre la lectura de arriba y este
+    # momento han pasado varios segundos de consultas a Yahoo, y la pantalla ha
+    # podido sondear —o el usuario abrir algo a mano— mientras tanto. Escribir
+    # el estado viejo borraría eso.
+    async with _sim_cerrojo(user_id):
+        estado, doc = await _sim_cargar(user_id)
+        orden_id = await _sim_siguiente_id("ORD")
+        posicion_id = (
+            await _sim_siguiente_id("SIM")
+            if not _sim.bloquean(_sim.validar(estado, decision.intencion))
+            else ""
+        )
+        orden, posicion, fallos, eventos = _sim.enviar(
+            estado, decision.intencion, orden_id, posicion_id, ahora,
+            precio_mercado, decision_id,
+        )
+        await _sim_guardar(user_id, estado, version_leida=doc.get("version"))
 
     return limpiar_no_finitos({
         "ok": orden.estado != "REJECTED",
@@ -13188,6 +14040,14 @@ async def sim_robot_evaluar(
 
 
 # Include the router in the main app
+# Administración de usuarios (lógica en admin_api.py y usuarios.py).
+api_router.include_router(crear_router_admin(
+    db,
+    require_admin=require_admin,
+    verify_password=verify_password,
+    hash_password=hash_password,
+    al_borrar_usuario=lambda uid: globals().get("_SIM_CERROJOS", {}).pop(uid, None),
+))
 app.include_router(api_router)
 
 app.add_middleware(

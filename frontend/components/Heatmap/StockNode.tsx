@@ -18,7 +18,7 @@ import React from 'react';
 import { G, Rect, Text as SvgText } from 'react-native-svg';
 
 import { variacion, type Celda, type Periodo } from './useHeatmapLayout';
-import { colorVariacion, tintaSobre } from './colorScale';
+import { colorVariacion, extremoDe, tintaSobre } from './colorScale';
 
 /** Ancho medio de un carácter en proporción al cuerpo. Medido sobre la
  *  tipografía del sistema; sobra un poco a propósito, para no pasarse. */
@@ -45,9 +45,12 @@ export default function StockNode({
   onPress?: (v: Celda['valor']) => void;
 }) {
   const { x, y, w, h, valor } = celda;
+  // El extremo se DERIVA del periodo aqui mismo. Pasarlos como dos props
+  // sueltas permitiria que llegaran descuadrados y nadie lo notaria.
+  const extremo = extremoDe(periodo);
   const pct = variacion(valor, periodo);
   const sinDato = pct === null;
-  const fondo = colorVariacion(pct, oscuro);
+  const fondo = colorVariacion(pct, oscuro, extremo);
   const tinta = tintaSobre(fondo);
 
   const util = w - 8;

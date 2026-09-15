@@ -1,4 +1,5 @@
 import { Stack, useRouter, useSegments } from 'expo-router';
+import Head from 'expo-router/head';
 import { ThemeProvider, useTheme } from '../contexts/ThemeContext';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { ChatProvider } from '../contexts/ChatContext';
@@ -10,7 +11,7 @@ import { ActivityIndicator, View } from 'react-native';
 
 
 function AuthGuard() {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
   const { colors } = useTheme();
   const segments = useSegments();
   const router = useRouter();
@@ -18,12 +19,18 @@ function AuthGuard() {
   useEffect(() => {
     if (loading) return;
     const inAuthGroup = segments[0] === 'login';
+    const enCambioPassword = segments[0] === 'cambiar-password';
     if (!isAuthenticated && !inAuthGroup) {
       router.replace('/login');
+    } else if (isAuthenticated && user?.debe_cambiar_password && !enCambioPassword) {
+      // Con una contraseña temporal no se pasa de aquí hasta elegir una propia.
+      // El backend lo impone igual (403 en el resto de rutas); esto sólo evita
+      // enseñar pantallas que fallarían.
+      router.replace('/cambiar-password');
     } else if (isAuthenticated && inAuthGroup) {
       router.replace('/(tabs)/search');
     }
-  }, [isAuthenticated, loading, segments]);
+  }, [isAuthenticated, loading, segments, user?.debe_cambiar_password, router]);
 
   if (loading) {
     // Es la primera pantalla que ve nadie al abrir la app. Sin fondo explícito
@@ -64,6 +71,10 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider>
+      {/* Sin esto la pestaña del navegador salía sin nombre: el <title> iba vacío. */}
+      <Head>
+        <title>Fundamentor</title>
+      </Head>
       <AuthProvider>
         <SimboloProvider>
           <ChatProvider>

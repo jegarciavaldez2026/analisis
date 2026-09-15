@@ -34,8 +34,8 @@ import HeatmapLegend from './HeatmapLegend';
 import HeatmapToolbar from './HeatmapToolbar';
 import HeatmapTooltip from './HeatmapTooltip';
 import SectorNode from './SectorNode';
-import { colorVariacion, tintaSobre } from './colorScale';
-import { useHeatmapLayout, variacion, type Bloque, type Orden, type Periodo, type Valor } from './useHeatmapLayout';
+import { colorVariacion, extremoDe, tintaSobre } from './colorScale';
+import { useHeatmapLayout, variacion, type Area, type Bloque, type Orden, type Periodo, type Valor } from './useHeatmapLayout';
 
 export type { Valor as HeatmapItem };
 
@@ -62,6 +62,10 @@ export default function HeatmapContainer({
   const [vista, setVista] = useState<'mapa' | 'tabla'>('mapa');
   const [orden, setOrden] = useState<Orden>('cap');
   const [periodo, setPeriodo] = useState<Periodo>('1d');
+  /* Área comprimida por defecto: con la escala real, un historial con una
+     empresa de billones manda casi todas las demas al nodo «+N» y no se ve
+     ningun codigo. Se puede volver a la escala fiel desde la barra. */
+  const [area, setArea] = useState<Area>('comprimida');
   const [busqueda, setBusqueda] = useState('');
   const [ficha, setFicha] = useState<Valor | null>(null);
   const [restoAbierto, setRestoAbierto] = useState<Bloque | null>(null);
@@ -96,7 +100,7 @@ export default function HeatmapContainer({
     ? Math.round(Math.max(320, Math.min(720, ancho * 0.52, altoVentana * 0.62)))
     : 360;
 
-  const { bloques, totalEmpresas, totalSectores } = useHeatmapLayout(filtrados, ancho, alto, orden, periodo);
+  const { bloques, totalEmpresas, totalSectores } = useHeatmapLayout(filtrados, ancho, alto, orden, periodo, area);
 
   const abrirFicha = useCallback((v: Valor) => setFicha(v), []);
 
@@ -123,6 +127,8 @@ export default function HeatmapContainer({
           periodosListos={periodosListos}
           orden={orden}
           onOrden={setOrden}
+          area={area}
+          onArea={setArea}
           busqueda={busqueda}
           onBusqueda={setBusqueda}
           empresas={totalEmpresas}
@@ -194,7 +200,7 @@ export default function HeatmapContainer({
                     style={{
                       width: 3,
                       alignSelf: 'stretch',
-                      backgroundColor: colorVariacion(pct, oscuro),
+                      backgroundColor: colorVariacion(pct, oscuro, extremoDe(periodo)),
                     }}
                   />
                   <Text style={[type.labelStrong, numeric, { color: colors.ink, width: 78, letterSpacing: 0 }]} numberOfLines={1}>
@@ -240,9 +246,11 @@ export default function HeatmapContainer({
             flexWrap: 'wrap',
           }}
         >
-          <HeatmapLegend oscuro={oscuro} />
+          <HeatmapLegend oscuro={oscuro} periodo={periodo} />
           <Text style={[type.legend, { color: colors.inkFaint }]}>
-            EL ÁREA ES CAPITALIZACIÓN REAL, SIN COMPRIMIR
+            {area === 'comprimida'
+              ? 'EL ÁREA ESTÁ AJUSTADA PARA QUE QUEPAN LOS CÓDIGOS'
+              : 'EL ÁREA ES CAPITALIZACIÓN REAL, SIN COMPRIMIR'}
           </Text>
         </View>
       </Panel>
@@ -259,7 +267,7 @@ export default function HeatmapContainer({
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, padding: space.md }}>
             {restoAbierto.resto.valores.map((v) => {
               const pct = variacion(v, periodo);
-              const fondo = colorVariacion(pct, oscuro);
+              const fondo = colorVariacion(pct, oscuro, extremoDe(periodo));
               return (
                 <Pressable
                   key={v.ticker}

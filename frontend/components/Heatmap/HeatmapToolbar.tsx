@@ -16,7 +16,7 @@ import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme } from '../../contexts/ThemeContext';
-import type { Orden, Periodo } from './useHeatmapLayout';
+import type { Area, Orden, Periodo } from './useHeatmapLayout';
 
 const PERIODOS: { clave: Periodo; etiqueta: string }[] = [
   { clave: '1d', etiqueta: '1D' },
@@ -40,6 +40,8 @@ export default function HeatmapToolbar({
   periodosListos,
   orden,
   onOrden,
+  area,
+  onArea,
   busqueda,
   onBusqueda,
   empresas,
@@ -56,6 +58,8 @@ export default function HeatmapToolbar({
   periodosListos: boolean;
   orden: Orden;
   onOrden: (o: Orden) => void;
+  area: Area;
+  onArea: (a: Area) => void;
   busqueda: string;
   onBusqueda: (t: string) => void;
   empresas: number;
@@ -103,6 +107,42 @@ export default function HeatmapToolbar({
                 ]}
               >
                 {v === 'mapa' ? 'Mapa' : 'Tabla'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {/* Area: es lo que decide CUANTOS codigos se leen.
+            Con «Real» el area es la capitalizacion y casi todo cae al «+N»;
+            con «Ajustada» es su raiz y caben practicamente todos. */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          {([['comprimida', 'Ajustada'], ['real', 'Real']] as const).map(([clave, etiqueta]) => (
+            <Pressable
+              key={clave}
+              onPress={() => onArea(clave)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: area === clave }}
+              accessibilityLabel={
+                clave === 'real'
+                  ? 'Área proporcional a la capitalización'
+                  : 'Área ajustada para que quepan todos los códigos'
+              }
+              style={[
+                chip(area === clave),
+                { paddingHorizontal: 9 },
+                Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+              ]}
+            >
+              <Text
+                style={[
+                  type.caption,
+                  {
+                    color: area === clave ? colors.accent : colors.inkMuted,
+                    fontWeight: area === clave ? '700' : '500',
+                  },
+                ]}
+              >
+                {etiqueta}
               </Text>
             </Pressable>
           ))}
@@ -219,7 +259,10 @@ export default function HeatmapToolbar({
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
         <Text style={[type.legend, numeric, { color: colors.inkFaint, letterSpacing: 0 }]}>
           {empresas} {empresas === 1 ? 'empresa' : 'empresas'} · {sectores}{' '}
-          {sectores === 1 ? 'sector' : 'sectores'}
+          {sectores === 1 ? 'sector' : 'sectores'} ·{' '}
+          {area === 'comprimida'
+            ? 'área ajustada (capitalización elevada a 0,25): el orden de tamaño se mantiene, pero dos celdas ya no se pueden comparar por su superficie'
+            : 'área proporcional a la capitalización'}
         </Text>
         {!periodosListos && (
           <Text style={[type.legend, { color: colors.inkFaint }]}>CARGANDO SERIES…</Text>

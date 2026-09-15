@@ -115,6 +115,8 @@ interface NewsArticle {
   published_date: string;
   thumbnail: string | null;
   summary: string | null;
+  /** Título y resumen traducidos con el modelo local; el enlace sigue en su idioma. */
+  traducido?: boolean;
 }
 
 /* --------------------------------------------------------------------------
@@ -747,6 +749,9 @@ export default function MarketScreen() {
                   ) : null}
                   <Text style={[type.legend, { color: colors.inkFaint, letterSpacing: 0 }]}>
                     {article.publisher} · {article.published_date}
+                    {/* Quien lee tiene derecho a saber que el titular no es el
+                        del medio: una mala traducción no puede leerse como cita. */}
+                    {article.traducido ? ' · traducido automáticamente' : ''}
                   </Text>
                 </View>
                 <Ionicons name="open-outline" size={15} color={colors.inkFaint} />

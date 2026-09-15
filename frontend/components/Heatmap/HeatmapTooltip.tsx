@@ -17,7 +17,7 @@ import { Modal, Platform, Pressable, Text, useWindowDimensions, View } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme } from '../../contexts/ThemeContext';
-import { colorVariacion, tintaSobre } from './colorScale';
+import { colorVariacion, extremoDe, tintaSobre } from './colorScale';
 import { variacion, type Periodo, type Valor } from './useHeatmapLayout';
 
 const PERIODO_ETIQUETA: Record<Periodo, string> = {
@@ -74,12 +74,15 @@ export default function HeatmapTooltip({
   const { colors, space, radius, type, hairline, numeric } = useTheme();
   const { width } = useWindowDimensions();
   const movil = width < 700;
+  // El extremo se DERIVA del periodo aqui mismo. Pasarlos como dos props
+  // sueltas permitiria que llegaran descuadrados y nadie lo notaria.
+  const extremo = extremoDe(periodo);
 
   if (!valor) return null;
 
   const pct = variacion(valor, periodo);
   const sinDato = pct === null;
-  const fondo = colorVariacion(pct, oscuro);
+  const fondo = colorVariacion(pct, oscuro, extremo);
   const tono = sinDato ? colors.inkMuted : (pct as number) >= 0 ? colors.up : colors.down;
 
   const cuerpo = (

@@ -8,20 +8,40 @@ import React from 'react';
 import { Text, View } from 'react-native';
 
 import { useTheme } from '../../contexts/ThemeContext';
-import { colorVariacion, PARADAS_LEYENDA, tintaSobre } from './colorScale';
+import { colorVariacion, extremoDe, PARADAS_LEYENDA, tintaSobre } from './colorScale';
+import type { Periodo } from './useHeatmapLayout';
 
-export default function HeatmapLegend({ oscuro }: { oscuro: boolean }) {
+const ROTULO: Record<Periodo, string> = {
+  '1d': 'VARIACIÓN 1 DÍA',
+  '1w': 'VARIACIÓN 1 SEMANA',
+  '1m': 'VARIACIÓN 1 MES',
+  '3m': 'VARIACIÓN 3 MESES',
+  ytd: 'VARIACIÓN EN EL AÑO',
+};
+
+export default function HeatmapLegend({
+  oscuro,
+  periodo = '1d',
+}: {
+  oscuro: boolean;
+  periodo?: Periodo;
+}) {
   const { colors, type, numeric, radius, space } = useTheme();
+  // La leyenda dice el periodo Y su tope. Sin el tope, el mismo verde significa
+  // +3 % en la vista del día y +40 % en la del año, y nada en pantalla lo dice.
+  const extremo = extremoDe(periodo);
+  const escala = extremo / 3;
 
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, flexShrink: 1 }}>
-      <Text style={[type.legend, { color: colors.inkFaint }]}>VARIACIÓN DIARIA</Text>
+      <Text style={[type.legend, { color: colors.inkFaint }]}>{ROTULO[periodo]}</Text>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-        {PARADAS_LEYENDA.map((v) => {
-          const fondo = colorVariacion(v, oscuro);
+        {PARADAS_LEYENDA.map((base) => {
+          const v = base * escala;
+          const fondo = colorVariacion(v, oscuro, extremo);
           return (
             <View
-              key={v}
+              key={base}
               style={{
                 paddingHorizontal: 7,
                 paddingVertical: 3,
@@ -36,7 +56,7 @@ export default function HeatmapLegend({ oscuro }: { oscuro: boolean }) {
                   { color: tintaSobre(fondo), letterSpacing: 0, fontWeight: '700' },
                 ]}
               >
-                {v > 0 ? '+' : ''}{v}%
+                {v > 0 ? '+' : ''}{Number.isInteger(v) ? v : v.toFixed(0)}%
               </Text>
             </View>
           );

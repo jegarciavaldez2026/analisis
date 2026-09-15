@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Tabs, useRouter, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -11,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Line, Rect } from 'react-native-svg';
 
 import { useTheme, ThemeMode } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -34,10 +34,18 @@ const TABS = [
   { name: 'portfolio', title: 'Portafolio', short: 'Cartera', icon: 'briefcase', iconOut: 'briefcase-outline' },
   { name: 'history', title: 'Historial', short: 'Historial', icon: 'time', iconOut: 'time-outline' },
   { name: 'screener', title: 'Screener', short: 'Screener', icon: 'funnel', iconOut: 'funnel-outline' },
+  { name: 'rendimiento', title: 'Rendimiento', short: 'Rendim.', icon: 'trending-up', iconOut: 'trending-up-outline' },
   { name: 'OvertonScreen', title: 'Ventana de Overton', short: 'Overton', icon: 'eye', iconOut: 'eye-outline' },
   { name: 'strategy', title: 'Estrategia', short: 'Estrategia', icon: 'git-branch', iconOut: 'git-branch-outline' },
   { name: 'info', title: 'Info', short: 'Info', icon: 'information-circle', iconOut: 'information-circle-outline' },
+  { name: 'usuarios', title: 'Usuarios', short: 'Usuarios', icon: 'people', iconOut: 'people-outline' },
 ] as const;
+
+/**
+ * Secciones que sólo ve un administrador. Ocultarlas es comodidad, no
+ * protección: la API de administración exige el rol en el backend.
+ */
+const SOLO_ADMIN = new Set<string>(['usuarios']);
 
 const SIDEBAR_WIDTH = 244;
 /** Plegada no desaparece: queda el raíl de iconos. Si se fuera del todo, el
@@ -47,8 +55,12 @@ const SIDEBAR_RAIL = 68;
 const CLAVE_SIDEBAR = 'finanalysis.sidebar.plegada';
 
 /* ==========================================================================
- * Marca — una escala graduada con su índice. El producto dibujado en 28px.
+ * Marca — la F de Fundamentor. En oscuro, la variante clara: el azul marino
+ * del logotipo desaparece sobre el chasis grafito.
  * ======================================================================== */
+
+const MARCA = require('../../assets/images/fundamentor-marca.png');
+const MARCA_OSCURA = require('../../assets/images/fundamentor-marca-oscuro.png');
 
 function Wordmark({
   size = 30,
@@ -58,7 +70,7 @@ function Wordmark({
   /** Plegada: se queda el símbolo y se va el nombre. */
   soloMarca?: boolean;
 }) {
-  const { colors, hairline, type, radius } = useTheme();
+  const { colors, type, isDark } = useTheme();
   return (
     <View
       style={{
@@ -68,37 +80,20 @@ function Wordmark({
         justifyContent: soloMarca ? 'center' : 'flex-start',
       }}
     >
-      <View
-        style={{
-          width: size,
-          height: size,
-          borderRadius: radius.xs,
-          borderWidth: hairline,
-          borderColor: colors.ruleStrong,
-          backgroundColor: colors.surfaceSunken,
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Svg width={size - 8} height={size - 8} viewBox="0 0 22 22">
-          {[3, 7, 11, 15, 19].map((x, i) => (
-            <Line
-              key={x}
-              x1={x}
-              x2={x}
-              y1={18}
-              y2={i % 2 === 0 ? 10 : 13}
-              stroke={colors.ruleStrong}
-              strokeWidth={1.5}
-            />
-          ))}
-          <Rect x={13.2} y={3} width={2.6} height={16} fill={colors.accent} />
-        </Svg>
-      </View>
+      <Image
+        source={isDark ? MARCA_OSCURA : MARCA}
+        accessibilityRole="image"
+        accessibilityLabel="Fundamentor"
+        resizeMode="contain"
+        style={{ width: size, height: size }}
+      />
       {!soloMarca && (
         <View>
-          <Text style={[type.title3, { color: colors.ink, letterSpacing: -0.2 }]}>FinAnalysis</Text>
-          <Legend>Fundamentales</Legend>
+          <Text style={[type.title3, { color: colors.ink, letterSpacing: -0.2 }]}>Fundamentor</Text>
+          {/* En caption y no en Legend: en mayúsculas espaciadas no cabe en los 244 px de la barra. */}
+          <Text style={[type.caption, { color: colors.inkMuted }]} numberOfLines={1}>
+            Financial Data Intelligence
+          </Text>
         </View>
       )}
     </View>
@@ -245,7 +240,7 @@ function WebSidebar({ plegada, onAlternar }: { plegada: boolean; onAlternar: () 
           </View>
         )}
 
-        {TABS.map((tab) => {
+        {TABS.filter((t) => user?.role === 'admin' || !SOLO_ADMIN.has(t.name)).map((tab) => {
           const isActive = pathname.includes(tab.name);
           return (
             <Pressable
@@ -358,6 +353,30 @@ function WebSidebar({ plegada, onAlternar }: { plegada: boolean; onAlternar: () 
               )}
             </View>
             <Pressable
+              onPress={() => router.push('/cambiar-password' as never)}
+              accessibilityRole="link"
+              accessibilityLabel="Cambiar contraseña"
+              {...(Platform.OS === 'web' && plegada ? ({ title: 'Cambiar contraseña' } as any) : null)}
+              style={({ pressed }) => [
+                {
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: plegada ? 'center' : 'flex-start',
+                  gap: plegada ? 0 : space.sm,
+                  minHeight: 36,
+                  paddingHorizontal: plegada ? 0 : space.md,
+                  borderRadius: radius.xs,
+                  backgroundColor: pressed ? colors.accentWash : 'transparent',
+                },
+                Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
+              ]}
+            >
+              <Ionicons name="key-outline" size={15} color={colors.inkMuted} />
+              {!plegada && (
+                <Text style={[type.caption, { color: colors.inkMuted, fontWeight: '600' }]}>Cambiar contraseña</Text>
+              )}
+            </Pressable>
+            <Pressable
               onPress={logout}
               accessibilityRole="button"
               accessibilityLabel="Cerrar sesión"
@@ -410,7 +429,7 @@ function WebTopBar() {
         { backgroundColor: colors.chrome, borderBottomColor: colors.rule, borderBottomWidth: hairline, paddingHorizontal: space.xxl },
       ]}
     >
-      <Text style={[type.title3, { color: colors.ink }]}>{current?.title ?? 'FinAnalysis'}</Text>
+      <Text style={[type.title3, { color: colors.ink }]}>{current?.title ?? 'Fundamentor'}</Text>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         <AlertsBell />
         <View style={{ width: 180 }}>
@@ -462,7 +481,10 @@ export default function TabLayout() {
   // una palabra rota, se enseña sólo el icono y el nombre se lee en la propia
   // pantalla. Los iconos siguen siendo distinguibles a ese tamaño; las
   // etiquetas cortadas, no.
-  const anchoPorPestana = width / TABS.length;
+  const { user } = useAuth();
+  const esAdmin = user?.role === 'admin';
+  const tabsVisibles = TABS.filter((t) => esAdmin || !SOLO_ADMIN.has(t.name));
+  const anchoPorPestana = width / tabsVisibles.length;
   const conEtiqueta = anchoPorPestana >= 62;
 
   // La responsividad aquí es estructural: por debajo de 900 px el escritorio
@@ -477,9 +499,11 @@ export default function TabLayout() {
           <WebTopBar />
           <View style={styles.webContent}>
             <Tabs screenOptions={{ tabBarStyle: { display: 'none' }, headerShown: false }}>
-              {TABS.map((tab) => (
+              {tabsVisibles.map((tab) => (
                 <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title }} />
               ))}
+              {/* Sin declararla, expo-router añade sola la ruta del directorio. */}
+              {!esAdmin ? <Tabs.Screen name="usuarios" options={{ href: null }} /> : null}
             </Tabs>
           </View>
         </View>
@@ -514,7 +538,8 @@ export default function TabLayout() {
         },
       }}
     >
-      {TABS.map((tab) => (
+      {!esAdmin ? <Tabs.Screen name="usuarios" options={{ href: null }} /> : null}
+      {tabsVisibles.map((tab) => (
         <Tabs.Screen
           key={tab.name}
           name={tab.name}

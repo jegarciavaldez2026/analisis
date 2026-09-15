@@ -34,8 +34,16 @@ export function makeResultsStyles(c: ThemeColors) {
     columnSide: { flex: 1, minWidth: 0 },
     columnFull: { width: '100%' },
 
+    /* Fila, no bloque: «Volver» a la izquierda y la accion sobre el valor a la
+       derecha. `wrap` porque en movil el boton de Favoritos no cabe al lado y
+       baja de linea en vez de comprimir el texto hasta partirlo. */
     header: {
       padding: space.lg,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: space.sm,
       backgroundColor: c.chrome,
       borderBottomWidth: HAIR,
       borderBottomColor: c.rule,

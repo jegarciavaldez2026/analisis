@@ -6,6 +6,13 @@
         "command": "[ ! -f \".cursor/skills/impeccable/scripts/hook-before-edit.mjs\" ] || node \".cursor/skills/impeccable/scripts/hook-before-edit.mjs\"",
         "timeout": 5
       }
+    ],
+    "postToolUse": [],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/react-doctor.mjs",
+        "timeout": 120
+      }
     ]
   }
 }

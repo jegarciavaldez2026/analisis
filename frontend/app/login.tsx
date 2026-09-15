@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import {
+  Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -10,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Line, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../contexts/AuthContext';
@@ -18,13 +19,21 @@ import { useTheme, ThemeMode } from '../contexts/ThemeContext';
 import { Button, Field, Legend, Notice, Panel, Rule } from '../components/ui';
 import { decisionBands } from '../theme/tokens';
 
+/** El «Fund» del logotipo es azul marino: sobre el fondo oscuro se perdía, así
+ *  que la variante oscura lo pasa a tinta clara y deja el turquesa como está. */
+const LOGO = require('../assets/images/fundamentor-logo.png');
+const LOGO_OSCURO = require('../assets/images/fundamentor-logo-oscuro.png');
+const EMAIL_CONTACTO = 'info@betantech.com';
+
 export default function LoginScreen() {
-  const { login, register } = useAuth();
-  const { colors, mode, setMode, space, type, radius, hairline } = useTheme();
+  const { login } = useAuth();
+  const { colors, mode, setMode, space, type, radius, hairline, isDark } = useTheme();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
-  const [isLogin, setIsLogin] = useState(true);
+  // El registro público está cerrado: las cuentas las da de alta un
+  // administrador desde «Usuarios». Esta pantalla sólo inicia sesión.
+  const isLogin = true;
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -61,11 +70,7 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      if (isLogin) {
-        await login(email.trim(), password);
-      } else {
-        await register(email.trim(), password, name.trim());
-      }
+      await login(email.trim(), password);
     } catch (e: any) {
       setError(
         e.response?.data?.detail ||
@@ -148,7 +153,7 @@ export default function LoginScreen() {
                 Un veredicto que se puede desarmar.
               </Text>
               <Text style={[type.body, { color: colors.inkMuted, maxWidth: 380 }]}>
-                FinAnalysis calcula más de 50 ratios fundamentales sobre datos de Yahoo Finance, los
+                Fundamentor calcula más de 50 ratios fundamentales sobre datos de Yahoo Finance, los
                 compara con sus umbrales y coloca el resultado en una escala. Cada punto de esa escala
                 se puede seguir hasta la métrica que lo produjo.
               </Text>
@@ -207,40 +212,15 @@ export default function LoginScreen() {
 
           {/* Panel de acceso */}
           <View style={{ width: '100%', maxWidth: 400 }}>
-            <View style={{ marginBottom: space.xl, gap: space.md }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                <View
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: radius.xs,
-                    borderWidth: hairline,
-                    borderColor: colors.ruleStrong,
-                    backgroundColor: colors.surfaceSunken,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Svg width={26} height={26} viewBox="0 0 22 22">
-                    {[3, 7, 11, 15, 19].map((x, i) => (
-                      <Line
-                        key={x}
-                        x1={x}
-                        x2={x}
-                        y1={18}
-                        y2={i % 2 === 0 ? 10 : 13}
-                        stroke={colors.ruleStrong}
-                        strokeWidth={1.5}
-                      />
-                    ))}
-                    <Rect x={13.2} y={3} width={2.6} height={16} fill={colors.accent} />
-                  </Svg>
-                </View>
-                <View>
-                  <Text style={[type.title2, { color: colors.ink }]}>FinAnalysis</Text>
-                  <Legend>Fundamentales</Legend>
-                </View>
-              </View>
+            <View style={{ marginBottom: space.xl, gap: space.sm }}>
+              <Image
+                source={isDark ? LOGO_OSCURO : LOGO}
+                accessibilityRole="image"
+                accessibilityLabel="Fundamentor"
+                resizeMode="contain"
+                style={{ width: 233, height: 44 }}
+              />
+              <Legend>Financial Data Intelligence</Legend>
             </View>
 
             <Panel level={2} padded={false}>
@@ -251,7 +231,7 @@ export default function LoginScreen() {
                   </Text>
                   <Text style={[type.caption, { color: colors.inkMuted }]}>
                     {isLogin
-                      ? 'Tu historial de análisis queda asociado a esta cuenta.'
+                      ? 'Entra con la cuenta que te dio el administrador.'
                       : 'Con una cuenta se guarda tu historial de análisis.'}
                   </Text>
                 </View>
@@ -331,32 +311,18 @@ export default function LoginScreen() {
 
               <Rule />
 
-              <Pressable
-                onPress={() => {
-                  setIsLogin((v) => !v);
-                  setError('');
-                  setInvalidField(null);
+              <View
+                style={{
+                  minHeight: 48,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: space.lg,
                 }}
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  {
-                    minHeight: 48,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexDirection: 'row',
-                    gap: 4,
-                    backgroundColor: pressed ? colors.accentWash : 'transparent',
-                  },
-                  Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : null,
-                ]}
               >
-                <Text style={[type.caption, { color: colors.inkMuted }]}>
-                  {isLogin ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}
+                <Text style={[type.caption, { color: colors.inkMuted, textAlign: 'center' }]}>
+                  ¿No tienes cuenta? Pide acceso a un administrador.
                 </Text>
-                <Text style={[type.caption, { color: colors.accent, fontWeight: '700' }]}>
-                  {isLogin ? 'Regístrate' : 'Inicia sesión'}
-                </Text>
-              </Pressable>
+              </View>
             </Panel>
 
             <Text
@@ -366,6 +332,16 @@ export default function LoginScreen() {
               ]}
             >
               Datos de Yahoo Finance
+            </Text>
+            <Text style={[type.caption, { color: colors.inkFaint, textAlign: 'center', marginTop: space.xs }]}>
+              Desarrollado por Betantech ·{' '}
+              <Text
+                accessibilityRole="link"
+                onPress={() => Linking.openURL(`mailto:${EMAIL_CONTACTO}`)}
+                style={{ color: colors.accent }}
+              >
+                {EMAIL_CONTACTO}
+              </Text>
             </Text>
           </View>
         </View>

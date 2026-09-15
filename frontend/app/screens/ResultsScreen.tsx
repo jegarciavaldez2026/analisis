@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import AIAssistant from '../../components/AIAssistant';
 import { useTheme } from '../../contexts/ThemeContext';
+import BotonFavorito from '../../components/analysis/BotonFavorito';
 import FinancialRadarChart from '../../components/FinancialRadarChart';
 // Importa el componente
 import FCFFValuationCard from '../../components/FCFFValuationCard';
@@ -659,6 +660,11 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
             <Ionicons name="arrow-back" size={20} color={colors.accent} />
             <Text style={[styles.backButtonText, { color: colors.accent }]}>Volver</Text>
           </Pressable>
+
+          {/* La empresa que estas mirando, a Favoritos. Va en la cabecera y no
+              junto al veredicto a proposito: es una accion sobre el SUJETO del
+              analisis, disponible desde el primer scroll, no una conclusion. */}
+          <BotonFavorito ticker={data.ticker} precio={data.metadata?.current_price ?? null} />
         </View>
 
         {/* Sujeto del análisis */}
@@ -671,6 +677,12 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 }}>
             {data.metadata?.website && Platform.OS === 'web' ? (
               <img
+                /* Decorativo: el codigo y el nombre de la empresa estan justo al
+                   lado, asi que un texto alternativo los repetiria. Un alt vacio
+                   NO es un descuido, es la forma de decirle al lector de
+                   pantalla que se lo salte; sin el atributo, algunos leen la
+                   URL entera del favicon. */
+                alt=""
                 src={`https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${data.metadata.website}&size=128`}
                 style={{ width: 40, height: 40, borderRadius: 3, objectFit: 'contain', backgroundColor: colors.surfaceSunken, padding: 4 }}
                 onError={(e: any) => { e.target.style.display = 'none'; }}
@@ -1152,7 +1164,7 @@ export default function ResultsScreen({ data, onBack }: ResultsScreenProps) {
 
         {/* Estimaciones de consenso, justo debajo de los estados financieros:
             lo publicado y lo esperado se leen mejor juntos. */}
-        <View style={{ marginTop: 16 }}>
+        <View style={{ marginHorizontal: 16, marginBottom: 24 }}>
           <ForwardEstimatesCard ticker={data.ticker} />
         </View>
 

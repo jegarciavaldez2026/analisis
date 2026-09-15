@@ -1,8 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, Image, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { inkOn, Palette } from '../../theme/tokens';
+
+const LOGO = require('../../assets/images/fundamentor-logo.png');
+const LOGO_OSCURO = require('../../assets/images/fundamentor-logo-oscuro.png');
+const EMAIL_CONTACTO = 'info@betantech.com';
 
 export default function InfoScreen() {
   const { isDark, toggleTheme, colors, palette } = useTheme();
@@ -29,9 +33,14 @@ export default function InfoScreen() {
       </View>
 
       <View style={styles.header}>
-        <Ionicons name="information-circle" size={60} color={colors.primary} />
-        <Text style={[styles.title, { color: colors.text }]}>Análisis Financiero</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Tu asistente para decisiones de inversión</Text>
+        <Image
+          source={isDark ? LOGO_OSCURO : LOGO}
+          accessibilityRole="image"
+          accessibilityLabel="Fundamentor"
+          resizeMode="contain"
+          style={styles.logo}
+        />
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Financial Data Intelligence</Text>
       </View>
 
       <View style={styles.section}>
@@ -103,13 +112,18 @@ export default function InfoScreen() {
         <View style={[styles.supportCard, { backgroundColor: colors.card }]}>
           <View style={styles.supportHeader}>
             <Ionicons name="business" size={28} color={colors.primary} />
-            <Text style={[styles.supportCompany, { color: colors.text }]}>Alianzas RG Techlab</Text>
+            <Text style={[styles.supportCompany, { color: colors.text }]}>Betantech</Text>
           </View>
           <View style={styles.supportContact}>
-            <View style={styles.contactRow}>
-              <Ionicons name="call" size={18} color={colors.primary} />
-              <Text style={[styles.contactText, { color: colors.text }]}>+34 697 766 049</Text>
-            </View>
+            <TouchableOpacity
+              style={styles.contactRow}
+              onPress={() => Linking.openURL(`mailto:${EMAIL_CONTACTO}`)}
+              accessibilityRole="link"
+              accessibilityLabel={`Escribir a ${EMAIL_CONTACTO}`}
+            >
+              <Ionicons name="mail" size={18} color={colors.primary} />
+              <Text style={[styles.contactText, { color: colors.text }]}>{EMAIL_CONTACTO}</Text>
+            </TouchableOpacity>
           </View>
           <Text style={[styles.creditsText, { color: colors.textSecondary }]}>
             Desarrollo y soporte técnico
@@ -193,10 +207,10 @@ const styles = StyleSheet.create({
     marginBottom: 32,
     paddingTop: 10,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginTop: 12,
+  logo: {
+    width: 286,
+    height: 54,
+    maxWidth: '100%',
   },
   subtitle: {
     fontSize: 16,

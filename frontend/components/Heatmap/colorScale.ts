@@ -19,8 +19,35 @@
 
 import { scaleLinear } from 'd3-scale';
 
-/** Punto en que la rampa satura. Más allá, el color ya no cambia. */
+/** Punto en que la rampa satura con el periodo de UN DÍA. Más allá, el color
+ *  ya no cambia. Es la referencia con la que se calibraron las siete paradas. */
 export const EXTREMO_PCT = 3;
+
+/**
+ * Saturación por periodo.
+ *
+ * El mismo ±3 % para todos los periodos rompe el mapa en cuanto se sale del
+ * día. Un ±3 % es un movimiento grande en una sesión, pero es ruido en un año:
+ * en la vista YTD casi todos los valores caen fuera de la rampa, el `clamp` los
+ * lleva al verde o al rojo máximos y el mapa entero se vuelve un bloque de dos
+ * colores. Sigue pareciendo correcto —los colores son bonitos y el signo es el
+ * que toca— pero el canal ha dejado de transportar información: no distingue
+ * un +4 % de un +180 %.
+ *
+ * Los topes crecen aproximadamente con la raíz del tiempo, que es como escala
+ * la dispersión de los rendimientos, redondeados a cifras que una persona pueda
+ * leer en una leyenda.
+ */
+export function extremoDe(periodo: '1d' | '1w' | '1m' | '3m' | 'ytd'): number {
+  switch (periodo) {
+    case '1d': return 3;
+    case '1w': return 7;
+    case '1m': return 15;
+    case '3m': return 25;
+    case 'ytd': return 40;
+    default: return EXTREMO_PCT;
+  }
+}
 
 /** Paradas para fondo claro. */
 const PARADAS_CLARO = [
@@ -59,11 +86,25 @@ export const SIN_DATO_OSCURO = '#3A3C39';
 
 /**
  * Color de fondo de una celda.
- * @param pct variación diaria en %, o null/NaN si no hay dato
+ *
+ * Se NORMALIZA la entrada en vez de reconstruir la rampa: las siete paradas
+ * están elegidas uno a uno para que cualquier tinta encima llegue a 4,5:1, y
+ * generar paradas nuevas por periodo tiraría esa garantía sin avisar. Llevando
+ * el valor a la escala de ±3 % se reutilizan tal cual.
+ *
+ * @param pct     variación del periodo en %, o null/NaN si no hay dato
+ * @param oscuro  apariencia activa
+ * @param extremo punto de saturación del periodo (ver `extremoDe`)
  */
-export function colorVariacion(pct: number | null | undefined, oscuro: boolean): string {
+export function colorVariacion(
+  pct: number | null | undefined,
+  oscuro: boolean,
+  extremo: number = EXTREMO_PCT,
+): string {
   if (!Number.isFinite(pct as number)) return oscuro ? SIN_DATO_OSCURO : SIN_DATO_CLARO;
-  return (oscuro ? OSCURO : CLARO)(pct as number);
+  const e = Number.isFinite(extremo) && extremo > 0 ? extremo : EXTREMO_PCT;
+  const normalizado = (pct as number) * (EXTREMO_PCT / e);
+  return (oscuro ? OSCURO : CLARO)(normalizado);
 }
 
 /* ── Contraste ───────────────────────────────────────────────────────────── */

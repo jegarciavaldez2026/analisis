@@ -23,7 +23,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { makeAccountStyles } from '../styles/accountStyles';
 import PositionsTable from './portfolio/PositionsTable';
 import WatchlistTable from './portfolio/WatchlistTable';
+import BandaFavoritos from './portfolio/BandaFavoritos';
+import TarjetaMetricas from './portfolio/TarjetaMetricas';
 import type { ThemeColors } from '../contexts/ThemeContext';
+import { useFocusEffect } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 // Cabecera y rejilla de cuenta con densidad de terminal de bróker. Viven
 // aparte porque Favoritos comparte este archivo y no comparte esa lectura.
@@ -161,17 +164,24 @@ interface PortfolioEvolution {
   total_change_percent: number;
 }
 
+/** Cifras opcionales: sin posiciones o sin sesiones suficientes llega el hueco
+ *  con su motivo en `nota`, no un cero. */
 interface BenchmarkComparison {
-  portfolio_return: number;
-  benchmark_return: number;
-  alpha: number;
-  tracking_error: number;
-  sharpe_portfolio: number;
-  sharpe_benchmark: number;
-  portfolio_volatility: number;
-  benchmark_volatility: number;
-  correlation: number;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  alpha: number | null;
+  tracking_error: number | null;
+  sharpe_portfolio: number | null;
+  sharpe_benchmark: number | null;
+  portfolio_volatility: number | null;
+  benchmark_volatility: number | null;
+  correlation: number | null;
   period: string;
+  supuesto?: string | null;
+  nota?: string | null;
+  sesiones?: number;
+  sin_precio?: string[];
+  tasa_sin_riesgo?: number | null;
 }
 
 export type SeccionCuenta = 'watchlist' | 'portfolio';
@@ -208,6 +218,8 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
   const [cashMovements, setCashMovements] = useState<CashMovement[]>([]);
   const [portfolioEvolution, setPortfolioEvolution] = useState<PortfolioEvolution | null>(null);
   const [benchmark, setBenchmark] = useState<BenchmarkComparison | null>(null);
+  const [cargandoEvolucion, setCargandoEvolucion] = useState(false);
+  const [cargandoComparativa, setCargandoComparativa] = useState(false);
   const [hideValues, setHideValues] = useState(false);
   const [showCashModal, setShowCashModal] = useState(false);
   
@@ -317,22 +329,25 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
         setPortfolio(portfolioRes.data);
         setAllTransactions(transactionsRes.data);
         setCashMovements(cashRes.data);
-        
-        // Fetch evolution separately (can be slow)
-        try {
-          const evolutionRes = await axios.get(`${BACKEND_URL}/api/portfolio/evolution`, { timeout: 30000, headers });
-          setPortfolioEvolution(evolutionRes.data);
-        } catch (e) {
-          console.log('Evolution fetch failed, skipping');
-        }
-        
-        // Fetch benchmark comparison
-        try {
-          const benchmarkRes = await axios.get(`${BACKEND_URL}/api/portfolio/benchmark`, { timeout: 30000, headers });
-          setBenchmark(benchmarkRes.data);
-        } catch (e) {
-          console.log('Benchmark fetch failed, skipping');
-        }
+
+        // Lo esencial ya está: la cuenta se enseña YA. La curva y la
+        // comparativa con el S&P 500 descargan un año de precios; antes se
+        // esperaban aquí, una detrás de otra, y el indicador de carga tapaba
+        // la pantalla entera ~6 s. Ahora van a la vez y cada tarjeta enseña su
+        // propio «calculando» hasta que llega lo suyo.
+        setLoading(false);
+        setCargandoEvolucion(true);
+        setCargandoComparativa(true);
+        void axios
+          .get(`${BACKEND_URL}/api/portfolio/evolution`, { timeout: 30000, headers })
+          .then((r) => setPortfolioEvolution(r.data))
+          .catch(() => console.log('Evolution fetch failed, skipping'))
+          .finally(() => setCargandoEvolucion(false));
+        void axios
+          .get(`${BACKEND_URL}/api/portfolio/benchmark`, { timeout: 30000, headers })
+          .then((r) => setBenchmark(r.data))
+          .catch(() => console.log('Benchmark fetch failed, skipping'))
+          .finally(() => setCargandoComparativa(false));
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -348,6 +363,32 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     fetchData();
     fetchAnalysisHistory();
   }, [activeTab, token]);
+
+  /**
+   * Recargar al RECUPERAR EL FOCO, no solo al montar.
+   *
+   * Las pestañas de Expo Router se quedan montadas: una vez visitada, esta
+   * pantalla no se vuelve a crear. Con las dependencias `[activeTab, token]`
+   * —que no cambian al ir y volver— el efecto de arriba corre UNA vez en toda
+   * la sesión. Sintoma: añades un valor a Favoritos desde la pantalla de
+   * analisis, vuelves aqui y la lista sigue como estaba, normalmente vacia.
+   * Parecia que el alta habia fallado, y estaba guardada.
+   *
+   * `primera` evita pedir dos veces seguidas en el montaje inicial, donde el
+   * efecto de arriba ya ha disparado su peticion.
+   */
+  const primera = React.useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (!token) return;
+      if (primera.current) {
+        primera.current = false;
+        return;
+      }
+      fetchData();
+      fetchAnalysisHistory();
+    }, [token, activeTab]),
+  );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -802,148 +843,16 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     </TouchableOpacity>
   );
 
-  const renderMetricsCard = () => {
-    if (!portfolio?.metrics) return null;
-    const m = portfolio.metrics;
-    
-    return (
-      <View style={[styles.metricsCard, { backgroundColor: colors.card }]}>
-        <Text style={[styles.metricsTitle, { color: colors.text }]}>Métricas del Portafolio</Text>
-        
-        {/* Primary Metrics Row */}
-        <View style={styles.metricsGrid}>
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Beta</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.portfolio_beta <= 1 ? colors.success : colors.warning }
-            ]}>
-              {m.portfolio_beta.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.portfolio_beta < 0.8 ? 'Defensivo' : m.portfolio_beta > 1.2 ? 'Agresivo' : 'Moderado'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Alpha</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.portfolio_alpha >= 0 ? colors.success : colors.danger }
-            ]}>
-              {m.portfolio_alpha >= 0 ? '+' : ''}{m.portfolio_alpha.toFixed(2)}%
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.portfolio_alpha > 0 ? 'Supera mercado' : 'Bajo mercado'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Sharpe</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.sharpe_ratio >= 1 ? colors.success : m.sharpe_ratio >= 0 ? colors.warning : colors.danger }
-            ]}>
-              {m.sharpe_ratio.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.sharpe_ratio >= 2 ? 'Excelente' : m.sharpe_ratio >= 1 ? 'Bueno' : 'Bajo'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Retorno</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.average_return >= 0 ? colors.success : colors.danger }
-            ]}>
-              {m.average_return >= 0 ? '+' : ''}{m.average_return.toFixed(1)}%
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Anual</Text>
-          </View>
-        </View>
-        
-        {/* Secondary Metrics Row */}
-        <View style={[styles.metricsGrid, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Gain/Loss</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.gain_loss_ratio >= 1 ? colors.success : colors.danger }
-            ]}>
-              {m.gain_loss_ratio.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.gain_loss_ratio >= 1.5 ? 'Muy bueno' : m.gain_loss_ratio >= 1 ? 'Positivo' : 'Negativo'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Calmar</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.calmar_ratio >= 1 ? colors.success : m.calmar_ratio >= 0.5 ? colors.warning : colors.danger }
-            ]}>
-              {m.calmar_ratio.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.calmar_ratio >= 3 ? 'Excelente' : m.calmar_ratio >= 1 ? 'Bueno' : 'Bajo'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Treynor</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.treynor_ratio >= 0 ? colors.success : colors.danger }
-            ]}>
-              {m.treynor_ratio.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.treynor_ratio > 10 ? 'Superior' : m.treynor_ratio > 0 ? 'Aceptable' : 'Bajo'}
-            </Text>
-          </View>
-          
-          <View style={styles.metricItem}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Info Ratio</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.information_ratio >= 0.5 ? colors.success : m.information_ratio >= 0 ? colors.warning : colors.danger }
-            ]}>
-              {m.information_ratio.toFixed(2)}
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.information_ratio >= 1 ? 'Excelente' : m.information_ratio >= 0.5 ? 'Bueno' : 'Normal'}
-            </Text>
-          </View>
-        </View>
-        
-        {/* Max Drawdown and Volatility */}
-        <View style={[styles.metricsGrid, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
-          <View style={[styles.metricItem, { flex: 1 }]}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Max Drawdown</Text>
-            <Text style={[styles.metricValue, { color: colors.danger }]}>
-              {m.max_drawdown.toFixed(1)}%
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Caída máxima</Text>
-          </View>
-          
-          <View style={[styles.metricItem, { flex: 1 }]}>
-            <Text style={[styles.metricLabel, { color: colors.textSecondary }]}>Volatilidad</Text>
-            <Text style={[
-              styles.metricValue,
-              { color: m.volatility <= 15 ? colors.success : m.volatility <= 25 ? colors.warning : colors.danger }
-            ]}>
-              {m.volatility.toFixed(1)}%
-            </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>
-              {m.volatility <= 10 ? 'Baja' : m.volatility <= 20 ? 'Media' : 'Alta'}
-            </Text>
-          </View>
-        </View>
-      </View>
-    );
-  };
+  /**
+   * Métricas del portafolio.
+   *
+   * La rejilla anterior daba ocho cifras con adjetivos pegados («Excelente»,
+   * «Bueno») y sin la escala sobre la que se juzgaban. La tarjeta nueva vive
+   * en `portfolio/TarjetaMetricas` y añade curva de patrimonio contra el
+   * índice, gráfico bajo el agua, el CAPM como una resta auditable y el R²
+   * gobernando lo que se puede afirmar de beta y alfa.
+   */
+  const renderMetricsCard = () => <TarjetaMetricas m={(portfolio?.metrics as any) ?? null} />;
 
   const renderSectorChart = () => {
     if (!portfolio || !portfolio.sector_allocation || portfolio.sector_allocation.length === 0) return null;
@@ -1041,8 +950,24 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
     );
   };
 
+  /** Hueco de una tarjeta que todavía se está calculando: sin él, la tarjeta
+   *  aparecía de golpe segundos después y parecía que antes no existía. */
+  const renderCalculando = (titulo: string, detalle: string) => (
+    <View style={[styles.evolutionCard, { backgroundColor: colors.card }]}>
+      <Text style={[styles.metricsTitle, { color: colors.text }]}>{titulo}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 }}>
+        <ActivityIndicator size="small" color={colors.accent} />
+        <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{detalle}</Text>
+      </View>
+    </View>
+  );
+
   const renderEvolutionChart = () => {
-    if (!portfolioEvolution || portfolioEvolution.history.length === 0) return null;
+    if (!portfolioEvolution || portfolioEvolution.history.length === 0) {
+      return cargandoEvolucion
+        ? renderCalculando('Evolución del Portafolio', 'Reconstruyendo la curva de patrimonio…')
+        : null;
+    }
     
     const lineData = portfolioEvolution.history.map(point => ({
       value: point.total_value,
@@ -1099,58 +1024,94 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
   };
 
   const renderBenchmarkCard = () => {
-    if (!benchmark) return null;
-    
+    if (!benchmark) {
+      return cargandoComparativa
+        ? renderCalculando('vs S&P 500', 'Descargando un año de precios de tus posiciones y del índice…')
+        : null;
+    }
+
+    /** Hueco con guion, nunca un 0,00 que se leería como dato. */
+    const fijo = (v: number | null, dec: number, sufijo = '', conSigno = false) =>
+      v === null || v === undefined ? '—' : `${conSigno && v >= 0 ? '+' : ''}${v.toFixed(dec)}${sufijo}`;
+    const tono = (v: number | null) =>
+      v === null || v === undefined ? colors.textSecondary : v >= 0 ? colors.up : colors.down;
+
     return (
       <View style={[styles.benchmarkCard, { backgroundColor: colors.card }]}>
         <View style={styles.benchmarkHeader}>
           <Text style={[styles.metricsTitle, { color: colors.text }]}>vs S&P 500</Text>
-          <Text style={[styles.benchmarkPeriod, { color: colors.textSecondary }]}>{benchmark.period}</Text>
+          <Text style={[styles.benchmarkPeriod, { color: colors.textSecondary }]}>
+            {benchmark.period}
+            {benchmark.sesiones ? ` · ${benchmark.sesiones} sesiones` : ''}
+          </Text>
         </View>
-        
+
         <View style={styles.benchmarkComparison}>
           <View style={styles.benchmarkItem}>
             <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>Tu Portafolio</Text>
-            <Text style={[
-              styles.benchmarkValue,
-              { color: benchmark.portfolio_return >= 0 ? colors.up : colors.down }
-            ]}>
-              {benchmark.portfolio_return >= 0 ? '+' : ''}{benchmark.portfolio_return.toFixed(1)}%
+            <Text style={[styles.benchmarkValue, { color: tono(benchmark.portfolio_return) }]}>
+              {fijo(benchmark.portfolio_return, 1, '%', true)}
             </Text>
           </View>
           <View style={[styles.benchmarkDivider, { backgroundColor: colors.border }]} />
           <View style={styles.benchmarkItem}>
             <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>S&P 500</Text>
-            <Text style={[
-              styles.benchmarkValue,
-              { color: benchmark.benchmark_return >= 0 ? colors.up : colors.down }
-            ]}>
-              {benchmark.benchmark_return >= 0 ? '+' : ''}{benchmark.benchmark_return.toFixed(1)}%
+            <Text style={[styles.benchmarkValue, { color: tono(benchmark.benchmark_return) }]}>
+              {fijo(benchmark.benchmark_return, 1, '%', true)}
             </Text>
           </View>
         </View>
-        
-        <View style={[styles.alphaContainer, { backgroundColor: benchmark.alpha >= 0 ? colors.upWash : colors.downWash }]}>
-          <Text style={[styles.alphaLabel, { color: colors.text }]}>Alpha (Exceso de retorno)</Text>
-          <Text style={[styles.alphaValue, { color: benchmark.alpha >= 0 ? colors.up : colors.down }]}>
-            {benchmark.alpha >= 0 ? '+' : ''}{benchmark.alpha.toFixed(2)}%
+
+        <View
+          style={[
+            styles.alphaContainer,
+            {
+              backgroundColor:
+                benchmark.alpha === null ? colors.border : benchmark.alpha >= 0 ? colors.upWash : colors.downWash,
+            },
+          ]}
+        >
+          <Text style={[styles.alphaLabel, { color: colors.text }]}>Diferencia con el índice</Text>
+          <Text style={[styles.alphaValue, { color: tono(benchmark.alpha) }]}>
+            {fijo(benchmark.alpha, 2, ' pp', true)}
           </Text>
         </View>
-        
+
         <View style={styles.benchmarkMetrics}>
           <View style={styles.benchmarkMetricItem}>
             <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Sharpe</Text>
-            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.sharpe_portfolio.toFixed(2)}</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{fijo(benchmark.sharpe_portfolio, 2)}</Text>
           </View>
           <View style={styles.benchmarkMetricItem}>
             <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Volatilidad</Text>
-            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.portfolio_volatility.toFixed(1)}%</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{fijo(benchmark.portfolio_volatility, 1, '%')}</Text>
           </View>
           <View style={styles.benchmarkMetricItem}>
             <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Correlación</Text>
-            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.correlation.toFixed(2)}</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{fijo(benchmark.correlation, 2)}</Text>
+          </View>
+          <View style={styles.benchmarkMetricItem}>
+            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Tracking error</Text>
+            <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{fijo(benchmark.tracking_error, 1, '%')}</Text>
           </View>
         </View>
+
+        {/* El supuesto va con las cifras: sin él, «tu portafolio +12 %» se lee
+            como lo que has ganado, y es otra cosa. */}
+        {benchmark.nota ? (
+          <Text style={{ color: colors.caution, fontSize: 11, lineHeight: 16, marginTop: 8 }}>{benchmark.nota}</Text>
+        ) : null}
+        {benchmark.supuesto ? (
+          <Text style={{ color: colors.textSecondary, fontSize: 11, lineHeight: 16, marginTop: 8 }}>
+            {benchmark.supuesto}
+            {benchmark.tasa_sin_riesgo != null ? ` Sharpe con el bono a 10 años (${benchmark.tasa_sin_riesgo.toFixed(2)} %).` : ''}
+          </Text>
+        ) : null}
+        {benchmark.sin_precio?.length ? (
+          <Text style={{ color: colors.caution, fontSize: 11, lineHeight: 16, marginTop: 4 }}>
+            Sin precio histórico, fuera del cálculo: {benchmark.sin_precio.join(', ')}.
+          </Text>
+        ) : null}
       </View>
     );
   };
@@ -1593,14 +1554,21 @@ export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }
             <>
               {watchlist.length === 0 ? (
                 <View style={styles.emptyContainer}>
-                  <Ionicons name="eye-off-outline" size={60} color={colors.inkFaint} />
-                  <Text style={styles.emptyTitle}>Watchlist vacía</Text>
+                  <Ionicons name="star-outline" size={60} color={colors.inkFaint} />
+                  <Text style={styles.emptyTitle}>Aún no sigues ningún valor</Text>
                   <Text style={styles.emptySubtitle}>
-                    Agrega acciones para seguir su precio
+                    Analiza una empresa y pulsa «Añadir a Favoritos» en la cabecera del análisis,
+                    o usa el botón de abajo si ya sabes qué código buscar. Fija un objetivo de
+                    compra y esta pantalla te dirá cuánto le falta para llegar.
                   </Text>
                 </View>
               ) : (
                 <>
+                  {/* Lo primero es si hay algo que mirar hoy. El Portafolio abre
+                      con sus saldos; esta pantalla abre con lo unico que puede
+                      pedir una accion: quien ha llegado a su precio. */}
+                  <BandaFavoritos items={watchlist as any} />
+
                   {/* Mismo conmutador que en posiciones: las tarjetas sirven
                       para mirar un valor, la tabla para compararlos. */}
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>

@@ -1079,6 +1079,413 @@ starlette 1.3.1 y `APIRouter(prefix=...)` revienta por sí solo. No tiene que
 ver con este trabajo — en Docker el backend arranca bien. `test_backtest.py`
 tampoco corre bajo pytest: es un script con `sys.exit` al final.
 
+---
+
+## Sesiones Londres / Nueva York en el gráfico de Operaciones (13 sep 2026)
+
+Port del «Trading Sessions» (Pine v6) del usuario, con VWAP y POC por sesión.
+`frontend/lib/estrategia/sesiones.ts` (cálculo puro) +
+`frontend/scripts/probar-sesiones.mjs` (12 pruebas) + capas nuevas en
+`components/estrategia/simulacion/GraficoOperaciones.tsx`.
+
+```
+cd frontend && node --experimental-strip-types scripts/probar-sesiones.mjs
+```
+
+Node 24 ejecuta el `.ts` quitando los tipos: **no hace falta instalar ningún
+runner** para probar lógica pura del frontend. El módulo no puede importar
+nada que no sea `import type`.
+
+### Sesgos del script y qué se hizo
+
+| Del Pine | Aquí |
+|---|---|
+| Sesión nueva con `timeframe.change("1D")`: día de la zona del GRÁFICO | Día LOCAL de la sesión. Si no, una sesión que cruza la medianoche de la bolsa sale en dos cajas |
+| «Avg» = media simple de cierres, dibujada como horizontal al valor FINAL | Sustituida por VWAP anclado a la apertura, acumulado barra a barra. La horizontal del Pine pinta en la primera barra una media que aún no existía |
+| Recorrido en ticks (`syminfo.mintick`) | Yahoo no da el tick: precio y % |
+| Pertenencia por hora de APERTURA de la barra, zona IANA | Igual. Con IANA el horario de verano sale solo (hay semanas en que EE. UU. y Reino Unido no cambian a la vez; hay prueba) |
+
+POC: mismo reparto que `nqe.py` (volumen de la vela a partes iguales entre las
+filas de su rango), 24 filas por sesión. Rotulado «aproximado».
+
+### Lo que hay que saber del DATO
+
+- **Las acciones de EE. UU. sólo traen velas 09:30–16:00 NY.** La caja de
+  Londres es su solape: AAPL 15m → 8 de 32 velas; 1H → 2 de 8. La tarjeta lo
+  dice. Futuros (GC=F) y divisas traen las 24 h y salen completas.
+- **Divisas (`EURUSD=X`) llegan con volumen 0**: VWAP y POC en `null`, y la
+  tarjeta explica el hueco. Nunca un cero.
+- **El marco por defecto del dashboard es 1D, y ahí no hay sesiones.** Sólo en
+  1m–1H; en 4H tampoco (la vela de las 08:00 contiene la apertura de las 09:30
+  pero queda fuera por su hora de apertura). La tarjeta dice qué marco poner.
+  Si el usuario dice «no veo las sesiones», lo primero es el marco.
+
+### Decisiones de dibujo
+
+- Caja y franja apertura→cierre DEBAJO de las velas; VWAP y POC encima de las
+  velas y DEBAJO de las operaciones: el contexto no tapa la entrada ni el stop.
+- La escala NO se amplía por las sesiones. Una sesión recortada por la
+  izquierda puede tener el máximo en una vela invisible; se sujeta al área.
+- Ámbar para Londres (el naranja del script), índigo para Nueva York. El verde
+  del script se descartó: aquí verde es vela alcista.
+- Etiquetas del margen con prioridad: las de las operaciones primero; «V» y
+  «P» de la última sesión sólo si caben.
+- Se calcula sobre la serie ENTERA y se dibuja la cola, para que el VWAP de
+  una sesión empezada antes de la ventana visible sea el suyo.
+
+---
+
+## Lentitud de Portafolio y Mercado, traducción, screener (13 sep 2026)
+
+### La traducción NUNCA funcionó: Qwen3 razonaba en vez de traducir
+
+`backend/traduccion.py`. **Qwen3 tiene el modo de razonamiento activado por
+defecto.** Con el prompt de antes gastaba los `max_tokens` dentro de `<think>`
+y se cortaba sin contestar. Medido:
+
+| Prompt | Tiempo | Tokens | Resultado |
+|---|---|---|---|
+| Anterior | 19,2 s | 320 (cortado) | Razonamiento en inglés, sin traducción |
+| Con `/no_think` | **1,9 s** | 26 | Traducción correcta |
+
+`_limpiar_respuesta` descartaba el razonamiento y devolvía el original, que no
+se cacheaba: **cada visita reintentaba los mismos titulares**, la CPU del
+backend se quedaba al 225 % minutos enteros y todo lo demás se frenaba. Peor:
+había **20 entradas en `db.traducciones` cuyo «titular» era el razonamiento**
+(«Okay, let's tackle this translation…») y otra con el eco del prompt
+(«Devuelve ÚNICAMENTE la traducción…»). Borradas.
+
+Ahora `_limpiar_respuesta` rechaza también: un `<think>` sin cerrar, el eco de
+las instrucciones del prompt y una salida ≥ 90 % igual al original.
+
+**Cola en segundo plano** (`_Cola`): un solo trabajador, sin duplicados,
+titulares antes que resúmenes, y las fallidas no se reencolan. `traducir_noticias(…,
+espera=s)` devuelve lo que haya en caché y encola el resto. `/market-news` y las
+noticias de un valor usan `espera=0`; `/overton`, 6 s.
+
+**`/overton` traduce AL RESPONDER, no antes de cachear** (`_overton_con_traducciones`).
+Si no, los titulares que no llegaban a tiempo quedaban cinco minutos en inglés
+aunque ya estuvieran traducidos. La caché guarda el original, que es la clave
+de la caché de traducciones.
+
+### Portafolio
+
+- La pantalla se enseña con posiciones, transacciones y efectivo (~0,8 s). La
+  curva y la comparativa cargan después, en paralelo, con su propio «calculando».
+  Antes el indicador tapaba la cuenta ~6 s esperando las dos en serie.
+- `/portfolio/evolution`: precios con `cotizacion_rapida` en paralelo (antes
+  `stock.info` en serie bloqueando el bucle). 1,2-1,6 s → 0,5 s.
+- **`/portfolio/benchmark` NO pedía sesión y leía las transacciones de TODOS los
+  usuarios.** Además: correlación fija en 0,85, curva de 12 meses interpolada en
+  línea recta, volatilidad como media ponderada, tracking error como diferencia
+  de volatilidades y tipo sin riesgo a mano. Reescrito en `backend/comparativa.py`
+  (10 pruebas) sobre `riesgo.metricas`, cruzando por FECHA. Supuesto declarado en
+  la tarjeta: cartera de hoy mantenida el último año.
+
+**Limitación que sigue ahí:** `/portfolio/evolution` valora TODOS los puntos de
+la curva con el precio de hoy, así que `total_change` no es la evolución real.
+
+### Mercado
+
+- `/market-news`: las seis consultas a Yahoo en paralelo y fuera del bucle, 5 min
+  de caché. De no responder en 180 s a **0,65 s**.
+- `/market-indicators`: 26 series y 4 `info` en paralelo (7 s → 4,1 s en frío) y,
+  si la caché caducó hace < 5 min, **se sirve la última lectura marcada con
+  `_procedencia: reserva` y `_edad_s`** mientras se recalcula en segundo plano
+  (0,21 s). Pasados 5 min se espera al cálculo: un índice viejo presentado como
+  actual es peor que esperar.
+- Las noticias de Mercado llevan «traducido automáticamente» junto al medio.
+
+**Medido que el bucle de eventos se bloqueaba:** con una petición de noticias en
+curso, otra ruta cacheada pasaba de 0,2 s a 3,9 s. Toda descarga de Yahoo dentro
+de un `async def` tiene que ir a `asyncio.to_thread`.
+
+### Noticias · impacto en narrativa
+
+El impacto de las noticias NEUTRAS salía de la **longitud del titular**:
+`(len(title) % 5 − 2) × 0,3`. Un número entre −0,6 y +0,9 que no medía nada.
+Ahora 0.
+
+### Screener
+
+`backend/screener.py` (13 pruebas) + `/screener/ratios` + `app/(tabs)/screener.tsx`.
+35 ratios con el MISMO nombre y umbral que la pantalla de Análisis, en grupos
+(Valoración, Rentabilidad, Creación de valor, Flujo de caja, Liquidez,
+Apalancamiento, Calidad contable, Crecimiento, Riesgo, Tamaño), con mínimo y máximo.
+
+**Dos fuentes** (campo `fuente` de cada definición):
+
+| Fuente | Ratios | Coste |
+|---|---|---|
+| `resumen` — `info` de Yahoo | PER, PEG, ROE, ROA, márgenes, liquidez, dividendo, deuda/capital… | 1 petición por valor, caché 6 h |
+| `analisis` — el MISMO `calculate_ratios` de Análisis | ROIC, ROCE, CROIC, deuda neta, deuda neta/EBIT, EV/EBIT, WACC, spread ROIC-WACC, Altman, Piotroski, Montier | ~2 s por valor (KO 2,1 s, NVDA 1,5 s), caché 12 h |
+
+Los de `analisis` se calculan **en segundo plano**: arrancan al abrir la pantalla
+(`GET /screener/ratios`) y una búsqueda que filtra por ellos espera como mucho
+8 s. Lo que no haya llegado vuelve como `pendientes` y la pantalla repite la
+búsqueda cada 4 s (tope de 10). Medido en frío: 1.ª respuesta con 9 pendientes,
+lista completa a los 15 s; después, 0,2 s. Una búsqueda sólo con ratios del
+resumen no espera nada (0,22 s).
+
+**El cero de «sin dato» de `calculate_ratios`.** Devuelve 0 cuando no puede
+calcular (ROIC con capital invertido ≤ 0, ROE sin patrimonio, WACC sin deuda ni
+patrimonio, deuda neta sin deuda ni caja, Altman sin activos…). En un filtro de
+MÁXIMO ese 0 pasaría sin dato. Cada ratio declara `cero_es_hueco`; la excepción
+es Montier, donde 0 señales es un valor. El spread ROIC−WACC es hueco si
+cualquiera de los dos lo era. Ejemplo real: JPM (banco) sale con ROIC, ROCE y
+EV/EBIT en hueco, no en 0.
+
+### Usuarios, contraseñas y roles (14 sep 2026)
+
+Auditoría y diseño del agente *Identity & Access Engineer* (agency-agents);
+implementación en `backend/usuarios.py` (lógica pura, 17 pruebas),
+`backend/admin_api.py` (router `/admin/*`), `backend/gestion_usuarios.py`
+(consola), bloque de autenticación de `server.py`, `components/admin/PanelUsuarios.tsx`,
+`app/(tabs)/usuarios.tsx`, `app/cambiar-password.tsx`, `components/cuenta/CambiarPassword.tsx`,
+`lib/admin/api.ts` y `contexts/AuthContext.tsx`.
+
+**Agujeros que había, cerrados y comprobados de extremo a extremo** (37 comprobaciones,
+`scratchpad/e2e_usuarios.py` en el contenedor):
+
+| Antes | Ahora |
+|---|---|
+| `DELETE /history` y `/history/{id}` sin sesión (borraban los 467 análisis) | `require_admin` |
+| `PUT /portfolio/{id}` sin sesión ni dueño, cuerpo aplicado tal cual en `$set` | Sesión, dueño y lista cerrada de campos |
+| `DELETE /portfolio/cash/{id}` sin filtrar dueño | Filtra por `user_id` |
+| `GET /dividends/calendar/upcoming` sin sesión, sumaba TODAS las carteras | Sesión y cartera propia |
+| `GET /watchlist/alerts` sin sesión devolvía los favoritos de todos | `get_current_user` |
+| `GET /debug/portfolio-raw` en producción | Eliminado |
+| `PUT /auth/profile` cambiaba la contraseña SIN la actual | Sólo nombre; contraseña por `POST /auth/password` |
+| Tokens de 30 días, irrevocables; `except:` desnudo en `get_optional_user` | 7 días, versión de token `tv`, `except HTTPException` |
+| Registro público abierto | Cerrado (`REGISTRO_ABIERTO` en el entorno lo reabre) |
+| Sin límite de intentos; el login tardaba menos si el email no existía | 5 fallos / 15 min por email; hash ficticio para igualar tiempos |
+
+**Decisiones del usuario:** roles `admin`/`usuario`; registro sólo por un admin;
+análisis COMPARTIDOS y borrar sólo admin; borrar un usuario = desactivar por
+defecto, borrado definitivo con email escrito y recuento de datos. Primer admin:
+team.betantech@gmail.com. Por defecto aplicadas: contraseña mínima 12
+caracteres (máximo 72 BYTES, bcrypt ignora el resto), sesiones de 7 días,
+auditoría sin caducidad.
+
+**Reglas que conviene no deshacer:**
+- El rol se lee de la base en CADA petición, nunca del JWT. `motivo_token_invalido`
+  exige cuenta existente, activa y `tv` igual a `token_version`. Subir
+  `token_version` corta todas las sesiones al instante (cambio de contraseña,
+  rol, estado, temporal, «cerrar sesiones»). Un token sin `tv` vale 0: las
+  sesiones anteriores al cambio siguieron vivas hasta migrar.
+- Con `debe_cambiar_password` sólo pasan `/auth/me` y `/auth/password`
+  (`get_user_cambio_password`); el resto da 403 y el `AuthGuard` lleva a
+  `/cambiar-password`.
+- **No hay ningún endpoint que conceda el primer admin.** Se crea desde la consola:
+  `docker exec -it analisis_backend python gestion_usuarios.py crear-admin --email ... --nombre "..."`
+  (pide la contraseña con `getpass`). `migrar` rellena campos e índices y se puede repetir.
+- Acciones destructivas del admin piden su propia contraseña (`password_admin`).
+  Nadie se degrada, desactiva ni borra a sí mismo; nunca quedan 0 admins activos
+  (actualización condicional + recuento posterior contra carreras).
+- `usuario_publico` es LISTA DE PERMITIDOS; la auditoría quita cualquier clave
+  con password/hash/token/secret, también anidada.
+- `test_toda_coleccion_de_server_esta_clasificada` lee `server.py` como texto:
+  una colección nueva con datos de usuario tiene que clasificarse en
+  `PLAN_BORRADO` o `COLECCIONES_GLOBALES` o la prueba falla.
+- El menú «Usuarios» se oculta a quien no es admin, pero la protección es
+  `require_admin`. En móvil hay que declarar `<Tabs.Screen name="usuarios" options={{ href: null }} />`
+  o expo-router la añade sola.
+- `AuthContext` confirma la sesión con `GET /auth/me` al arrancar: un token
+  caducado, revocado o de cuenta desactivada ya no «sigue dentro».
+- El `Traceback ... bcrypt has no attribute '__about__'` del log es el aviso de
+  passlib 1.7.4 con bcrypt 4.x: inofensivo. **No subir a bcrypt 5** (rechaza
+  contraseñas de más de 72 bytes y rompe passlib).
+
+### Buscar fuera de la app: screener de Yahoo en todo el mercado
+
+`universo` en `POST /screener`: `app` (los 30 fijos), `us`, `es`, `europa`
+(`screener.UNIVERSOS`). yfinance 1.1.0 trae `yf.screen` + `EquityQuery`: Yahoo
+filtra en SU servidor sobre miles de empresas (0,2-0,7 s) y devuelve la lista,
+NO los valores de los ratios.
+
+Flujo: filtros que Yahoo admite (`CAMPOS_YAHOO`, 19 de 35) → Yahoo, ordenado por
+capitalización, 250 como máximo → limpieza → las 40 primeras → resumen y, si
+hace falta, cálculo de Análisis en segundo plano → se comprueban aquí TODOS los
+filtros. Lo que se enseña y lo que se filtra sale de la misma fuente.
+
+**Unidades de Yahoo comprobadas** poniendo un umbral en el servidor y leyendo
+`info` de lo devuelto: ROE, ROA, márgenes, dividendo, deuda/capital y
+crecimiento van en PORCENTAJE («ROE > 30» devolvió NVDA con 117 %).
+
+**Lo que costó la limpieza** (sin ella, los resultados no eran del universo):
+
+| Sin filtro | Qué salía |
+|---|---|
+| Bolsas | Tencent y Samsung duplicadas en OTC (PNK); cada británica dos veces (Londres y Cboe .XC) |
+| Latibex | XPBR.MC (Petrobras) como empresa «española» |
+| Duplicados por nombre | GOOGL/GOOG, BRK-A/B, las preferentes de Bank of America |
+| Líneas internacionales de Londres | 0QYP.L = Microsoft |
+| `financialCurrency` | NVIDIA en Xetra (NVD.DE), Konami (KNM.L), ADR de SK hynix, Novo, Petrobras en EE. UU. |
+| País de la sede (`info.country`) | Lo que se cuela igual: Shell ADR en dólares, BHP, Wheaton. Se cuenta como `fuera_de_region` |
+
+En Londres y Madrid se admite `financialCurrency` USD (Shell, BHP, ArcelorMittal
+presentan en dólares); en Xetra no, porque allí casi siempre es una empresa
+estadounidense.
+
+**Capitalización y deuda neta van en la divisa de la empresa, no en dólares.**
+Konami salió con «2.810 B$» y eran yenes. La etiqueta lo dice y la tarjeta
+enseña la divisa del precio (GBp en Londres: peniques).
+
+Medido: EE. UU. (ROE > 20, P/E < 20, ROIC > 15) 1.ª respuesta 8,9 s, completa
+17,5 s, 8 ADR descartados · España 4,0 s · Europa completa 26 s. Caché de 30 min
+de la consulta a Yahoo por universo y filtros.
+
+### Tres ratios de ANÁLISIS mal planteados — SIN CORREGIR (pendiente de decisión del usuario)
+
+Encontrados al llevarlos al screener. Afectan también a la pantalla de Análisis.
+En el screener van con una `nota` junto al filtro; en Análisis no se han tocado.
+
+| Ratio | Qué pasa | Dónde |
+|---|---|---|
+| **Montier C-Score** | El original va de 0 a 6 y ALTO = riesgo de manipulación. Aquí cuenta 3 señales de CALIDAD (flujo > beneficio, Beneish < −2,22, flujo y beneficio positivos): ALTO = mejor. Pero Análisis lo describe «0-3, menor es mejor» y da por bueno `<= 2`. **El juicio va al revés del cálculo** | `calculate_ratios` («Montier C-Score») y `_add(quality_metrics, "Montier C-Score", …)` |
+| **Piotroski F-Score** | El original son 9 señales de VARIACIÓN interanual (ΔROA, Δapalancamiento, Δliquidez, sin emisión de acciones, Δmargen, Δrotación). Aquí son umbrales fijos del último ejercicio, y `shares_outstanding > 0` suma un punto SIEMPRE | `calculate_ratios` («Piotroski F-Score») |
+| **WACC** | Coste del capital propio fijo en 10 % y tipo impositivo fijo en 21 %. Depende casi sólo de la mezcla deuda/capital, no del riesgo del valor (la beta ya está calculada y no se usa) | `calculate_ratios` («WACC») |
+
+- **Fuente distinta a Análisis, y se dice:** el resumen `info` de Yahoo (doce
+  meses), no los estados financieros. Calcular `calculate_ratios` para 30 valores
+  por búsqueda serían minutos.
+- `info` en paralelo (6 a la vez) con 6 h de caché: de 30-60 s a 3 s en frío y
+  0,2 s después.
+- `debtToEquity` ya viene en % en Yahoo. El screener viejo lo dividía entre 100.
+- Un 0 es un filtro (antes `if filtros.min_roe:` lo ignoraba).
+- La respuesta cuenta cuántos valores quedaron fuera **por falta de dato**.
+- Sigue aceptando el formato de filtros antiguo (`max_pe`…).
+
+### Cómo se parcheó `server.py` (por si hay que repetirlo)
+
+`server.py` va en **CRLF**. Un script con patrones `\n` no encuentra nada: hay
+que pasar a LF en memoria y devolver CRLF al escribir. Y en una regex de
+sangría, `(\s*)` se traga el salto de línea anterior y mete una línea en blanco
+delante de cada línea insertada: usar `[ \t]*`. Las dos cosas pasaron.
+
+Probar un `.py` dentro del contenedor sin reconstruir: `docker cp` y `docker
+restart analisis_backend`. Con Git Bash, `MSYS_NO_PATHCONV=1` y la ruta de
+Windows con barras (`C:/Users/...`): con `/c/Users/...` Docker busca `C:\c\Users`.
+
+---
+
+## Marca: la app se llama Fundamentor (14 sep 2026)
+
+Antes «FinAnalysis · Fundamentales». Lema: **Financial Data Intelligence**.
+Créditos: **Betantech**, `info@betantech.com` (en Info y al pie del login).
+
+- Logo original en `logo/Logotipo moderno de Fundamentor(1).png` (fondo blanco,
+  sin transparencia). De ahí salen, con fondo quitado, `assets/images/`
+  `fundamentor-logo(-oscuro).png` y `fundamentor-marca(-oscuro).png`, más
+  `favicon.png`, `icon.png` y `adaptive-icon.png`.
+- **Hay variante oscura a propósito**: el «Fund» y la F son azul marino y sobre
+  el grafito desaparecen. La variante pasa el marino a tinta clara y deja el
+  turquesa. Toda imagen de marca se elige con `isDark`.
+- En la barra lateral el lema va en `caption`, no en `Legend`: en mayúsculas
+  espaciadas no cabe en 244 px.
+- `<title>Fundamentor</title>` con `expo-router/head` en `app/_layout.tsx`: antes
+  el título del documento iba vacío en todas las pantallas.
+- **Las claves de localStorage siguen con el prefijo `finanalysis.`** (tema,
+  barra plegada, símbolo activo). Renombrarlas borraría las preferencias de
+  todos los usuarios. No es un olvido.
+
+---
+
+## Historial lento — corregido (14 sep 2026)
+
+Medido en frío: `/api/history` 15 ms, `/history/enhanced` **4,3 s** (96
+empresas), `/history/metrics` 3,1 s. La pantalla enseñaba el spinner hasta que
+llegaban LOS PRECIOS, aunque la lista ya estaba; y la caché del enhanced era de
+60 s, así que casi cada visita pagaba los 4 s.
+
+- `history.tsx`: la lista se pinta en cuanto llega; el mapa tiene su propio
+  `cargandoMapa` y un aviso «Cargando los precios del mapa…». El aviso de «no se
+  pudo cargar» sólo sale cuando `cargandoMapa` ya es false.
+- La cabecera es un ELEMENTO (`const cabecera = (…)`), no `const ListHeader = () => …`:
+  como componente se desmontaba en cada render, reiniciaba el `HeatmapContainer`
+  y el buscador perdía el foco con cada tecla. No volver a convertirla.
+- `/history/enhanced` sirve la última lectura (hasta `MAX_EDAD_HISTORIAL_S` = 600 s)
+  mientras recalcula en segundo plano, y manda su edad en la cabecera
+  **`X-Edad-Datos`**; el frontend la resta a la hora «actualizado» del mapa. No
+  lleva `_procedencia` en el cuerpo porque `response_model` es una lista.
+- `cache_invalidar` borra ahora también la **reserva**. Sin eso, un análisis
+  borrado volvía a aparecer en el mapa servido desde la reserva.
+
+Pendiente de aquel diagnóstico: la vista «rejilla» sigue sin virtualizar
+(`ScrollView` con hasta 200 filas × 12 columnas).
+
+---
+
+## Rendimiento, filtros de rentabilidad, vista Detalle y traducción (14 sep 2026)
+
+### Pantalla «Rendimiento» (ficha estilo Stock Rover «Insight summary»)
+
+`backend/rendimiento.py` (cálculos puros, 13 pruebas en `test_rendimiento.py`) +
+`backend/rendimiento_api.py` (descargas y composición) + `GET /api/rendimiento/{ticker}`
+(pide sesión) + `app/(tabs)/rendimiento.tsx` + `components/rendimiento/Piezas.tsx` +
+`lib/rendimiento/api.ts`. En el menú, después de Screener.
+
+Lo que NO se inventa, y la ficha lo dice en «Notas»:
+- **Puntuaciones Sentiment/Value/Growth/Quality y percentiles de predictibilidad**:
+  propias de Stock Rover. No se replican.
+- **«Industria» = mediana de hasta 8 competidores** de la misma industria y región
+  con la capitalización MÁS PARECIDA (distancia logarítmica), fuera OTC. La cabecera
+  dice cuántos. «S&P 500» = SPY: rentabilidades y beta; de múltiplos sólo el PER.
+- **Crecimiento sin columna de industria**: el de la empresa sale de estados
+  anuales y de los competidores sólo hay variación trimestral interanual.
+- **5 años de crecimiento**: Yahoo da 4 ejercicios → sólo tasa a 3 años.
+
+Trampas medidas, con prueba:
+- `info.industry` dice «Software - Application» y `yf.screen` sólo acepta
+  «Software—Application» (raya): `valor_industria_yahoo` lo traduce con
+  `yfinance.const.EQUITY_SCREENER_EQ_MAP`.
+- Pedir la industria sólo de mayor a menor capitalización (250 de 671) dejaba
+  fuera a las pequeñas: con MNDO (21 M) el «competidor más parecido» salía 6×
+  más grande. Se piden los dos extremos.
+- Líneas OTC (DOUUF, NEOJF…) entraban con variación 0,0 % y arrastraban la mediana.
+- Yahoo mantiene `dividendRate` aunque la empresa haya dejado de pagar (MNDO:
+  «21 % previsto», último pago marzo 2025). Sin pagos en 12 meses y último pago
+  hace > 400 días → rentabilidad prevista en hueco con aviso.
+- Rentabilidades de 1 mes a 5 años **por fecha**, no por nº de sesiones; beta
+  cruzada por fecha. La beta de PBF sale **−0,45** y es real: correlación −0,09
+  con el SPY en el último año (comprobado con un cálculo independiente).
+
+### Screener: vista Detalle y filtros de rentabilidad y técnicos
+
+- Conmutador Tarjetas/Detalle. Detalle = tabla con TODAS las columnas filtradas
+  más las base, cabeceras que ordenan (números: primer clic descendente; sin dato
+  siempre al final).
+- Fuente nueva `historico` en `screener.py`: rentabilidad 5d/1m/YTD/1a/3a/5a, beta
+  1 año, RSI 14, precio vs máx./mín. 52 semanas y vs medias 50/120. UNA descarga
+  de 6 años para todos los valores (+SPY), caché de 6 h por valor
+  (`screener:historico:`). Medido: 7,4 s en frío para los 30, 0,005 s después.
+
+### Estados financieros: mismo tamaño que la tarjeta anterior
+
+`FinancialStatements.jsx` no tenía margen lateral (632 px de la FCFF frente a 664)
+y el título iba a 22 px frente a 20. Ahora `margin: 0 16px 24px` y 20 px. La tarjeta
+de estimaciones de debajo lleva el mismo margen. Medido con Playwright interceptando
+`POST /api/analyze` con un análisis ya guardado (no crea historial):
+`scratchpad/pw/analisis-fs.mjs`.
+
+### Traducción: por qué seguían saliendo noticias en inglés
+
+1. `parece_ingles` sólo miraba una lista corta de palabras: «Tech pulls back on AI
+   concerns…» se daba por español y NUNCA se encolaba. Ahora cuenta palabras de
+   los dos idiomas y, sin marcas de ninguno, traduce.
+2. 23 traducciones CORTADAS en caché («3 Acc», «MIND C.T.I. Ltd (NASDAQ:») y con
+   «/no_think» dentro. Causa: `max_tokens = 40 + len/2`. Ahora `48 + len`,
+   `finish_reason == "length"` devuelve el original, y se rechaza una salida de
+   menos del 55 % del texto ENVIADO (el recorte de 400, no el resumen entero) o
+   con «/no_think». Borradas de `db.traducciones`.
+3. El 1,7 B a veces devuelve el titular tal cual: segundo intento con un ejemplo
+   de entrada/salida. Traduce parte de esos casos, no todos. También se rechaza
+   el modelo contestando como asistente («¿Podrías proporcionar el texto…?»).
+   Si la calidad no basta, el siguiente paso es DeepL/Gemini (ver arriba).
+
+`traducido: true` en una noticia significa que se tradujo ALGÚN campo: puede salir
+el titular en inglés con el resumen en español.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
