@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -18,11 +18,28 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { PieChart, LineChart } from 'react-native-gifted-charts';
-import { useTheme } from '../../contexts/ThemeContext';
-import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
+import { makeAccountStyles } from '../app/screens/accountStyles';
+import type { ThemeColors } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-const CHART_COLORS = ['#007AFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6', '#FF2D55', '#00C7BE'];
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? '';
+/**
+ * Rampa de los gr├íficos de composici├│n (cartera por sector, por activo).
+ * Es una composici├│n, no un veredicto: por eso arranca en el acento y sigue
+ * por la rampa neutra en lugar de repartir verdes y rojos, que aqu├¡ no
+ * significar├¡an ┬½sube┬╗ ni ┬½baja┬╗.
+ */
+const chartRamp = (c: ThemeColors) => [
+  c.accent,
+  c.inkMuted,
+  c.ruleStrong,
+  c.caution,
+  c.accentPressed,
+  c.inkFaint,
+  c.up,
+  c.down,
+];
 const screenWidth = Dimensions.get('window').width;
 
 interface WatchlistItem {
@@ -147,10 +164,27 @@ interface BenchmarkComparison {
   period: string;
 }
 
-export default function AccountScreen() {
+export type SeccionCuenta = 'watchlist' | 'portfolio';
+
+/**
+ * Favoritos y Portafolio comparten pantalla porque comparten casi todo: el
+ * mismo buscador de tickers, los mismos modales, la misma forma de leer un
+ * precio. Lo que cambia es qu├® se est├í mirando, y eso lo decide ahora la
+ * navegaci├│n ÔÇödos entradas en el men├║ÔÇö en lugar de un selector interno.
+ *
+ * Viv├¡a en `app/(tabs)/account.tsx`. Al dejar de ser una secci├│n con ruta
+ * propia tuvo que salir de la carpeta de rutas: en expo-router, un archivo
+ * dentro de `app/` ES una pesta├▒a, la declares o no.
+ */
+export default function AccountWorkspace({ seccion }: { seccion: SeccionCuenta }) {
   const { colors, isDark } = useTheme();
+  // Los estilos se derivan de la paleta activa: la pantalla cambia con la
+  // apariencia en lugar de quedarse en el blanco iOS de siempre.
+  const styles = useMemo(() => makeAccountStyles(colors), [colors]);
+  const CHART_COLORS = useMemo(() => chartRamp(colors), [colors]);
+  const { logout } = useAuth();
   const { token, user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'watchlist' | 'portfolio'>('watchlist');
+  const activeTab = seccion;
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [allTransactions, setAllTransactions] = useState<PortfolioTransaction[]>([]);
@@ -290,6 +324,9 @@ export default function AccountScreen() {
     setRefreshing(true);
     fetchData();
   }, [activeTab]);
+  const handleLogout = () => {
+    logout();
+  };
 
   const handleWatchlistTickerChange = (text: string) => {
     setNewTicker(text);
@@ -330,8 +367,9 @@ export default function AccountScreen() {
       setShowEditWatchlistModal(false);
       setEditingWatchlistItem(null);
       fetchData();
-      Platform.OS === 'web' ? window.alert('✅ Watchlist actualizada') : Alert.alert('Éxito', 'Watchlist actualizada');
+      Platform.OS === 'web' ? window.alert('Watchlist actualizada') : Alert.alert('├ëxito', 'Watchlist actualizada');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
     }
   };
@@ -340,7 +378,7 @@ export default function AccountScreen() {
     setNewTicker(item.ticker);
     setShowWatchlistSuggestions(false);
     setNewTickerCurrentPrice(null);
-    // Obtener precio del análisis completo
+    // Obtener precio del an├ílisis completo
     try {
       const res = await axios.get(`${BACKEND_URL}/api/analysis/${item.id}`);
       const data = res.data;
@@ -353,13 +391,13 @@ export default function AccountScreen() {
       }
       if (sellTarget) setTargetSellPrice(sellTarget.toFixed(2));
     } catch (e) {
-      console.log('No se pudo obtener precio del análisis');
+      console.log('No se pudo obtener precio del an├ílisis');
     }
   };
 
   const addToWatchlist = async () => {
     if (!newTicker.trim()) {
-      Platform.OS === 'web' ? window.alert('Error: Ingresa un ticker válido') : Alert.alert('Error', 'Ingresa un ticker válido');
+      Platform.OS === 'web' ? window.alert('Error: Ingresa un ticker v├ílido') : Alert.alert('Error', 'Ingresa un ticker v├ílido');
       return;
     }
     
@@ -377,8 +415,9 @@ export default function AccountScreen() {
       setShowAddWatchlist(false);
       resetWatchlistForm();
       fetchData();
-      Platform.OS === 'web' ? window.alert('✅ Acción agregada a watchlist') : Alert.alert('Éxito', 'Acción agregada a watchlist');
+      Platform.OS === 'web' ? window.alert('Acci├│n agregada a watchlist') : Alert.alert('├ëxito', 'Acci├│n agregada a watchlist');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo agregar a watchlist')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo agregar a watchlist');
     } finally {
       setSubmitting(false);
@@ -387,8 +426,8 @@ export default function AccountScreen() {
 
   const removeFromWatchlist = async (id: string, ticker: string) => {
     const confirmed = Platform.OS === 'web'
-      ? window.confirm(`¿Eliminar ${ticker} de tu watchlist?`)
-      : await new Promise(resolve => Alert.alert('Eliminar de Watchlist', `¿Eliminar ${ticker} de tu watchlist?`,
+      ? window.confirm(`┬┐Eliminar ${ticker} de tu watchlist?`)
+      : await new Promise(resolve => Alert.alert('Eliminar de Watchlist', `┬┐Eliminar ${ticker} de tu watchlist?`,
           [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
@@ -425,8 +464,9 @@ export default function AccountScreen() {
       setShowEditTxModal(false);
       setEditingTx(null);
       fetchData();
-      Platform.OS === 'web' ? window.alert('✅ Transacción actualizada') : Alert.alert('Éxito', 'Transacción actualizada');
+      Platform.OS === 'web' ? window.alert('Transacci├│n actualizada') : Alert.alert('├ëxito', 'Transacci├│n actualizada');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: No se pudo actualizar') : Alert.alert('Error', 'No se pudo actualizar');
     }
   };
@@ -485,9 +525,10 @@ export default function AccountScreen() {
       setShowAddTransaction(false);
       resetTransactionForm();
       fetchData();
-      Platform.OS === 'web' ? window.alert('✅ Transacción registrada') : Alert.alert('Éxito', 'Transacción registrada');
+      Platform.OS === 'web' ? window.alert('Transacci├│n registrada') : Alert.alert('├ëxito', 'Transacci├│n registrada');
     } catch (error: any) {
-      Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar la transacción')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar la transacción');
+      if (error.response?.status === 401) return;
+      Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar la transacci├│n')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar la transacci├│n');
     } finally {
       setSubmitting(false);
     }
@@ -495,8 +536,8 @@ export default function AccountScreen() {
 
   const deleteTransaction = async (id: string) => {
     const confirmed = Platform.OS === 'web'
-      ? window.confirm('¿Eliminar esta transacción?')
-      : await new Promise(resolve => Alert.alert('Eliminar Transacción', '¿Eliminar esta transacción?',
+      ? window.confirm('┬┐Eliminar esta transacci├│n?')
+      : await new Promise(resolve => Alert.alert('Eliminar Transacci├│n', '┬┐Eliminar esta transacci├│n?',
           [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
@@ -538,7 +579,7 @@ export default function AccountScreen() {
 
   const addCashMovement = async () => {
     if (!cashAmount || parseFloat(cashAmount) <= 0) {
-      Platform.OS === 'web' ? window.alert('Error: Ingresa un monto válido') : Alert.alert('Error', 'Ingresa un monto válido');
+      Platform.OS === 'web' ? window.alert('Error: Ingresa un monto v├ílido') : Alert.alert('Error', 'Ingresa un monto v├ílido');
       return;
     }
     
@@ -554,8 +595,9 @@ export default function AccountScreen() {
       setShowCashModal(false);
       resetCashForm();
       fetchData();
-      Platform.OS === 'web' ? window.alert('✅ ' + (cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado')) : Alert.alert('Éxito', cashType === 'deposit' ? 'Depósito registrado' : 'Retiro registrado');
+      Platform.OS === 'web' ? window.alert('' + (cashType === 'deposit' ? 'Dep├│sito registrado' : 'Retiro registrado')) : Alert.alert('├ëxito', cashType === 'deposit' ? 'Dep├│sito registrado' : 'Retiro registrado');
     } catch (error: any) {
+      if (error.response?.status === 401) return;
       Platform.OS === 'web' ? window.alert('Error: ' + (error.response?.data?.detail || 'No se pudo registrar el movimiento')) : Alert.alert('Error', error.response?.data?.detail || 'No se pudo registrar el movimiento');
     } finally {
       setSubmitting(false);
@@ -564,8 +606,8 @@ export default function AccountScreen() {
 
   const deleteCashMovement = async (id: string) => {
     const confirmed = Platform.OS === 'web'
-      ? window.confirm('¿Eliminar este movimiento de efectivo?')
-      : await new Promise(resolve => Alert.alert('Eliminar Movimiento', '¿Eliminar este movimiento?',
+      ? window.confirm('┬┐Eliminar este movimiento de efectivo?')
+      : await new Promise(resolve => Alert.alert('Eliminar Movimiento', '┬┐Eliminar este movimiento?',
           [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
            { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
     if (!confirmed) return;
@@ -578,7 +620,7 @@ export default function AccountScreen() {
   };
 
   const formatCurrency = (value: number) => {
-    if (hideValues) return '••••••';
+    if (hideValues) return 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó';
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
@@ -603,16 +645,16 @@ export default function AccountScreen() {
             ${item.current_price?.toFixed(2) || '---'}
           </Text>
           <TouchableOpacity
-            style={[styles.deleteButtonSmall, { backgroundColor: '#007AFF15', marginRight: 6 }]}
+            style={[styles.deleteButtonSmall, { backgroundColor: colors.accentWash, marginRight: 6 }]}
             onPress={() => openEditWatchlist(item)}
           >
-            <Ionicons name="create-outline" size={18} color="#007AFF" />
+            <Ionicons name="create-outline" size={18} color={colors.accent} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.deleteButtonSmall}
             onPress={() => removeFromWatchlist(item.id, item.ticker)}
           >
-            <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+            <Ionicons name="trash-outline" size={18} color={colors.down} />
           </TouchableOpacity>
         </View>
       </View>
@@ -620,25 +662,25 @@ export default function AccountScreen() {
       <View style={styles.targetsContainer}>
         {item.target_buy_price && (
           <View style={[styles.targetBadge, styles.buyBadge]}>
-            <Ionicons name="arrow-down" size={12} color="#34C759" />
-            <Text style={[styles.targetText, { color: '#34C759' }]}>
+            <Ionicons name="arrow-down" size={12} color={colors.up} />
+            <Text style={[styles.targetText, { color: colors.up }]}>
               Compra: ${item.target_buy_price.toFixed(2)}
             </Text>
           </View>
         )}
         {item.target_sell_price && (
           <View style={[styles.targetBadge, styles.sellBadge]}>
-            <Ionicons name="arrow-up" size={12} color="#FF3B30" />
-            <Text style={[styles.targetText, { color: '#FF3B30' }]}>
+            <Ionicons name="arrow-up" size={12} color={colors.down} />
+            <Text style={[styles.targetText, { color: colors.down }]}>
               Venta: ${item.target_sell_price.toFixed(2)}
             </Text>
           </View>
         )}
         {item.notify_on_price_change && (
           <View style={[styles.targetBadge, styles.notifyBadge]}>
-            <Ionicons name="notifications" size={12} color="#FF9500" />
-            <Text style={[styles.targetText, { color: '#FF9500' }]}>
-              ±{item.price_change_threshold}%
+            <Ionicons name="notifications" size={12} color={colors.caution} />
+            <Text style={[styles.targetText, { color: colors.caution }]}>
+              ┬▒{item.price_change_threshold}%
             </Text>
           </View>
         )}
@@ -675,16 +717,16 @@ export default function AccountScreen() {
           <Text style={styles.currentPrice}>${holding.current_value.toFixed(2)}</Text>
           <View style={[
             styles.plBadge,
-            { backgroundColor: holding.profit_loss >= 0 ? '#34C75915' : '#FF3B3015' }
+            { backgroundColor: holding.profit_loss >= 0 ? colors.upWash : colors.downWash }
           ]}>
             <Ionicons
               name={holding.profit_loss >= 0 ? 'trending-up' : 'trending-down'}
               size={14}
-              color={holding.profit_loss >= 0 ? '#34C759' : '#FF3B30'}
+              color={holding.profit_loss >= 0 ? colors.up : colors.down}
             />
             <Text style={[
               styles.plText,
-              { color: holding.profit_loss >= 0 ? '#34C759' : '#FF3B30' }
+              { color: holding.profit_loss >= 0 ? colors.up : colors.down }
             ]}>
               {holding.profit_loss >= 0 ? '+' : ''}{holding.profit_loss_percent.toFixed(2)}%
             </Text>
@@ -715,7 +757,7 @@ export default function AccountScreen() {
           <Text style={styles.detailLabel}>G/P:</Text>
           <Text style={[
             styles.detailValue,
-            { color: holding.profit_loss >= 0 ? '#34C759' : '#FF3B30' }
+            { color: holding.profit_loss >= 0 ? colors.up : colors.down }
           ]}>
             {holding.profit_loss >= 0 ? '+' : ''}${holding.profit_loss.toFixed(2)}
           </Text>
@@ -723,9 +765,9 @@ export default function AccountScreen() {
       </View>
       
       <View style={styles.viewTransactionsHint}>
-        <Ionicons name="document-text-outline" size={14} color="#007AFF" />
+        <Ionicons name="document-text-outline" size={14} color={colors.accent} />
         <Text style={styles.viewTransactionsText}>
-          {holding.transactions.length} transacción{holding.transactions.length !== 1 ? 'es' : ''} - Toca para ver
+          {holding.transactions.length} transacci├│n{holding.transactions.length !== 1 ? 'es' : ''} - Toca para ver
         </Text>
       </View>
     </TouchableOpacity>
@@ -737,7 +779,7 @@ export default function AccountScreen() {
     
     return (
       <View style={[styles.metricsCard, { backgroundColor: colors.card }]}>
-        <Text style={[styles.metricsTitle, { color: colors.text }]}>Métricas del Portafolio</Text>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>M├®tricas del Portafolio</Text>
         
         {/* Primary Metrics Row */}
         <View style={styles.metricsGrid}>
@@ -854,7 +896,7 @@ export default function AccountScreen() {
             <Text style={[styles.metricValue, { color: colors.danger }]}>
               {m.max_drawdown.toFixed(1)}%
             </Text>
-            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Caída máxima</Text>
+            <Text style={[styles.metricHint, { color: colors.textSecondary }]}>Ca├¡da m├íxima</Text>
           </View>
           
           <View style={[styles.metricItem, { flex: 1 }]}>
@@ -886,7 +928,7 @@ export default function AccountScreen() {
     
     return (
       <View style={[styles.pieChartCard, { backgroundColor: colors.card }]}>
-        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribución por Sector</Text>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribuci├│n por Sector</Text>
         <View style={styles.pieChartContainer}>
           <PieChart
             data={sectorData}
@@ -935,7 +977,7 @@ export default function AccountScreen() {
     
     return (
       <View style={[styles.pieChartCard, { backgroundColor: colors.card }]}>
-        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribución del Portafolio</Text>
+        <Text style={[styles.metricsTitle, { color: colors.text }]}>Distribuci├│n del Portafolio</Text>
         <View style={styles.pieChartContainer}>
           <PieChart
             data={pieData}
@@ -982,18 +1024,18 @@ export default function AccountScreen() {
     return (
       <View style={[styles.evolutionCard, { backgroundColor: colors.card }]}>
         <View style={styles.evolutionHeader}>
-          <Text style={[styles.metricsTitle, { color: colors.text }]}>Evolución del Portafolio</Text>
+          <Text style={[styles.metricsTitle, { color: colors.text }]}>Evoluci├│n del Portafolio</Text>
           <View style={[
             styles.evolutionChange,
-            { backgroundColor: portfolioEvolution.total_change >= 0 ? '#34C75915' : '#FF3B3015' }
+            { backgroundColor: portfolioEvolution.total_change >= 0 ? colors.upWash : colors.downWash }
           ]}>
             <Ionicons
               name={portfolioEvolution.total_change >= 0 ? 'trending-up' : 'trending-down'}
               size={14}
-              color={portfolioEvolution.total_change >= 0 ? '#34C759' : '#FF3B30'}
+              color={portfolioEvolution.total_change >= 0 ? colors.up : colors.down}
             />
             <Text style={{
-              color: portfolioEvolution.total_change >= 0 ? '#34C759' : '#FF3B30',
+              color: portfolioEvolution.total_change >= 0 ? colors.up : colors.down,
               fontSize: 12,
               fontWeight: '600'
             }}>
@@ -1042,7 +1084,7 @@ export default function AccountScreen() {
             <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>Tu Portafolio</Text>
             <Text style={[
               styles.benchmarkValue,
-              { color: benchmark.portfolio_return >= 0 ? '#34C759' : '#FF3B30' }
+              { color: benchmark.portfolio_return >= 0 ? colors.up : colors.down }
             ]}>
               {benchmark.portfolio_return >= 0 ? '+' : ''}{benchmark.portfolio_return.toFixed(1)}%
             </Text>
@@ -1052,16 +1094,16 @@ export default function AccountScreen() {
             <Text style={[styles.benchmarkLabel, { color: colors.textSecondary }]}>S&P 500</Text>
             <Text style={[
               styles.benchmarkValue,
-              { color: benchmark.benchmark_return >= 0 ? '#34C759' : '#FF3B30' }
+              { color: benchmark.benchmark_return >= 0 ? colors.up : colors.down }
             ]}>
               {benchmark.benchmark_return >= 0 ? '+' : ''}{benchmark.benchmark_return.toFixed(1)}%
             </Text>
           </View>
         </View>
         
-        <View style={[styles.alphaContainer, { backgroundColor: benchmark.alpha >= 0 ? '#34C75915' : '#FF3B3015' }]}>
+        <View style={[styles.alphaContainer, { backgroundColor: benchmark.alpha >= 0 ? colors.upWash : colors.downWash }]}>
           <Text style={[styles.alphaLabel, { color: colors.text }]}>Alpha (Exceso de retorno)</Text>
-          <Text style={[styles.alphaValue, { color: benchmark.alpha >= 0 ? '#34C759' : '#FF3B30' }]}>
+          <Text style={[styles.alphaValue, { color: benchmark.alpha >= 0 ? colors.up : colors.down }]}>
             {benchmark.alpha >= 0 ? '+' : ''}{benchmark.alpha.toFixed(2)}%
           </Text>
         </View>
@@ -1076,7 +1118,7 @@ export default function AccountScreen() {
             <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.portfolio_volatility.toFixed(1)}%</Text>
           </View>
           <View style={styles.benchmarkMetricItem}>
-            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Correlación</Text>
+            <Text style={[styles.benchmarkMetricLabel, { color: colors.textSecondary }]}>Correlaci├│n</Text>
             <Text style={[styles.benchmarkMetricValue, { color: colors.text }]}>{benchmark.correlation.toFixed(2)}</Text>
           </View>
         </View>
@@ -1102,7 +1144,7 @@ export default function AccountScreen() {
             style={[styles.addCashButton, { backgroundColor: colors.primary }]}
             onPress={() => setShowCashModal(true)}
           >
-            <Ionicons name="add" size={18} color="#FFFFFF" />
+            <Ionicons name="add" size={18} color={colors.inkOnAccent} />
           </TouchableOpacity>
         </View>
         
@@ -1111,21 +1153,21 @@ export default function AccountScreen() {
           <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>EFECTIVO</Text>
           <View style={styles.cashSummary}>
             <View style={styles.cashItem}>
-              <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Depósitos</Text>
-              <Text style={[styles.cashValue, { color: '#34C759' }]}>
-                {hideValues ? '••••••' : `+$${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Dep├│sitos</Text>
+              <Text style={[styles.cashValue, { color: colors.up }]}>
+                {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `+$${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
               </Text>
             </View>
             <View style={styles.cashItem}>
               <Text style={[styles.cashLabel, { color: colors.textSecondary }]}>Retiros</Text>
-              <Text style={[styles.cashValue, { color: '#FF3B30' }]}>
-                {hideValues ? '••••••' : `-$${totalWithdrawals.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              <Text style={[styles.cashValue, { color: colors.down }]}>
+                {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `-$${totalWithdrawals.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
               </Text>
             </View>
             <View style={[styles.cashItem, styles.cashBalanceItem, { borderTopColor: colors.border }]}>
               <Text style={[styles.cashLabel, { color: colors.text, fontWeight: '600' }]}>Cash Disponible</Text>
-              <Text style={[styles.cashBalance, { color: cashAvailable >= 0 ? colors.primary : '#FF3B30' }]}>
-                {hideValues ? '••••••' : `$${cashAvailable.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              <Text style={[styles.cashBalance, { color: cashAvailable >= 0 ? colors.primary : colors.down }]}>
+                {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `$${cashAvailable.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
               </Text>
             </View>
           </View>
@@ -1133,19 +1175,19 @@ export default function AccountScreen() {
         
         {/* Gains Section */}
         <View style={[styles.gainsSection, { marginTop: 16 }]}>
-          <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>GANANCIAS / PÉRDIDAS</Text>
+          <Text style={[styles.cashSectionTitle, { color: colors.textSecondary }]}>GANANCIAS / P├ëRDIDAS</Text>
           <View style={styles.gainsGrid}>
-            <View style={[styles.gainCard, { backgroundColor: isDark ? '#1C1C1E' : '#F5F5F7' }]}>
+            <View style={[styles.gainCard, { backgroundColor: isDark ? colors.surface : colors.surfaceSunken }]}>
               <Text style={[styles.gainLabel, { color: colors.textSecondary }]}>Realizadas</Text>
-              <Text style={[styles.gainValue, { color: realizedGains >= 0 ? '#34C759' : '#FF3B30' }]}>
-                {hideValues ? '••••••' : `${realizedGains >= 0 ? '+' : ''}$${realizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              <Text style={[styles.gainValue, { color: realizedGains >= 0 ? colors.up : colors.down }]}>
+                {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `${realizedGains >= 0 ? '+' : ''}$${realizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
               </Text>
               <Text style={[styles.gainHint, { color: colors.textSecondary }]}>Ventas cerradas</Text>
             </View>
-            <View style={[styles.gainCard, { backgroundColor: isDark ? '#1C1C1E' : '#F5F5F7' }]}>
+            <View style={[styles.gainCard, { backgroundColor: isDark ? colors.surface : colors.surfaceSunken }]}>
               <Text style={[styles.gainLabel, { color: colors.textSecondary }]}>No Realizadas</Text>
-              <Text style={[styles.gainValue, { color: unrealizedGains >= 0 ? '#34C759' : '#FF3B30' }]}>
-                {hideValues ? '••••••' : `${unrealizedGains >= 0 ? '+' : ''}$${unrealizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              <Text style={[styles.gainValue, { color: unrealizedGains >= 0 ? colors.up : colors.down }]}>
+                {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `${unrealizedGains >= 0 ? '+' : ''}$${unrealizedGains.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
               </Text>
               <Text style={[styles.gainHint, { color: colors.textSecondary }]}>Posiciones abiertas</Text>
             </View>
@@ -1157,7 +1199,7 @@ export default function AccountScreen() {
           <View style={[styles.totalPortfolioValue, { borderTopColor: colors.border }]}>
             <Text style={[styles.totalPortfolioLabel, { color: colors.text }]}>Valor Total del Portafolio</Text>
             <Text style={[styles.totalPortfolioAmount, { color: colors.primary }]}>
-              {hideValues ? '••••••' : `$${totalPortfolioValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+              {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `$${totalPortfolioValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
             </Text>
             <Text style={[styles.totalPortfolioHint, { color: colors.textSecondary }]}>
               (Acciones + Cash disponible)
@@ -1168,18 +1210,18 @@ export default function AccountScreen() {
         {/* Recent Cash Movements */}
         {cashMovements.length > 0 && (
           <View style={[styles.cashHistory, { borderTopColor: colors.border }]}>
-            <Text style={[styles.cashHistoryTitle, { color: colors.textSecondary }]}>Últimos movimientos</Text>
+            <Text style={[styles.cashHistoryTitle, { color: colors.textSecondary }]}>├Ültimos movimientos</Text>
             {cashMovements.slice(0, 3).map((movement) => (
               <View key={movement.id} style={[styles.cashMovementItem, { borderBottomColor: colors.border }]}>
                 <View style={styles.cashMovementInfo}>
                   <Ionicons
                     name={movement.movement_type === 'deposit' ? 'arrow-down-circle' : 'arrow-up-circle'}
                     size={20}
-                    color={movement.movement_type === 'deposit' ? '#34C759' : '#FF3B30'}
+                    color={movement.movement_type === 'deposit' ? colors.up : colors.down}
                   />
                   <View style={styles.cashMovementDetails}>
                     <Text style={[styles.cashMovementType, { color: colors.text }]}>
-                      {movement.movement_type === 'deposit' ? 'Depósito' : 'Retiro'}
+                      {movement.movement_type === 'deposit' ? 'Dep├│sito' : 'Retiro'}
                     </Text>
                     <Text style={[styles.cashMovementDate, { color: colors.textSecondary }]}>
                       {formatDate(movement.movement_date)}
@@ -1189,13 +1231,13 @@ export default function AccountScreen() {
                 <View style={styles.cashMovementActions}>
                   <Text style={[
                     styles.cashMovementAmount,
-                    { color: movement.movement_type === 'deposit' ? '#34C759' : '#FF3B30' }
+                    { color: movement.movement_type === 'deposit' ? colors.up : colors.down }
                   ]}>
                     {movement.movement_type === 'deposit' ? '+' : '-'}
-                    {hideValues ? '••••' : `$${movement.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                    {hideValues ? 'ÔÇóÔÇóÔÇóÔÇó' : `$${movement.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
                   </Text>
                   <TouchableOpacity onPress={() => deleteCashMovement(movement.id)}>
-                    <Ionicons name="trash-outline" size={16} color="#FF3B30" />
+                    <Ionicons name="trash-outline" size={16} color={colors.down} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1212,7 +1254,7 @@ export default function AccountScreen() {
         <View style={[styles.modalContainer, { backgroundColor: colors.card }]}>
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              ✏️ Editar {editingWatchlistItem?.ticker}
+              Editar {editingWatchlistItem?.ticker}
             </Text>
             <TouchableOpacity onPress={() => setShowEditWatchlistModal(false)}>
               <Ionicons name="close" size={24} color={colors.textSecondary} />
@@ -1255,7 +1297,7 @@ export default function AccountScreen() {
             <Text style={styles.inputLabel}>Notas</Text>
             <TextInput
               style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-              placeholder="Notas sobre esta acción..."
+              placeholder="Notas sobre esta acci├│n..."
               value={editNotes}
               onChangeText={setEditNotes}
               multiline
@@ -1278,7 +1320,7 @@ export default function AccountScreen() {
         <View style={[styles.modalContainer, { backgroundColor: colors.card }]}>
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              ✏️ Editar Transacción — {editingTx?.ticker}
+              Editar Transacci├│n ÔÇö {editingTx?.ticker}
             </Text>
             <TouchableOpacity onPress={() => setShowEditTxModal(false)}>
               <Ionicons name="close" size={24} color={colors.textSecondary} />
@@ -1292,13 +1334,13 @@ export default function AccountScreen() {
                   key={type}
                   style={{
                     flex: 1, padding: 12, borderRadius: 10, alignItems: 'center',
-                    backgroundColor: editTxType === type ? (type === 'buy' ? '#34C759' : '#FF3B30') : colors.background,
-                    borderWidth: 1, borderColor: type === 'buy' ? '#34C759' : '#FF3B30',
+                    backgroundColor: editTxType === type ? (type === 'buy' ? colors.up : colors.down) : colors.background,
+                    borderWidth: 1, borderColor: type === 'buy' ? colors.up : colors.down,
                   }}
                   onPress={() => setEditTxType(type)}
                 >
-                  <Text style={{ fontWeight: '700', color: editTxType === type ? '#fff' : (type === 'buy' ? '#34C759' : '#FF3B30') }}>
-                    {type === 'buy' ? '📈 Compra' : '📉 Venta'}
+                  <Text style={{ fontWeight: '700', color: editTxType === type ? colors.inkOnAccent : (type === 'buy' ? colors.up : colors.down) }}>
+                    {type === 'buy' ? 'Compra' : 'Venta'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -1307,9 +1349,9 @@ export default function AccountScreen() {
             <TextInput style={styles.input} placeholder="YYYY-MM-DD" value={editTxDate} onChangeText={setEditTxDate} />
             <Text style={styles.inputLabel}>Acciones *</Text>
             <TextInput style={styles.input} placeholder="Ej: 10" value={editTxShares} onChangeText={setEditTxShares} keyboardType="decimal-pad" />
-            <Text style={styles.inputLabel}>Precio por acción *</Text>
+            <Text style={styles.inputLabel}>Precio por acci├│n *</Text>
             <TextInput style={styles.input} placeholder="Ej: 150.00" value={editTxPrice} onChangeText={setEditTxPrice} keyboardType="decimal-pad" />
-            <Text style={styles.inputLabel}>Comisión</Text>
+            <Text style={styles.inputLabel}>Comisi├│n</Text>
             <TextInput style={styles.input} placeholder="Ej: 0.00" value={editTxCommission} onChangeText={setEditTxCommission} keyboardType="decimal-pad" />
             <Text style={styles.inputLabel}>Notas</Text>
             <TextInput style={[styles.input, { height: 70, textAlignVertical: 'top' }]} placeholder="Notas..." value={editTxNotes} onChangeText={setEditTxNotes} multiline />
@@ -1339,7 +1381,7 @@ export default function AccountScreen() {
         <View style={[styles.cashModalContent, { backgroundColor: colors.card }]}>
           <View style={styles.cashModalHeader}>
             <Text style={[styles.cashModalTitle, { color: colors.text }]}>
-              {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
+              {cashType === 'deposit' ? 'Registrar Dep├│sito' : 'Registrar Retiro'}
             </Text>
             <TouchableOpacity 
               style={styles.cashModalCloseBtn}
@@ -1355,25 +1397,25 @@ export default function AccountScreen() {
               style={[
                 styles.cashTypeButton,
                 { borderColor: colors.border },
-                cashType === 'deposit' && { backgroundColor: '#34C75920', borderColor: '#34C759' }
+                cashType === 'deposit' && { backgroundColor: colors.upWash, borderColor: colors.up }
               ]}
               onPress={() => setCashType('deposit')}
             >
-              <Ionicons name="arrow-down-circle" size={20} color={cashType === 'deposit' ? '#34C759' : colors.textSecondary} />
-              <Text style={[styles.cashTypeText, { color: cashType === 'deposit' ? '#34C759' : colors.textSecondary }]}>
-                Depósito
+              <Ionicons name="arrow-down-circle" size={20} color={cashType === 'deposit' ? colors.up : colors.textSecondary} />
+              <Text style={[styles.cashTypeText, { color: cashType === 'deposit' ? colors.up : colors.textSecondary }]}>
+                Dep├│sito
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
                 styles.cashTypeButton,
                 { borderColor: colors.border },
-                cashType === 'withdrawal' && { backgroundColor: '#FF3B3020', borderColor: '#FF3B30' }
+                cashType === 'withdrawal' && { backgroundColor: colors.downWash, borderColor: colors.down }
               ]}
               onPress={() => setCashType('withdrawal')}
             >
-              <Ionicons name="arrow-up-circle" size={20} color={cashType === 'withdrawal' ? '#FF3B30' : colors.textSecondary} />
-              <Text style={[styles.cashTypeText, { color: cashType === 'withdrawal' ? '#FF3B30' : colors.textSecondary }]}>
+              <Ionicons name="arrow-up-circle" size={20} color={cashType === 'withdrawal' ? colors.down : colors.textSecondary} />
+              <Text style={[styles.cashTypeText, { color: cashType === 'withdrawal' ? colors.down : colors.textSecondary }]}>
                 Retiro
               </Text>
             </TouchableOpacity>
@@ -1392,7 +1434,7 @@ export default function AccountScreen() {
           </View>
           
           <View style={styles.cashInputGroup}>
-            <Text style={[styles.cashInputLabel, { color: colors.textSecondary }]}>Descripción</Text>
+            <Text style={[styles.cashInputLabel, { color: colors.textSecondary }]}>Descripci├│n</Text>
             <TextInput
               style={[styles.cashInput, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
               placeholder="Opcional"
@@ -1416,17 +1458,17 @@ export default function AccountScreen() {
           <TouchableOpacity
             style={[
               styles.cashSubmitButton,
-              { backgroundColor: cashType === 'deposit' ? '#34C759' : '#FF3B30' },
+              { backgroundColor: cashType === 'deposit' ? colors.up : colors.down },
               submitting && styles.submitButtonDisabled
             ]}
             onPress={addCashMovement}
             disabled={submitting}
           >
             {submitting ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={colors.inkOnAccent} />
             ) : (
               <Text style={styles.cashSubmitButtonText}>
-                {cashType === 'deposit' ? 'Registrar Depósito' : 'Registrar Retiro'}
+                {cashType === 'deposit' ? 'Registrar Dep├│sito' : 'Registrar Retiro'}
               </Text>
             )}
           </TouchableOpacity>
@@ -1437,35 +1479,20 @@ export default function AccountScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Tab Selector */}
-      <View style={styles.tabSelector}>
+      {/* El selector de pesta├▒as se fue al men├║: dos maneras de llegar al mismo
+          sitio, una encima de la otra, hac├¡an dudar de cu├íl mandaba. */}
+
+      {/* En escritorio, cerrar sesi├│n vive en la barra lateral. En m├│vil no hay
+          barra lateral y ├®sta era la ├║nica salida, as├¡ que aqu├¡ se queda. */}
+      {Platform.OS !== 'web' && (
         <TouchableOpacity
-          style={[styles.tab, activeTab === 'watchlist' && styles.activeTab]}
-          onPress={() => setActiveTab('watchlist')}
+          style={[styles.logoutButton, { borderColor: colors.border }]}
+          onPress={handleLogout}
         >
-          <Ionicons
-            name={activeTab === 'watchlist' ? 'eye' : 'eye-outline'}
-            size={20}
-            color={activeTab === 'watchlist' ? '#007AFF' : '#8E8E93'}
-          />
-          <Text style={[styles.tabText, activeTab === 'watchlist' && styles.activeTabText]}>
-            Watchlist
-          </Text>
+          <Ionicons name="log-out-outline" size={18} color={colors.danger} />
+          <Text style={[styles.logoutButtonText, { color: colors.danger }]}>Cerrar sesi├│n</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'portfolio' && styles.activeTab]}
-          onPress={() => setActiveTab('portfolio')}
-        >
-          <Ionicons
-            name={activeTab === 'portfolio' ? 'briefcase' : 'briefcase-outline'}
-            size={20}
-            color={activeTab === 'portfolio' ? '#007AFF' : '#8E8E93'}
-          />
-          <Text style={[styles.tabText, activeTab === 'portfolio' && styles.activeTabText]}>
-            Portafolio
-          </Text>
-        </TouchableOpacity>
-      </View>
+      )}
 
       {/* Alerts Button */}
       {activeTab === 'watchlist' && alerts.length > 0 && (
@@ -1473,7 +1500,7 @@ export default function AccountScreen() {
           style={styles.alertsButton}
           onPress={() => setShowAlerts(true)}
         >
-          <Ionicons name="notifications" size={20} color="#FFFFFF" />
+          <Ionicons name="notifications" size={20} color={colors.inkOnAccent} />
           <Text style={styles.alertsButtonText}>
             {alerts.length} alerta{alerts.length > 1 ? 's' : ''} activa{alerts.length > 1 ? 's' : ''}
           </Text>
@@ -1489,7 +1516,7 @@ export default function AccountScreen() {
             setShowTransactionHistory(true);
           }}
         >
-          <Ionicons name="list" size={20} color="#007AFF" />
+          <Ionicons name="list" size={20} color={colors.accent} />
           <Text style={styles.historyButtonText}>
             Ver historial de compras ({allTransactions.length})
           </Text>
@@ -1498,22 +1525,22 @@ export default function AccountScreen() {
 
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#007AFF" />
+          <ActivityIndicator size="large" color={colors.accent} />
         </View>
       ) : (
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#007AFF" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
           }
         >
           {activeTab === 'watchlist' ? (
             <>
               {watchlist.length === 0 ? (
                 <View style={styles.emptyContainer}>
-                  <Ionicons name="eye-off-outline" size={60} color="#C7C7CC" />
-                  <Text style={styles.emptyTitle}>Watchlist vacía</Text>
+                  <Ionicons name="eye-off-outline" size={60} color={colors.inkFaint} />
+                  <Text style={styles.emptyTitle}>Watchlist vac├¡a</Text>
                   <Text style={styles.emptySubtitle}>
                     Agrega acciones para seguir su precio
                   </Text>
@@ -1557,14 +1584,14 @@ export default function AccountScreen() {
                     </View>
                     <View style={[
                       styles.totalPLContainer,
-                      { backgroundColor: portfolio.total_profit_loss >= 0 ? '#34C75915' : '#FF3B3015' }
+                      { backgroundColor: portfolio.total_profit_loss >= 0 ? colors.upWash : colors.downWash }
                     ]}>
-                      <Text style={[styles.totalPLLabel, { color: colors.text }]}>Ganancia/Pérdida Total</Text>
+                      <Text style={[styles.totalPLLabel, { color: colors.text }]}>Ganancia/P├®rdida Total</Text>
                       <Text style={[
                         styles.totalPLValue,
-                        { color: portfolio.total_profit_loss >= 0 ? '#34C759' : '#FF3B30' }
+                        { color: portfolio.total_profit_loss >= 0 ? colors.up : colors.down }
                       ]}>
-                        {hideValues ? '••••••' : `${portfolio.total_profit_loss >= 0 ? '+' : ''}$${portfolio.total_profit_loss.toFixed(2)} (${portfolio.total_profit_loss_percent >= 0 ? '+' : ''}${portfolio.total_profit_loss_percent.toFixed(2)}%)`}
+                        {hideValues ? 'ÔÇóÔÇóÔÇóÔÇóÔÇóÔÇó' : `${portfolio.total_profit_loss >= 0 ? '+' : ''}$${portfolio.total_profit_loss.toFixed(2)} (${portfolio.total_profit_loss_percent >= 0 ? '+' : ''}${portfolio.total_profit_loss_percent.toFixed(2)}%)`}
                       </Text>
                     </View>
                   </View>
@@ -1597,7 +1624,7 @@ export default function AccountScreen() {
                   
                   <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
                     <Ionicons name="briefcase-outline" size={60} color={colors.textSecondary} />
-                    <Text style={[styles.emptyTitle, { color: colors.text }]}>Portafolio vacío</Text>
+                    <Text style={[styles.emptyTitle, { color: colors.text }]}>Portafolio vac├¡o</Text>
                     <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
                       Registra tus compras para llevar control
                     </Text>
@@ -1614,7 +1641,7 @@ export default function AccountScreen() {
         style={styles.fab}
         onPress={() => activeTab === 'watchlist' ? setShowAddWatchlist(true) : setShowAddTransaction(true)}
       >
-        <Ionicons name="add" size={28} color="#FFFFFF" />
+        <Ionicons name="add" size={28} color={colors.inkOnAccent} />
       </TouchableOpacity>
 
       {/* Add to Watchlist Modal */}
@@ -1627,7 +1654,7 @@ export default function AccountScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Agregar a Watchlist</Text>
               <TouchableOpacity onPress={() => { setShowAddWatchlist(false); resetWatchlistForm(); }}>
-                <Ionicons name="close" size={24} color="#1D1D1F" />
+                <Ionicons name="close" size={24} color={colors.ink} />
               </TouchableOpacity>
             </View>
             
@@ -1644,9 +1671,9 @@ export default function AccountScreen() {
                 {showWatchlistSuggestions && watchlistSuggestions.length > 0 && (
                   <View style={{
                     position: 'absolute', top: 48, left: 0, right: 0,
-                    backgroundColor: '#fff', borderRadius: 10, borderWidth: 1,
-                    borderColor: '#E0E0E0', zIndex: 9999, elevation: 10,
-                    shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8,
+                    backgroundColor: colors.inkOnAccent, borderRadius: 10, borderWidth: 1,
+                    borderColor: colors.rule, zIndex: 9999, elevation: 10,
+                    shadowColor: colors.shadow, shadowOpacity: 0.1, shadowRadius: 8,
                   }}>
                     {watchlistSuggestions.map((item: any, index: number) => (
                       <TouchableOpacity
@@ -1654,24 +1681,24 @@ export default function AccountScreen() {
                         style={{
                           flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10,
                           borderBottomWidth: index < watchlistSuggestions.length - 1 ? 1 : 0,
-                          borderBottomColor: '#F0F0F0',
+                          borderBottomColor: colors.rule,
                         }}
                         onPress={() => handleSelectWatchlistTicker(item)}
                       >
                         <View style={{
                           paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
-                          backgroundColor: item.recommendation === 'COMPRAR' ? '#34C75922' : item.recommendation === 'VENDER' ? '#FF3B3022' : '#FF950022',
+                          backgroundColor: item.recommendation === 'COMPRAR' ? colors.upWash : item.recommendation === 'VENDER' ? colors.downWash : colors.cautionWash,
                         }}>
                           <Text style={{
                             fontWeight: '700', fontSize: 12,
-                            color: item.recommendation === 'COMPRAR' ? '#34C759' : item.recommendation === 'VENDER' ? '#FF3B30' : '#FF9500',
+                            color: item.recommendation === 'COMPRAR' ? colors.up : item.recommendation === 'VENDER' ? colors.down : colors.caution,
                           }}>{item.ticker}</Text>
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 13, fontWeight: '500', color: '#1D1D1F' }} numberOfLines={1}>{item.company_name}</Text>
-                          <Text style={{ fontSize: 11, color: '#8E8E93' }}>{item.recommendation} · {item.favorable_percentage?.toFixed(1)}%</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '500', color: colors.ink }} numberOfLines={1}>{item.company_name}</Text>
+                          <Text style={{ fontSize: 11, color: colors.inkFaint }}>{item.recommendation} ┬À {item.favorable_percentage?.toFixed(1)}%</Text>
                         </View>
-                        <Text style={{ fontSize: 12, color: '#007AFF' }}>→</Text>
+                        <Text style={{ fontSize: 12, color: colors.accent }}>ÔåÆ</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -1709,7 +1736,7 @@ export default function AccountScreen() {
                 <Switch
                   value={notifyOnChange}
                   onValueChange={setNotifyOnChange}
-                  trackColor={{ false: '#E0E0E0', true: '#007AFF' }}
+                  trackColor={{ false: colors.rule, true: colors.accent }}
                 />
               </View>
               
@@ -1743,7 +1770,7 @@ export default function AccountScreen() {
               disabled={submitting}
             >
               {submitting ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={colors.inkOnAccent} />
               ) : (
                 <Text style={styles.submitButtonText}>Agregar a Watchlist</Text>
               )}
@@ -1760,9 +1787,9 @@ export default function AccountScreen() {
         >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Registrar Transacción</Text>
+              <Text style={styles.modalTitle}>Registrar Transacci├│n</Text>
               <TouchableOpacity onPress={() => { setShowAddTransaction(false); resetTransactionForm(); }}>
-                <Ionicons name="close" size={24} color="#1D1D1F" />
+                <Ionicons name="close" size={24} color={colors.ink} />
               </TouchableOpacity>
             </View>
             
@@ -1772,14 +1799,14 @@ export default function AccountScreen() {
                   style={[styles.txTypeButton, txType === 'buy' && styles.txTypeBuy]}
                   onPress={() => setTxType('buy')}
                 >
-                  <Ionicons name="arrow-down" size={20} color={txType === 'buy' ? '#FFFFFF' : '#34C759'} />
+                  <Ionicons name="arrow-down" size={20} color={txType === 'buy' ? colors.inkOnAccent : colors.up} />
                   <Text style={[styles.txTypeText, txType === 'buy' && styles.txTypeTextActive]}>Compra</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.txTypeButton, txType === 'sell' && styles.txTypeSell]}
                   onPress={() => setTxType('sell')}
                 >
-                  <Ionicons name="arrow-up" size={20} color={txType === 'sell' ? '#FFFFFF' : '#FF3B30'} />
+                  <Ionicons name="arrow-up" size={20} color={txType === 'sell' ? colors.inkOnAccent : colors.down} />
                   <Text style={[styles.txTypeText, txType === 'sell' && styles.txTypeTextActive]}>Venta</Text>
                 </TouchableOpacity>
               </View>
@@ -1798,7 +1825,7 @@ export default function AccountScreen() {
                     position: 'absolute', top: 48, left: 0, right: 0,
                     backgroundColor: colors.card, borderRadius: 10, borderWidth: 1,
                     borderColor: colors.border, zIndex: 9999, elevation: 10,
-                    shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8,
+                    shadowColor: colors.shadow, shadowOpacity: 0.1, shadowRadius: 8,
                   }}>
                     {txSuggestions.map((item: any, index: number) => (
                       <TouchableOpacity
@@ -1812,18 +1839,18 @@ export default function AccountScreen() {
                       >
                         <View style={{
                           paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
-                          backgroundColor: item.recommendation === 'COMPRAR' ? '#34C75922' : item.recommendation === 'VENDER' ? '#FF3B3022' : '#FF950022',
+                          backgroundColor: item.recommendation === 'COMPRAR' ? colors.upWash : item.recommendation === 'VENDER' ? colors.downWash : colors.cautionWash,
                         }}>
                           <Text style={{
                             fontWeight: '700', fontSize: 12,
-                            color: item.recommendation === 'COMPRAR' ? '#34C759' : item.recommendation === 'VENDER' ? '#FF3B30' : '#FF9500',
+                            color: item.recommendation === 'COMPRAR' ? colors.up : item.recommendation === 'VENDER' ? colors.down : colors.caution,
                           }}>{item.ticker}</Text>
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 13, fontWeight: '500', color: colors.text }} numberOfLines={1}>{item.company_name}</Text>
-                          <Text style={{ fontSize: 11, color: colors.textSecondary }}>{item.recommendation} · {item.favorable_percentage?.toFixed(1)}%</Text>
+                          <Text style={{ fontSize: 11, color: colors.textSecondary }}>{item.recommendation} ┬À {item.favorable_percentage?.toFixed(1)}%</Text>
                         </View>
-                        <Text style={{ fontSize: 12, color: colors.primary }}>→</Text>
+                        <Text style={{ fontSize: 12, color: colors.primary }}>ÔåÆ</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -1838,7 +1865,7 @@ export default function AccountScreen() {
                 </View>
               )}
               
-              <Text style={styles.inputLabel}>Fecha de transacción *</Text>
+              <Text style={styles.inputLabel}>Fecha de transacci├│n *</Text>
               <TextInput
                 style={styles.input}
                 placeholder="YYYY-MM-DD"
@@ -1855,7 +1882,7 @@ export default function AccountScreen() {
                 keyboardType="decimal-pad"
               />
               
-              <Text style={styles.inputLabel}>Precio por acción *</Text>
+              <Text style={styles.inputLabel}>Precio por acci├│n *</Text>
               <TextInput
                 style={styles.input}
                 placeholder="Ej: 150.00"
@@ -1864,7 +1891,7 @@ export default function AccountScreen() {
                 keyboardType="decimal-pad"
               />
               
-              <Text style={styles.inputLabel}>Comisión</Text>
+              <Text style={styles.inputLabel}>Comisi├│n</Text>
               <TextInput
                 style={styles.input}
                 placeholder="Ej: 1.00"
@@ -1897,13 +1924,13 @@ export default function AccountScreen() {
               style={[
                 styles.submitButton,
                 submitting && styles.submitButtonDisabled,
-                { backgroundColor: txType === 'buy' ? '#34C759' : '#FF3B30' }
+                { backgroundColor: txType === 'buy' ? colors.up : colors.down }
               ]}
               onPress={addTransaction}
               disabled={submitting}
             >
               {submitting ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={colors.inkOnAccent} />
               ) : (
                 <Text style={styles.submitButtonText}>
                   Registrar {txType === 'buy' ? 'Compra' : 'Venta'}
@@ -1923,7 +1950,7 @@ export default function AccountScreen() {
                 {selectedHolding ? `Historial - ${selectedHolding.ticker}` : 'Historial de Compras'}
               </Text>
               <TouchableOpacity onPress={() => setShowTransactionHistory(false)}>
-                <Ionicons name="close" size={24} color="#1D1D1F" />
+                <Ionicons name="close" size={24} color={colors.ink} />
               </TouchableOpacity>
             </View>
             
@@ -1934,16 +1961,16 @@ export default function AccountScreen() {
                     <View style={styles.transactionInfo}>
                       <View style={[
                         styles.txTypeBadge,
-                        { backgroundColor: tx.transaction_type === 'buy' ? '#34C75915' : '#FF3B3015' }
+                        { backgroundColor: tx.transaction_type === 'buy' ? colors.upWash : colors.downWash }
                       ]}>
                         <Ionicons
                           name={tx.transaction_type === 'buy' ? 'arrow-down' : 'arrow-up'}
                           size={14}
-                          color={tx.transaction_type === 'buy' ? '#34C759' : '#FF3B30'}
+                          color={tx.transaction_type === 'buy' ? colors.up : colors.down}
                         />
                         <Text style={[
                           styles.txTypeBadgeText,
-                          { color: tx.transaction_type === 'buy' ? '#34C759' : '#FF3B30' }
+                          { color: tx.transaction_type === 'buy' ? colors.up : colors.down }
                         ]}>
                           {tx.transaction_type === 'buy' ? 'Compra' : 'Venta'}
                         </Text>
@@ -1954,16 +1981,16 @@ export default function AccountScreen() {
                     </View>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <TouchableOpacity
-                        style={[styles.deleteTransactionBtn, { backgroundColor: '#007AFF15' }]}
+                        style={[styles.deleteTransactionBtn, { backgroundColor: colors.accentWash }]}
                         onPress={() => openEditTx(tx)}
                       >
-                        <Ionicons name="create-outline" size={18} color="#007AFF" />
+                        <Ionicons name="create-outline" size={18} color={colors.accent} />
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.deleteTransactionBtn}
                         onPress={() => deleteTransaction(tx.id)}
                       >
-                        <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+                        <Ionicons name="trash-outline" size={18} color={colors.down} />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -1982,7 +2009,7 @@ export default function AccountScreen() {
                       <Text style={styles.transactionValue}>${tx.price_per_share.toFixed(2)}</Text>
                     </View>
                     <View style={styles.transactionRow}>
-                      <Text style={styles.transactionLabel}>Comisión:</Text>
+                      <Text style={styles.transactionLabel}>Comisi├│n:</Text>
                       <Text style={styles.transactionValue}>${tx.commission.toFixed(2)}</Text>
                     </View>
                     <View style={[styles.transactionRow, styles.transactionTotal]}>
@@ -2016,7 +2043,7 @@ export default function AccountScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Alertas Activas</Text>
               <TouchableOpacity onPress={() => setShowAlerts(false)}>
-                <Ionicons name="close" size={24} color="#1D1D1F" />
+                <Ionicons name="close" size={24} color={colors.ink} />
               </TouchableOpacity>
             </View>
             
@@ -2031,12 +2058,12 @@ export default function AccountScreen() {
                   {alert.alerts.map((a, i) => (
                     <View key={i} style={[
                       styles.alertMessage,
-                      { backgroundColor: a.type === 'buy' ? '#34C75915' : a.type === 'sell' ? '#FF3B3015' : '#FF950015' }
+                      { backgroundColor: a.type === 'buy' ? colors.upWash : a.type === 'sell' ? colors.downWash : colors.cautionWash }
                     ]}>
                       <Ionicons
                         name={a.type === 'buy' ? 'arrow-down-circle' : a.type === 'sell' ? 'arrow-up-circle' : 'sync-circle'}
                         size={20}
-                        color={a.type === 'buy' ? '#34C759' : a.type === 'sell' ? '#FF3B30' : '#FF9500'}
+                        color={a.type === 'buy' ? colors.up : a.type === 'sell' ? colors.down : colors.caution}
                       />
                       <Text style={styles.alertMessageText}>{a.message}</Text>
                     </View>
@@ -2055,942 +2082,3 @@ export default function AccountScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-  },
-  tabSelector: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    padding: 8,
-    margin: 16,
-    marginBottom: 8,
-    borderRadius: 12,
-  },
-  tab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 8,
-  },
-  activeTab: {
-    backgroundColor: '#007AFF15',
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8E8E93',
-  },
-  activeTabText: {
-    color: '#007AFF',
-  },
-  alertsButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FF9500',
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingVertical: 10,
-    borderRadius: 8,
-    gap: 8,
-  },
-  alertsButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  historyButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#007AFF15',
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingVertical: 10,
-    borderRadius: 8,
-    gap: 8,
-  },
-  historyButtonText: {
-    color: '#007AFF',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingTop: 8,
-    paddingBottom: 100,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginTop: 16,
-  },
-  emptySubtitle: {
-    fontSize: 14,
-    color: '#6E6E73',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  tickerContainer: {
-    flex: 1,
-  },
-  ticker: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#007AFF',
-  },
-  companyName: {
-    fontSize: 13,
-    color: '#6E6E73',
-    marginTop: 2,
-    maxWidth: 180,
-  },
-  watchlistPriceActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  priceContainer: {
-    alignItems: 'flex-end',
-  },
-  currentPrice: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  deleteButtonSmall: {
-    padding: 8,
-    backgroundColor: '#FF3B3010',
-    borderRadius: 8,
-  },
-  targetsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 12,
-    gap: 8,
-  },
-  targetBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
-  },
-  buyBadge: {
-    backgroundColor: '#34C75915',
-  },
-  sellBadge: {
-    backgroundColor: '#FF3B3015',
-  },
-  notifyBadge: {
-    backgroundColor: '#FF950015',
-  },
-  targetText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  notes: {
-    fontSize: 12,
-    color: '#8E8E93',
-    marginTop: 10,
-    fontStyle: 'italic',
-  },
-  plBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    marginTop: 4,
-    gap: 4,
-  },
-  plText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  holdingDetails: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F0F0F0',
-  },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  detailLabel: {
-    fontSize: 13,
-    color: '#6E6E73',
-  },
-  detailValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  viewTransactionsHint: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F0F0F0',
-    gap: 6,
-  },
-  viewTransactionsText: {
-    fontSize: 13,
-    color: '#007AFF',
-    fontWeight: '500',
-  },
-  sectorBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  sectorText: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  summaryCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-  },
-  summaryTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginBottom: 16,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  summaryItem: {
-    flex: 1,
-  },
-  summaryLabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginBottom: 4,
-  },
-  summaryValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  totalPLContainer: {
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-  },
-  totalPLLabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginBottom: 4,
-  },
-  totalPLValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  metricsCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-  },
-  metricsTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginBottom: 16,
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  metricItem: {
-    width: '50%',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-  },
-  metricLabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginBottom: 4,
-  },
-  metricValue: {
-    fontSize: 22,
-    fontWeight: 'bold',
-  },
-  metricHint: {
-    fontSize: 10,
-    color: '#8E8E93',
-    marginTop: 2,
-  },
-  pieChartCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-  },
-  pieChartContainer: {
-    alignItems: 'center',
-    marginVertical: 16,
-  },
-  pieChartCenter: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pieChartCenterText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  pieChartCenterLabel: {
-    fontSize: 11,
-  },
-  pieLegend: {
-    marginTop: 12,
-  },
-  pieLegendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  pieLegendDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginRight: 10,
-  },
-  pieLegendText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  pieLegendValue: {
-    fontSize: 14,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-    marginBottom: 12,
-  },
-  fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#007AFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '90%',
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  modalScroll: {
-    padding: 20,
-    maxHeight: 450,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-    marginBottom: 8,
-    marginTop: 12,
-  },
-  input: {
-    backgroundColor: '#F5F5F7',
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 16,
-    color: '#1D1D1F',
-  },
-  textArea: {
-    height: 80,
-    textAlignVertical: 'top',
-  },
-  switchRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  submitButton: {
-    backgroundColor: '#007AFF',
-    marginHorizontal: 20,
-    marginTop: 20,
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  submitButtonDisabled: {
-    opacity: 0.6,
-  },
-  submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  txTypeSelector: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 8,
-  },
-  txTypeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: '#E0E0E0',
-    gap: 8,
-  },
-  txTypeBuy: {
-    backgroundColor: '#34C759',
-    borderColor: '#34C759',
-  },
-  txTypeSell: {
-    backgroundColor: '#FF3B30',
-    borderColor: '#FF3B30',
-  },
-  txTypeText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  txTypeTextActive: {
-    color: '#FFFFFF',
-  },
-  totalContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-    padding: 16,
-    borderRadius: 12,
-    marginTop: 16,
-  },
-  totalLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#6E6E73',
-  },
-  totalValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  transactionCard: {
-    backgroundColor: '#F5F5F7',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-  },
-  transactionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  transactionInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  txTypeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  txTypeBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  transactionTicker: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#007AFF',
-  },
-  deleteTransactionBtn: {
-    padding: 8,
-    backgroundColor: '#FF3B3015',
-    borderRadius: 8,
-  },
-  transactionDetails: {
-    gap: 6,
-  },
-  transactionRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  transactionLabel: {
-    fontSize: 13,
-    color: '#6E6E73',
-  },
-  transactionValue: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#1D1D1F',
-  },
-  transactionTotal: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
-  },
-  transactionTotalLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  transactionTotalValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  transactionNotes: {
-    fontSize: 12,
-    color: '#8E8E93',
-    fontStyle: 'italic',
-    marginTop: 10,
-  },
-  emptyTransactions: {
-    padding: 40,
-    alignItems: 'center',
-  },
-  emptyTransactionsText: {
-    fontSize: 14,
-    color: '#8E8E93',
-  },
-  alertCard: {
-    backgroundColor: '#F5F5F7',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-  },
-  alertHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  alertTicker: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#007AFF',
-  },
-  alertPrice: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1D1D1F',
-  },
-  alertCompany: {
-    fontSize: 13,
-    color: '#6E6E73',
-    marginBottom: 12,
-  },
-  alertMessage: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 8,
-    gap: 10,
-  },
-  alertMessageText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#1D1D1F',
-  },
-  // New styles for hide toggle, cash, and evolution
-  summaryHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  hideToggle: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  cashCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginHorizontal: 16,
-    marginBottom: 16,
-  },
-  cashHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  addCashButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cashSummary: {
-    gap: 8,
-  },
-  cashItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  cashLabel: {
-    fontSize: 14,
-  },
-  cashValue: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  cashBalanceItem: {
-    borderTopWidth: 1,
-    marginTop: 8,
-    paddingTop: 12,
-  },
-  cashBalance: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  cashHistory: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
-  },
-  cashHistoryTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 12,
-    textTransform: 'uppercase',
-  },
-  cashMovementItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-  },
-  cashMovementInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  cashMovementDetails: {
-    gap: 2,
-  },
-  cashMovementType: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  cashMovementDate: {
-    fontSize: 11,
-  },
-  cashMovementActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  cashMovementAmount: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  cashTypeSelector: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
-  },
-  cashTypeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  cashTypeText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  evolutionCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginHorizontal: 16,
-    marginBottom: 16,
-  },
-  evolutionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  evolutionChange: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  evolutionChartContainer: {
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  // Cash modal improved styles
-  cashModalContent: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
-    marginHorizontal: 20,
-    maxHeight: '80%',
-  },
-  cashModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-  },
-  cashModalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  cashModalCloseBtn: {
-    padding: 4,
-  },
-  cashInputGroup: {
-    marginBottom: 16,
-  },
-  cashInputLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 8,
-    marginLeft: 4,
-  },
-  cashInput: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 16,
-  },
-  cashSubmitButton: {
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  cashSubmitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  // Gains section styles
-  cashSection: {
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-  },
-  cashSectionTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 10,
-  },
-  gainsSection: {
-    gap: 10,
-  },
-  gainsGrid: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  gainCard: {
-    flex: 1,
-    borderRadius: 12,
-    padding: 14,
-    alignItems: 'center',
-  },
-  gainLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  gainValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 2,
-  },
-  gainHint: {
-    fontSize: 10,
-  },
-  totalPortfolioValue: {
-    borderTopWidth: 1,
-    marginTop: 16,
-    paddingTop: 16,
-    alignItems: 'center',
-  },
-  totalPortfolioLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  totalPortfolioAmount: {
-    fontSize: 28,
-    fontWeight: 'bold',
-  },
-  totalPortfolioHint: {
-    fontSize: 11,
-    marginTop: 2,
-  },
-  // Benchmark styles
-  benchmarkCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginHorizontal: 16,
-    marginBottom: 16,
-  },
-  benchmarkHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  benchmarkPeriod: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  benchmarkComparison: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  benchmarkItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  benchmarkDivider: {
-    width: 1,
-    height: 40,
-  },
-  benchmarkLabel: {
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  benchmarkValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  alphaContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 16,
-  },
-  alphaLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  alphaValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  benchmarkMetrics: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  benchmarkMetricItem: {
-    alignItems: 'center',
-  },
-  benchmarkMetricLabel: {
-    fontSize: 11,
-    marginBottom: 4,
-  },
-  benchmarkMetricValue: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-});

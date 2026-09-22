@@ -1,10 +1,10 @@
 # 📊 Análisis Financiero - Stock Analysis App
 
-Una aplicación móvil completa para analizar acciones que cotizan en bolsa mediante ratios financieros fundamentales. La app extrae datos financieros en tiempo real y proporciona recomendaciones de inversión (COMPRAR/MANTENER/VENDER) basadas en más de 25 métricas clave.
+Una aplicación móvil completa para analizar acciones que cotizan en bolsa mediante ratios financieros fundamentales. La app extrae datos financieros en tiempo real y proporciona recomendaciones de inversión (COMPRAR/MANTENER/VENDER) basadas en más de 50 métricas clave.
 
 ## 🎯 Características Principales
 
-- **Análisis Exhaustivo**: Calcula más de 25 ratios financieros organizados en 6 categorías
+- **Análisis Exhaustivo**: Calcula más de 50 ratios financieros organizados en 10 categorías
 - **Recomendaciones Inteligentes**: Algoritmo que evalúa métricas y proporciona recomendación clara
 - **Datos en Tiempo Real**: Integración con Yahoo Finance (yfinance) sin necesidad de API key
 - **Interfaz Nativa**: UI móvil optimizada con navegación por tabs
@@ -30,15 +30,18 @@ Una aplicación móvil completa para analizar acciones que cotizan en bolsa medi
 - Pull-to-refresh
 - Visualización rápida de recomendaciones
 
-## 📊 Categorías de Análisis
+## 📊 Categorías de Análisis (50+ métricas)
 
-### 1. 📈 Rentabilidad
+### 1. 📊 Rentabilidad
 - ROE (Return on Equity)
 - ROA (Return on Assets)
 - ROIC (Return on Invested Capital)
+- ROTE (Return on Tangible Equity)
 - Margen Bruto
 - Margen Neto
 - Margen Operativo
+- Margen EBITDA
+- Incremental ROIC
 
 ### 2. 💧 Liquidez
 - Ratio Corriente (Current Ratio)
@@ -49,22 +52,75 @@ Una aplicación móvil completa para analizar acciones que cotizan en bolsa medi
 - Deuda/Capital (Debt-to-Equity)
 - Ratio de Deuda (Debt Ratio)
 - Deuda Neta (Net Debt)
+- Equity Multiplier
+- Cobertura de Intereses (Interest Coverage)
+- Deuda Neta / EBITDA
+- Net Debt / Total Capital
+- FCF / Deuda Total
 
 ### 4. 💰 Valoración
 - P/E Ratio
 - EV/EBIT
 - Earning Yield (EBIT/EV)
 - P/S Ratio
+- EV/Sales
+- EV/FCF
+- P/FCF
+- EV/Operating Cash Flow
+- EV/Gross Profit
+- P/B Ratio
 
 ### 5. 💵 Flujo de Caja
 - Flujo de Caja Libre (FCF)
 - Margen FCF
 - Operating Cash Flow / Ventas
 - Capex / Ventas
+- EBIT / FCF Ratio
+- FCF Conversion (OCF / Net Income)
+- FCF Yield
 
-### 6. 🏥 Salud Financiera
+### 6. ⚙️ Eficiencia Operativa
+- Revenue por Empleado
+- Gross Profit por Empleado
+- DSO (Days Sales Outstanding)
+- DIO (Days Inventory Outstanding)
+- DPO (Days Payable Outstanding)
+- Cash Conversion Cycle (CCC)
+- Asset Turnover
+- Fixed Asset Turnover
+- Operating Expense Ratio
+- Sloan Ratio (Calidad de ganancias)
+
+### 7. ⚠️ Riesgo y Capital
+- Beta
+- Sharpe Ratio
+- Retorno Anualizado
+- Volatilidad Anualizada
 - Altman Z-Score (predicción de quiebra)
+- Market Cap
+
+### 8. 📋 Calidad Contable y Salud Financiera
 - Piotroski F-Score (solidez financiera)
+- Accrual Ratio
+- Value Creation Category (Excelente/Buena/Moderada/Débil/Destruye Valor)
+
+### 9. 📊 Rendimiento de Precio
+- Precio Actual
+- Cambio 52 Semanas High/Low
+- SMA 50 (Simple Moving Average)
+- SMA 200
+- Precio vs SMA 50
+- Precio vs SMA 200
+
+### 10. 💰 Valoración Graham / DCF / EPV
+- Graham Number
+- Graham Upside
+- PEG Ratio
+- Magic Formula Score (Earning Yield + ROIC)
+- Earnings Power Value (EPV)
+- EPV Upside
+- DCF Value (Discounted Cash Flow)
+- DCF Upside
 
 ## 🎯 Lógica de Recomendación
 

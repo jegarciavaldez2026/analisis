@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-10T00:00:00Z",
+  "title": "Design System: FinAnalysis",
+  "extensions": {
+    "northStar": "El instrumento calibrado: el veredicto es una posición en una escala graduada, no una opinión con color.",
+    "colorMeta": {
+      "petrol-index": { "role": "primary", "displayName": "Petróleo índice", "canonical": "#10545B", "dark": "#3FA9AF", "tonalRamp": ["#0B3E44", "#10545B", "#3FA9AF", "#67C4C9"] },
+      "enamel-face": { "role": "neutral", "displayName": "Esmalte cálido", "canonical": "#F6F3EC", "dark": "#1A1B19", "tonalRamp": ["#E4E0D6", "#EAE6DC", "#EEEAE0", "#F6F3EC", "#FCFAF5"] },
+      "graphite-ink": { "role": "neutral", "displayName": "Tinta grafito", "canonical": "#1C1B17", "dark": "#F1EEE6", "tonalRamp": ["#1C1B17", "#57544B", "#8A867C"] },
+      "signal-up": { "role": "tertiary", "displayName": "Alza", "canonical": "#1F6B3E", "dark": "#43A96D" },
+      "signal-down": { "role": "tertiary", "displayName": "Baja", "canonical": "#A62A21", "dark": "#DD6257" },
+      "signal-caution": { "role": "tertiary", "displayName": "Precaución", "canonical": "#8A5A0B", "dark": "#CE9A3C" },
+      "no-signal": { "role": "neutral", "displayName": "Sin señal", "canonical": "#A8A296", "dark": "#6A675E" }
+    },
+    "elevation": {
+      "0": "ninguna",
+      "1": "0 1px 3px rgba(37,33,24,0.18) · android elevation 1",
+      "2": "0 3px 10px rgba(37,33,24,0.18) · android elevation 4",
+      "3": "0 10px 28px rgba(37,33,24,0.18) · android elevation 12"
+    },
+    "motion": {
+      "instant": "90ms",
+      "fast": "160ms",
+      "base": "220ms",
+      "slow": "320ms",
+      "signature": "El índice de DecisionScale se asienta en 320ms con Easing.out(cubic). Es el único momento de movimiento autorizado; el resto son transiciones de estado de 160ms."
+    },
+    "breakpoints": { "desktop": "900px" },
+    "contentWidth": { "task": "880px", "table": "1100px" },
+    "hairline": "StyleSheet.hairlineWidth (1px en web)",
+    "indexMark": "Rectángulo sólido 3px × 16–22px en el color del tono. Motivo recurrente: sección activa, veredicto, banda activa, sesión abierta.",
+    "decisionBands": [
+      { "from": 0, "to": 40, "verdict": "VENDER", "risk": "Alto", "tone": "down" },
+      { "from": 40, "to": 60, "verdict": "MANTENER", "risk": "Moderado", "tone": "caution" },
+      { "from": 60, "to": 100, "verdict": "COMPRAR", "risk": "Bajo", "tone": "up" }
+    ],
+    "rules": [
+      "El acento petróleo nunca significa dirección financiera; verde y rojo nunca decoran.",
+      "Ningún estado depende sólo del color: siempre texto, icono, marca o posición además.",
+      "N/A se dibuja como sin señal, nunca como cero ni oculto.",
+      "Los paneles no se anidan.",
+      "Toda cifra usa la cara mono con tabular-nums.",
+      "La responsividad es estructural: cambia la composición, no el tamaño de letra."
+    ],
+    "notCanonized": "Literales de color de la paleta iOS anterior (#007AFF, #34C759, #FF3B30) en los StyleSheet de módulo de ResultsScreen, account, history, screener, info y OvertonScreen. Son deuda, no sistema.",
+    "sourceOfTruth": "frontend/theme/tokens.ts"
+  }
+}
