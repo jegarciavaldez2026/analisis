@@ -3028,39 +3028,61 @@ async def get_portfolio(current_user: dict = Depends(get_current_user)):
         
         # For sector allocation
         sector_values = {}
-
-        async def fetch_ticker_info(ticker, data):
+        
+        for ticker, data in holdings_map.items():
+            if data["total_shares"] <= 0:
+                continue  # Skip if sold all shares
+            
+            # Get current price, beta, sector, and industry
             sector = "Otros"
             industry = "N/A"
             curr_price = 0
             stock_beta = 1.0
+            
             try:
-                loop = asyncio.get_event_loop()
                 stock = yf.Ticker(ticker)
-                info = await loop.run_in_executor(None, lambda: stock.info)
+                info = stock.info
                 curr_price = info.get('currentPrice', info.get('regularMarketPrice', 0)) or 0
                 stock_beta = info.get('beta', 1.0) or 1.0
                 sector = info.get('sector', 'Otros') or 'Otros'
                 industry = info.get('industry', 'N/A') or 'N/A'
+                
+                # Only fetch historical data if we have more than 3 holdings (skip for performance)
+                if len(holdings_map) <= 3:
+                    hist = stock.history(period="6mo")  # Reduced from 1y
+                    if not hist.empty and len(hist) > 20:
+                        daily_returns = hist['Close'].pct_change().dropna()
+                        
+                        # Calculate max drawdown
+                        cumulative = (1 + daily_returns).cumprod()
+                        running_max = cumulative.cummax()
+                        drawdown = (cumulative - running_max) / running_max
+                        max_dd = drawdown.min() * 100
+                        
+                        returns_data.append({
+                            'ticker': ticker,
+                            'returns': daily_returns,
+                            'mean_return': daily_returns.mean() * 252,
+                            'volatility': daily_returns.std() * np.sqrt(252),
+                            'max_drawdown': max_dd,
+                            'beta': stock_beta
+                        })
             except Exception as e:
                 logging.warning(f"Error fetching data for {ticker}: {str(e)}")
+                # Use last known cost as fallback
                 if data["total_shares"] > 0 and data["total_cost"] > 0:
                     curr_price = data["total_cost"] / data["total_shares"]
-            return ticker, curr_price, stock_beta, sector, industry
-
-        valid_holdings_map = {t: d for t, d in holdings_map.items() if d["total_shares"] > 0}
-        ticker_results = await asyncio.gather(*[
-            fetch_ticker_info(t, d) for t, d in valid_holdings_map.items()
-        ])
-
-        for ticker, curr_price, stock_beta, sector, industry in ticker_results:
-            data = valid_holdings_map[ticker]
+            
             curr_value_stock = data["total_shares"] * curr_price
             avg_cost = data["total_cost"] / data["total_shares"] if data["total_shares"] > 0 else 0
             profit_loss = curr_value_stock - data["total_cost"]
             profit_loss_pct = (profit_loss / data["total_cost"]) * 100 if data["total_cost"] > 0 else 0
-
+            
             # Track gains and losses for Gain-Loss Ratio
+            if profit_loss >= 0:
+                gains.append(profit_loss)
+            else:
+                losses.append(abs(profit_loss))
             
             holding = PortfolioHolding(
                 ticker=ticker,

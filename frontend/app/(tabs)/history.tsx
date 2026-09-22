@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  Platform,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Ionicons } from '@expo/vector-icons';
@@ -53,54 +54,40 @@ export default function HistoryScreen() {
   }, []);
 
   const deleteAnalysis = async (id: string, ticker: string) => {
-    Alert.alert(
-      'Eliminar Análisis',
-      `¿Eliminar el análisis de ${ticker}?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            setDeleting(id);
-            try {
-              await axios.delete(`${BACKEND_URL}/api/history/${id}`);
-              setHistory(prev => prev.filter(item => item.id !== id));
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo eliminar el análisis');
-            } finally {
-              setDeleting(null);
-            }
-          },
-        },
-      ]
-    );
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm(`¿Eliminar el análisis de ${ticker}?`)
+      : await new Promise(resolve => Alert.alert('Eliminar Análisis', `¿Eliminar el análisis de ${ticker}?`,
+          [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Eliminar', style: 'destructive', onPress: () => resolve(true) }]));
+    if (!confirmed) return;
+    setDeleting(id);
+    try {
+      await axios.delete(`${BACKEND_URL}/api/history/${id}`);
+      setHistory(prev => prev.filter(item => item.id !== id));
+    } catch (error) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar el análisis') : Alert.alert('Error', 'No se pudo eliminar el análisis');
+    } finally {
+      setDeleting(null);
+    }
   };
 
-  const deleteAllHistory = () => {
-    Alert.alert(
-      'Eliminar Todo el Historial',
-      '¿Estás seguro de que quieres eliminar todo el historial? Esta acción no se puede deshacer.',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar Todo',
-          style: 'destructive',
-          onPress: async () => {
-            setLoading(true);
-            try {
-              await axios.delete(`${BACKEND_URL}/api/history`);
-              setHistory([]);
-              Alert.alert('Éxito', 'Historial eliminado');
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo eliminar el historial');
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ]
-    );
+  const deleteAllHistory = async () => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('¿Eliminar todo el historial? Esta acción no se puede deshacer.')
+      : await new Promise(resolve => Alert.alert('Eliminar Todo', '¿Eliminar todo el historial?',
+          [{ text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+           { text: 'Eliminar Todo', style: 'destructive', onPress: () => resolve(true) }]));
+    if (!confirmed) return;
+    setLoading(true);
+    try {
+      await axios.delete(`${BACKEND_URL}/api/history`);
+      setHistory([]);
+      Platform.OS === 'web' ? window.alert('Historial eliminado correctamente') : Alert.alert('Éxito', 'Historial eliminado');
+    } catch (error) {
+      Platform.OS === 'web' ? window.alert('Error: No se pudo eliminar el historial') : Alert.alert('Error', 'No se pudo eliminar el historial');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const getRecommendationColor = (recommendation: string) => {
